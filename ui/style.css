@@ -1593,6 +1593,8 @@ dialog.picker::backdrop {
   font-weight: 500;
 }
 .context-item .block {
+  /* The heading is clipped, so the deck's 88px label gutter would be dead space. */
+  display: block;
   padding: 2px 0 0;
 }
 .context-item .block h3 {
