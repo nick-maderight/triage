@@ -1,0 +1,10 @@
+[Unit]
+Description=Triage decision inbox
+
+[Service]
+ExecStart=%h/.local/bin/triage serve
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

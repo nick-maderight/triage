@@ -1,0 +1,24 @@
+
+ Connected to MCP servers: example-server.
+
+
+ Call the bash tool once with async set to true and the command: sleep 90; echo
+ bg-finished. Then reply with one word: started.
+
+
+ 2026-10-31 21:10:12  Δ 3.6s  ⤵ 41K  ⤴ 79  ⏱ 2.5s  ⚡ 29.9/s
+
+ started
+
+ 2026-10-31 21:10:14  Δ 5.2s  ⤵ 227  ⤴ 3  💾 41K  ⏱ 1.6s  ⚡ 1.9/s
+
+ ※ recap: You asked for an async test job: sleep 90 seconds, then print
+ "bg-finished". It's running in the background as bg_1 and hasn't finished yet.
+ Next, I'll wait for its output to come back on its own.
+
+  ⎋ Waiting for background job bg_1
+
+────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+ ⬢ Example Model · ◔ low · 🗑 ~/project   ⚙ 1 · ⏳ SLEE… · 🪙 42K · $0.24 · ◫ 13.7%/300K ⟲

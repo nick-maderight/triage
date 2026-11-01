@@ -1,0 +1,152 @@
+# Triage
+
+Triage is one decision inbox for agent sessions in tmux and scheduled jobs. It shows one card at a time in priority order. Ask cards show the STAR situation, task, action, and result with options suited to the situation. Skip and later are built in.
+
+## Agent sessions
+
+Triage polls tmux once a second. It recognizes omp pane states from pane titles, then reads the pane's transcript file to detect pending questions and final reports. It sends selected answers with guarded tmux `send-keys`. Agents need no triage-side code or plugin.
+
+A reply keeps one card when tmux restarts and omp resumes it under a new pane id: a reply already dealt with stays handled, and a reply whose card is still queued from the old pane moves to the new pane. The tracker trusts a pane's omp breadcrumb only when it was written after the pane's pty appeared, or when the pane's omp was started with `--resume` or `--restore` of that session.
+The inbox holds cards that need a decision. An omp run that stops earns an information card. omp shows the same waiting title for a finished run, an interrupted one and one that waits on background jobs, so triage reads how the transcript's last assistant message ended. A finished reply earns a card, an error earns a `Stopped with error` card with an error label, and an interrupt earns none. A run whose last message is a tool call, whose working row still shows a background-job wait or an auto-retry, or whose reply is followed by a delivered background-job result, has not stopped yet, and its card comes when it does. A reply counts as a final report when its first line is a status line such as `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done`, or `ENVOY_STATUS: incomplete`. Bold, code ticks or a heading mark around that line still count, and text after the status word on the same line starts the report. Every triage brief requires one. Every brief also asks for a caveman-style report of four short lines at most, the outcome first so it becomes the card title, ending in a `Recommended action:` line. Briefs define `complete` as work released through the project's normal pipeline with its full test gate passed. Envoys report `agent-done` when they finish their work but a required push, deploy, or full test gate remains open. Each report names the open step. A final report written before a background wait stays the card's report, and the closing reply follows it in the body. A reply without a status line still ends the run, so it earns the same card showing its first line as the title and the reply as its body, without an outcome label. A pane with no assistant message yet makes no card. A newer card of the same session replaces an older one still queued. Every brief's report ends with a `Recommended action:` line naming the one next step the evidence supports, or `Recommended action: none` when nothing needs doing; the reply card carries the step under Action and its body leaves the line out.
+
+An information card stays queued when its pane disappears; only ask and plan cards close, because they need the live pane. When omp is gone from a pane, whether its window closed, omp crashed or quit, or tmux died, the daemon reads the session once and queues at most one card. A session dispatched from triage, through a brief or an approved plan that carries the status contract, gets a warning card titled `Unreported: <first line of the last reply>` when no final report followed its latest brief. Otherwise a final reply the daemon had not yet carded gets its normal card, an error gets `Stopped with error:`, and a run cut off mid-turn gets a warning titled `Ended mid-turn: <first line of the last message>`. Warning cards carry the last reply as body and the transcript as reference. An interrupt, a session you run yourself that ended cleanly, and a pane you closed from one of its cards add nothing.
+
+A report or error card from a session triage launched says where the work came from. Situation holds the title of the card whose answer last launched or briefed the pane, and Task holds that answer and its note, as in `Investigate first · Note: so what should i do?`. A report Nick answers again keeps the first card's title, so follow-ups stay on one topic, and briefs built from these cards carry both.
+
+The card for a session report shows the outcome in color above its title. A `complete` report reads "Complete" in green, `agent-done` reads "Step left open" in amber, `incomplete` reads "Incomplete" in red, and an `Unreported:` card reads "No final report" in amber. The title then leaves out its `Done:`, `Agent done:`, `Incomplete:` or `Unreported:` prefix. History rows and the toast that confirms an action keep the full title.
+
+A single-select ask can be answered from the inbox. A multi-question ask with only single-select questions is answered one question per step in the inbox and submitted after a review step; the daemon types each answer into the pane's dialog tab by tab and verifies the review before submitting, so any mismatch leaves the card queued with nothing sent. Multi-select asks are shown, but must be answered in the pane. Findings are answered by launching a new omp session with a brief. Triage does not send messages back to the job that produced a finding.
+
+Every card carries a context thread one click away: `t`, the Context control in the card dock, or Context on a history row. The thread shows the card's whole story — the dispatching finding, the launches, your steering notes, every report the session produced including superseded ones, and the producer's related cards — oldest first, with the card you opened marked as the anchor.
+
+### Goal mode
+
+Every new omp window triage opens for a brief, through a dispatch, a finding answer, or the compose sheet, starts omp in goal mode with the brief text as the goal objective, so the session keeps working toward the task between turns until it reports done. The objective ends with the brief file's path, because omp records the objective as the session's first user message and the exit audit recognises a triage dispatch by that path. `goal.enabled` defaults to on in omp, and Plan and Plan into launches are the exception because plan mode and goal mode are mutually exclusive. A brief given to a waiting source pane stays typed text, because a running session cannot take a `--goal` flag; it keeps its own modes.
+
+### Plan mode
+
+When a plan brief opens a new window, a unique per-run config overlay beside the brief starts omp in read-only plan mode. If the card's source pane is already waiting, triage checks its Plan status, sends `M-P` if needed, then sends the brief; a failed toggle returns 422.
+
+The tracker waits for a transcript `write` to `xd://propose` and the fullscreen Plan Review overlay. Once both appear, it queues an answerable `plan` card with the redacted plan as its body. Approve sends Enter to the overlay and lets omp execute. Refine requires a note; triage sends Esc to close the overlay without discarding the plan, then sends the note as steering text. A new proposal supersedes the old card, and closing the overlay completes its card. Every plan brief ends by telling the planner to end the plan with the status contract, because Approve can start a fresh session that sees only the plan; that session's final report then earns its Done card.
+
+### Plan into
+
+Plan into works like envoy's OMP Plan into. A Plan into launch opens a new window running `omp --plan-yolo` with the brief as its prompt. The planner explores read-only and proposes a plan, omp approves that first proposal on its own, and the same session switches to the execution model to carry the plan out. No Plan Review overlay opens and no plan card reaches the inbox, so nobody reviews the plan before it runs; choose Plan when a plan needs a look first. The planner is the model the sheet or the dispatch names, else the daemon's `--model`, else omp's own default. The execution model goes to `--plan-yolo-into`, and when none is chosen omp uses its `smol` role. It keeps the planner's thinking level unless its selector ends in `:<level>`, such as `provider/model:low`. A Plan into dispatch opens a new window even when the card's source pane is waiting, because only launch flags turn plan-yolo on. Its brief asks the planner to end the plan with the status contract, and the execution model's final report earns the normal Done card. The planner and execution fields also offer the configured omp roles as `@role` selectors, so a launch can plan on `@sol` and execute on `@smol`.
+
+## Event input
+
+Send CloudEvents 1.0 JSON to `POST /v1/ingest`. The envelope requires `specversion`, `id`, `source`, `type`, and `data`. `subject` and `time` are optional. `priority` is an optional CloudEvents extension from 1 (high) to 5 (low).
+
+For `triage.finding`, `data` may contain `title`, `star` (an object with `situation`, `task`, `action`, and `result`), `options`, `refs`, `cwd`, `org_id`, and `label`. Each option has a `label` and may have `description`, `direction`, and `recommended`. For `triage.info`, `data` may contain `title`, `body`, `refs`, and `level`, and an emitter sends it only for a completed job. Other event types are stored without a card.
+
+## HTTP routes
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/` | Serve the web inbox. |
+| GET | `/style.css` | Serve embedded styles. |
+| GET | `/app.js` | Serve embedded application script. |
+| GET | `/marked.js` | Serve the embedded marked Markdown parser. |
+| GET | `/sw.js` | Serve the service worker script with `no-cache`. |
+| GET | `/manifest.webmanifest` | Serve the web app manifest. |
+| GET | `/apple-touch-icon.png` | Serve the iOS home-screen icon. |
+| GET | `/fonts/Geist-Variable.woff2`, `/fonts/GeistMono-Variable.woff2` | Serve the bundled fonts, cached for a year. |
+| GET | `/v1/queue` | Return cards, ask/finding/info/plan counts, and queue version. |
+| GET | `/v1/stream` | Stream queue version changes as server-sent `queue` events. |
+| POST | `/v1/ingest` | Accept a CloudEvent and return `202` with `{ "ok": true, "stored": true }`. A `(source, id)` already stored returns `"stored": false`, still `202`. |
+| POST | `/v1/cards/{id}/answer` | Answer a card using an option index, text, or note. On a finding card, an option whose label starts with "Investigate" launches a read-only investigation brief: the card's action is shown as an unapproved proposal, and the session answers without changing anything the note does not ask for. Its report ends with a `Recommended action:` line, which the reply card offers as Do as recommended. Every other option launches a brief that carries out the action. |
+| POST | `/v1/cards/{id}/skip` | Skip a card. |
+| POST | `/v1/cards/{id}/later` | Defer a card with a `minutes` value. |
+| POST | `/v1/cards/{id}/dispatch` | Hand a brief built from the card to an omp session. Optional `mode` is `investigate` (default, a read-only investigation), `act` (carry out the action end to end), `plan` (start read-only planning; triage later queues omp's Plan Review proposal as a card), or `plan-into` (read-only planning that omp approves on its own, then the execution model carries out); an unknown mode returns 400. Optional `note` becomes the custom instruction in the brief. A `plan-into` dispatch also takes optional `model`, the planner, and `executor`, the execution model, each an omp selector or a `@role`, defaulting to the daemon's `--model` and omp's `smol` role; either field with another mode, or a selector with shell characters, returns 400. The brief goes to the card's source pane when that pane is an omp pane waiting for input, otherwise a new window opens in the daemon's `--session`, default `triage`; that window starts in goal mode with the brief as its objective, except a plan launch, which starts in read-only plan mode. A `plan-into` dispatch always opens a new window. A finding or info card completes. An ask card defers for an hour because its dialog stays open in its pane. |
+| POST | `/v1/cards/{id}/close` | Acknowledge a card and kill the tmux pane it came from, which exits omp or any other harness in it and closes the window when the pane was its only one. Optional `note`. A card with no pane, or whose pane tmux no longer finds, is acknowledged like a plain ack. Any other kill failure returns 422 and the card stays queued. |
+| POST | `/v1/cards/{id}/reload` | Put a fresh copy of a handled card back in the queue. The copy gets the id `reload:<original id>:<uuid>` and the current time as its creation time; the original, its swipes and its history row stay untouched. Returns `{ok, card}` with the copy's id. 404 when the card is unknown; 409 when the card is queued or deferred, or when a copy of it is already queued. |
+| POST | `/v1/sessions` | Launch an omp session from a free `prompt` in `cwd`, default the home directory, as a new window in tmux `session`, default the daemon's `--session` or `triage`. Optional `model` (an omp selector or a `@role`) and `thinking` (an `omp --thinking` level) default to the daemon's `--model` and `--thinking`, or to omp's own defaults when those are unset; optional `mode` is `goal` (default; the session starts in goal mode with the brief as its objective), `plan` (native read-only plan mode) or `plan-into` (read-only planning with the chosen model, approved by omp, then carried out by the optional `executor`, also an omp selector or a `@role`, default omp's `smol` role); an unknown mode, an `executor` with another mode, an unknown level or a model with shell characters returns 400, and an unknown body field such as the retired `plan` returns 422. Returns the new pane id. |
+| GET | `/v1/tmux-sessions` | Return `{sessions, default, directories}`, the current tmux sessions the New session sheet offers, the default one, and the distinct working directories of tmux panes, those most panes share first. |
+| GET | `/v1/models` | Return `{models, default, thinking, default_thinking}`, where each model is `{selector, name}` with omp's display name. Models come from `omp models --json`, loaded once in a background thread at daemon start because the call takes about twenty seconds; the endpoint answers immediately and serves an empty list while the first load runs. The catalog is filtered to the configured `enabledModels`, because `omp models --json` lists bundled entries Bedrock rejects (the bare `amazon-bedrock/openai.gpt-6-luna` fails HTTP 400; only its `global.`/`us.` inference profiles run). One `@role` entry for each configured omp model role (from `omp config get modelRoles --json`, parsed in the same background load) comes first in `models`, named after the role and its model, like `smol role (bedrock-mantle/openai.gpt-6-luna:medium)`. `default` and `default_thinking` are the daemon's `--model` and `--thinking`, or `null` when omp's own defaults apply. The New session sheet offers the models, tmux sessions, pane directories and thinking levels in searchable pickers that fill the screen on phones; the Default row leaves a field blank so its default applies. |
+| GET | `/v1/history?limit=50` | Return handled cards, newest first, as `{card, swipe}` rows. Each card carries only `id`, `kind`, `title`, `source` and its option labels. |
+| GET | `/v1/cards/{id}/context` | Return one card's context thread as `{anchor, items, truncated}`. Items are `{card, swipes}` rows, oldest first, carrying full cards with bodies and every swipe. The thread joins the card, its transcript siblings, the cards of the panes it lived in within 48 h of each mention, the cards that launched those panes, and for an ingested card the newest 50 cards of its source, capped at the newest 100. 404 when the card is unknown. |
+| GET | `/v1/push?endpoint=URL` | Return `{key, max_priority}`, the daemon's VAPID public key (base64url) and the level stored for that push endpoint, `null` when it is not subscribed. |
+| POST | `/v1/push/subscribe` | Store a browser push subscription, the `PushSubscription.toJSON()` fields plus `max_priority` from 1 to 5. A new card reaches the device when its priority is at most that level. Subscribing again with the same endpoint replaces its keys and level. 400 with the reason when a field is invalid, such as an endpoint that is not https. |
+| POST | `/v1/push/unsubscribe` | Remove the subscription for `endpoint`. Returns `{ok:true}` also when it was not stored. |
+| POST | `/v1/push/test` | Send a test notification to the subscription for `endpoint`. 404 when it is not subscribed, 410 when the push service dropped it, which also deletes the row, and 502 with the push service's answer when it refused the push. |
+| GET | `/v1/panes/{pane}/peek` | Return the pane's redacted visible screen with its `width` and `height` in cells and its asking, waiting, working, or other state. |
+| POST | `/v1/panes/{pane}/send` | Send text to a waiting omp pane when its editor is empty and text passes safety checks. |
+| POST | `/v1/panes/{pane}/jump` | Jump tmux to a pane. |
+
+## CLI
+
+- `triage serve [--listen 127.0.0.1:7340] [--db PATH] [--session NAME] [--model SELECTOR] [--thinking LEVEL] [--allow-host HOST]... [--no-notify]` starts the server and pane tracker.
+- `triage emit [FILE|-]` posts a CloudEvent from a JSON file or standard input.
+- `triage finding --source URI --title T [--situation TEXT] [--task TEXT] [--action TEXT] [--result TEXT] [--option LABEL]... [--ref PATH]... [--org-id ID] [--cwd DIR] [--priority N] [--id ID]` posts a finding event.
+- `triage queue` prints the queue as JSON.
+- `triage status-line` prints the tmux status count, or nothing when the queue is empty, and `✋?` when the daemon is unreachable.
+- `deploy/finding-example.sh` shows a scheduled job posting a finding.
+
+The client commands use `TRIAGE_URL` when set. Otherwise they connect to `http://127.0.0.1:7340`.
+
+## Build and install
+
+Build with `cargo build --release`, then copy `target/release/triage` to `~/.local/bin/triage`. Install `deploy/triage.service` as `~/.config/systemd/user/triage.service`, then run `systemctl --user enable --now triage.service`.
+
+## Requirements
+
+Triage needs Linux, tmux, and `omp` on `PATH`; `notify-send` provides the desktop notifications, and `--no-notify` turns them off. Browser push notifications need the inbox on HTTPS or localhost, and on iPhone and iPad they need iOS 16.4 or newer with the inbox added to the Home Screen. Building requires Rust 1.89 or newer, because the locked `uuid 1.28.0` declares `rust-version = "1.89"`. The test suite also needs Node.js, `curl`, `jq`, and `ss`.
+
+## Configuration
+
+Settings are `triage serve` flags; there is no configuration file. Put them on the `ExecStart` line of your copy of `deploy/triage.service`.
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--listen` | `127.0.0.1:7340` | Address the daemon binds. |
+| `--db` | `$XDG_DATA_HOME/triage/triage.db` or `~/.local/share/triage/triage.db` | SQLite database; briefs go in `briefs/` beside it. |
+| `--session` | `triage` | tmux session new windows open in. The session must exist. |
+| `--model` | omp's own model | Model for every new window triage opens unless the compose sheet or a Plan into dispatch names one. A brief sent to an already running source pane keeps that pane's model and thinking level, except that a plan dispatch turns on omp's plan mode, which moves a pane triage did not launch onto that pane's own `plan` role model. |
+| `--thinking` | omp's own level | Thinking level for launched sessions; accepts `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
+| `--allow-host` | none | Repeatable. Host names accepted besides `localhost`, `127.0.0.1` and `::1`. |
+| `--no-notify` | off | Turns off `notify-send` notifications on the daemon's machine. Browser push is set per device in the inbox's Notifications sheet. |
+
+An invalid `--model` or `--thinking` stops the daemon at startup, for example `ExecStart=%h/.local/bin/triage serve --session work --model provider/model-id --thinking high --allow-host my-machine.my-tailnet.ts.net`. Client commands read `TRIAGE_URL`.
+
+## Web inbox
+
+The web UI is served at `/`. Keyboard controls are digits to choose an option, Enter to confirm the primary action (the recommended option, on a report card its recommended step, or on an info card with a pane, Acknowledge & close), `o` for Other text, `n` for note, `i` to open the Dispatch sheet with Investigate preselected (`i` then Enter dispatches an investigation), `a` to preselect Act, `p` to preselect Plan, `P` to preselect Plan into, `x` to acknowledge the card and close its tmux pane, exiting the harness in it, `s` to skip, `l` to defer, `v` to peek at the source pane, `t` for the shown card's context thread, `J` to jump to it, `c` to open Compose for a new omp session from your own prompt (with a Mode control for Goal, Plan and Plan into), `h` for history, `j` and `k` to move through cards, and `?` for help. On an info card with a tmux pane, Acknowledge & close is the primary button and plain Acknowledge is a secondary button next to Dispatch; without a pane the primary is Acknowledge. A report card whose report recommends a step shows Do as recommended as the primary button instead, and declining the step is Acknowledge & close, Skip or Later.
+
+The top bar and the card share one centered column. The card head shows the card's place in the deck, such as `1 of 7`, beside a rail with one bar per waiting card in deck order. Higher-priority cards get taller bars, and the shown card's bar is blue. Under the title, a row of facts gives the source, directory, pane, kind, priority and waiting time. From 1100px wide, the evidence (Situation, Plan, Task and Result) fills the left column and the Action options fill the right, so the answer stays beside what it answers. When the window is also at least 760px tall, the Action column stays in view while the evidence scrolls. Narrower screens stack the evidence above the Action block, which then sits next to the dock. Plan cards show their plan under Plan, and info cards show their final reply only under Result. Card text renders as Markdown. The evidence blocks and the final reply show headings, lists, tables, quotes, code blocks, emphasis and links, and titles and option text show code and emphasis without links. Raw HTML shows as literal text, only http, https and mailto links become links, each opens in a new tab, and images show as links instead of loading. A body that parses as JSON shows as one code block. The parser is marked, vendored as `ui/marked.js` with its MIT license in `ui/marked.LICENSE.md`, and the inbox builds the elements from its tokens, so card text never passes through `innerHTML`. When an ask's task repeats its title, the card has no separate Task block. Dock buttons show their keys, as do header buttons on screens wider than 800px, and touch screens hide every key hint. On phones the facts drop their labels and run together under the source name, and the four counts fold into a single total that opens them. The text uses Geist and Geist Mono, and the daemon serves both fonts from `ui/fonts/`.
+
+Every history row has a Context control that opens the card's thread and a Reload control that puts a fresh copy of that card back in the deck.
+
+The manifest and Apple touch icon enable home-screen installation, and the service worker precaches the shell and its fonts for a standalone launch. It also shows push notifications, and a tap on one focuses an open inbox or opens a new one. API and SSE requests always use the network. Shell requests go to the network first and refresh the cache, so a deploy shows on the next load and the cached shell serves only when the daemon is unreachable. The daemon gzips responses for clients that accept it, except fonts, images and the event stream. Shell files carry one ETag with `no-cache`, so a load that finds nothing new revalidates them with 304s.
+
+The bell in the header opens the Notifications sheet, which turns push notifications on or off for the browser in hand. Each browser holds one subscription with its own level. Urgent sends priority-1 cards (asks, plans and urgent alerts), Important, the default, adds the priority-2 findings, and Everything sends every new card, session reports included. Send test pushes a test notification to that browser, and Turn off removes its subscription. A notification shows the card's title and source, and its tag is the card id, so a card that returns replaces its old notification, and the inbox closes the notifications of handled cards whenever it comes to the front. The daemon creates its VAPID key on first start and keeps it in its database, so subscriptions survive restarts. Push works whether or not `--no-notify` is set.
+
+When the event stream drops with no cards waiting, the inbox shows Daemon unreachable only after the drop lasts 4 s, so a phone coming back from the background does not flash it. Its Retry now button reconnects at once instead of waiting out the backoff, and on phones the view is a compact centered status line rather than a framed card.
+
+A card answer or dispatch never opens a window in the session you are working in. The brief goes to the card's own waiting pane, and when the card has none, a new window opens in the daemon's `--session`, default `triage`. New sessions from the compose sheet open there too unless the sheet names a session. Every new window gets the daemon's `--model` and `--thinking` when they are set, and the same model as omp's `--plan` role, so plan mode does not switch models, so a change to omp's default model does not move triage launches; unset, omp's defaults apply. The window is left unnamed so tmux keeps `automatic-rename` on and the status bar follows omp's live pane title, the session's spinner and title card. Starting one leaves the inbox on the queue instead of opening the pane. Their asks and final report arrive as cards like any other pane, and the peek panel's send box carries on the conversation.
+
+When several devices use the inbox, every change appears on each client within a second. If another client handles the shown card, the inbox announces “Handled elsewhere” and moves on; the daemon refuses a second answer with 409. An action moves the inbox to the next card at once while the daemon types the answer in the background, and card actions on one pane run one at a time. If the action then fails, such as a tmux launch error, the daemon returns 422 with the reason, the inbox shows it as an error, and the card returns to the deck with its draft.
+
+Peek fills the viewport and lays the pane's visible screen out as tmux does, with no wrapped rows. Fit mode sizes the font so every column fits the width; Readable mode uses 12px text with horizontal scrolling. The header button or `f` switches modes and the choice persists in the browser. A peek opens in Readable when Fit would need text under 8px, and a portrait phone then shows a hint to rotate when the long side would fit. Fit falls back to Readable when its text would drop under 4px. A pane that fits at 8px or more, such as an 80-column pane on a phone, opens in Fit.
+
+Long titles clamp to two lines on every card, with a Show more toggle in the header that reveals the rest. Toasts and history rows clamp long titles the same way, so one card's title can never push the actions out of reach or cover the screen.
+
+`tests/ui-checks.js` holds the browser regression checks. Open the inbox, paste the file into the DevTools console or load it with the Chrome MCP `evaluate_script` tool, then call `checkTriage('<scenario>')` and read the result or the assertion message. Scenarios are `peek`, `dimensions`, `portrait` and `landscape`, which need the pane peek open and loaded first, plus `offline`, `recovery`, `finding-other`, `compose-stays`, `picker`, `dispatch`, `history-retry`, `long-title`, `mobile-card`, `pwa`, `plan-into` and `notify`, which run from the inbox view. `long-title` needs the shown card to carry a title longer than two lines, `mobile-card` needs a card with options in a viewport at most 639px wide, and `plan-into` needs a card in the queue. `picker` checks the full-screen phone layout at most 639px wide and the dropdown layout above that. `notify` checks that the header fits with the bell and that the Notifications sheet offers Turn on exactly when the device can subscribe.
+
+For remote access, publish the server on a tailnet with `tailscale serve --bg --https=7340 http://127.0.0.1:7340`. That gives `https://<machine>.<tailnet>.ts.net:7340/` with a Tailscale certificate and tailnet-only reach. Start the daemon with `--allow-host <machine>.<tailnet>.ts.net` so it accepts that host name. The published port must match the `--listen` port or be the default HTTPS port. The server has no authentication of its own, so never expose it beyond the tailnet. `tailscale serve --https=7340 off` removes it.
+
+## Scope and limits
+
+The default address is `http://127.0.0.1:7340`. Omp is the only harness understood today. Omp's native Plan Review overlay is the first signature in a generic screen-signature → card → keys relay. Claude Code's `--permission-mode plan` and other harnesses can use the same path as future signature rows, without new plumbing. Multi-select asks appear in the inbox but must be answered in their pane; multi-question asks are answered through the inbox step by step. A restored pane that gets the same pane id its reply had before keeps the old card id, which still blocks a re-queue. A report from a session omp resumed under a new pane id after a tmux restart, or one the exit audit queues after its pane is gone, has no Situation or Task.
+A pane that vanishes while the daemon is down is never audited, because the tracker's seen-set lives in memory.
+
+## Known Issues
+
+Two performance limits are known. Each poll tick scans and parses every open and deferred card under the database mutex, and the poller runs the full queue query twice per tick. Open behavior limits are the ones under Scope and limits.
+
+## Development
+
+Run `cargo test --release`, `node --check ui/app.js && node --check ui/sw.js`, `node --test tests/*.test.js`, and `cargo build && tests/smoke.sh`. The smoke test uses `target/debug/triage` unless `TRIAGE_BIN` names another binary.
+
+## License
+
+MIT. See `LICENSE`. The bundled Geist and Geist Mono fonts in `ui/fonts/` are under the SIL Open Font License 1.1, in `ui/fonts/OFL.txt`.

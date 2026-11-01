@@ -1,0 +1,17 @@
+ ⎋ Working…
+
+╭─ Ask ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  f1    f2    color    Submit                                                                                         │
+│ F1 — landing.md, hero section (NEW COPY). The spring campaign hero headline needs a tone; the current draft reads    │
+│ formal and the campaign brief asks for warmth. Which tone should the headline use?                                   │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ❯ ○ Formal (Recommended)                                                                                             │
+│   ○ Playful                                                                                                          │
+│   ○ Other (type your own)                                                                                            │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ⏎ select · n note · ↑/↓ move · ⇥/←/→ question · ⎋ cancel · Alt+H hide                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⬢ Example Model (272K) · ◔ low · 🗑 example-session    📋 OMP: Choose landing copy · 🪙 24K · $0.00 · ◫ 8.2%/272K ⟲
