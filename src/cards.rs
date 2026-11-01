@@ -925,6 +925,7 @@ fn queue_turn_card(
     end: omp::TurnEnd,
     written: &mut usize,
 ) -> bool {
+    let (trail, investigation) = pane_trail(db, pane);
     let headline_of = |source: &str| {
         truncate_chars(
             source
@@ -971,18 +972,25 @@ fn queue_turn_card(
                 Some((omp::FinalStatus::AgentDone, _)) => format!("Agent done: {headline}"),
                 Some((omp::FinalStatus::Incomplete, _)) => format!("Incomplete: {headline}"),
             };
-            let mut body = match reported {
+            let body = match reported {
                 None => source.to_owned(),
                 Some((_, _)) if missing_report => {
                     "Status received without a final report.".to_owned()
                 }
                 Some((_, report)) => report.to_owned(),
             };
-            let mut action = String::new();
-            if let Some((rest, step)) = omp::recommended_action(&body) {
-                body = rest;
-                action = step;
-            }
+            // Only an investigation's report owes a next step, so only it may move its
+            // `Recommended action:` line onto the card as the dispatchable action; every
+            // other launch carried the work out, and its leftover line is advice that
+            // stays in the body.
+            let (mut body, action) = if investigation {
+                match omp::recommended_action(&body) {
+                    Some((rest, step)) => (rest, step),
+                    None => (body, String::new()),
+                }
+            } else {
+                (body, String::new())
+            };
             if carried.is_some() {
                 body.push_str("\n\n---\n\n");
                 body.push_str(&text);
@@ -1002,7 +1010,7 @@ fn queue_turn_card(
         created_ms: events::now_ms(),
         source: pane_source(pane),
         title,
-        star: Star { action, ..pane_trail(db, pane) },
+        star: Star { action, ..trail },
         options: vec![CardOption {
             label: "Acknowledge".to_owned(),
             description: None,
@@ -1035,12 +1043,12 @@ fn queue_turn_card(
 /// report the user answers again keeps the first card's title, so a chain of follow-ups stays on
 /// one topic. Only launches since the pane's pty appeared count, because tmux reuses pane ids
 /// after a server restart.
-fn pane_trail(db: &Db, pane: &tmux::Pane) -> Star {
+fn pane_trail(db: &Db, pane: &tmux::Pane) -> (Star, bool) {
     let Some((origin, swipe)) = pane
         .pty_born_ms()
         .and_then(|born| db.pane_launch_since(&pane.id, born).ok().flatten())
     else {
-        return Star::default();
+        return (Star::default(), false);
     };
     let choice = swipe.text.or_else(|| {
         swipe
@@ -1048,6 +1056,13 @@ fn pane_trail(db: &Db, pane: &tmux::Pane) -> Star {
             .and_then(|index| origin.options.get(index))
             .map(|option| option.label.clone())
     });
+    // A read-only launch asked the session for an answer, so its report's recommended
+    // step is the one thing still waiting on the user. Any other launch sent the
+    // session to carry the work out, so its report owes nothing.
+    let investigation = choice
+        .as_deref()
+        .is_some_and(|label| option_mode(&CardOption { label: label.to_owned(), ..CardOption::default() })
+            == DispatchMode::Investigate);
     let note = swipe
         .note
         .as_deref()
@@ -1059,11 +1074,14 @@ fn pane_trail(db: &Db, pane: &tmux::Pane) -> Star {
     } else {
         origin.title
     };
-    Star {
-        situation,
-        task: choice.into_iter().chain(note).collect::<Vec<_>>().join(" · "),
-        ..Star::default()
-    }
+    (
+        Star {
+            situation,
+            task: choice.into_iter().chain(note).collect::<Vec<_>>().join(" · "),
+            ..Star::default()
+        },
+        investigation,
+    )
 }
 
 /// The prefix and entry of a reply card id: `done:%3:a1` and `done:%12:a1` name one
@@ -2064,8 +2082,9 @@ const INVESTIGATE_STATUS_CONTRACT: &str = "When finished, end with a final reply
 
 /// How every brief's final reply reads after its status line. The first line becomes the
 /// card title, so it names the outcome, and the last names the next step, which the card
-/// shows under Action. Without a shape and a limit, sessions narrate every check they ran.
-const REPORT_STEP: &str = " Then report in caveman style, four short lines at most: the answer or outcome first, then the evidence that settles it, then what changed or `Changed nothing`, and last a line that starts `Recommended action:` and names the one next step, complete enough to carry out as written, or reads `Recommended action: none` when nothing needs doing. Leave out how you checked.\n";
+/// may offer as its Do as recommended button. Without a shape and a limit, sessions
+/// narrate every check they ran.
+const REPORT_STEP: &str = " Then report in caveman style, four short lines at most: the answer or outcome first, then the evidence that settles it, then what changed or `Changed nothing`, and last a line that starts `Recommended action:` and names the one next step an agent session could start and finish now, complete enough to carry out as written. Advice for future work, standing rules, and steps already finished are no step; write `Recommended action: none`. Leave out how you checked.\n";
 
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
@@ -3477,9 +3496,10 @@ esac
             .unwrap();
         };
         let trail = || {
-            let star = pane_trail(&db, &live);
+            let (star, _) = pane_trail(&db, &live);
             (star.situation, star.task)
         };
+        let investigation = || pane_trail(&db, &live).1;
 
         let mut earlier = finding_card(scratch.path());
         earlier.title = "An earlier tmux server's card".to_owned();
@@ -3496,15 +3516,17 @@ esac
         assert_eq!(trail(), (topic.clone(), "Defer · Note: so what should i do?".to_owned()));
 
         let mut report = info_card("done:%12:r1", "%12");
-        report.star = pane_trail(&db, &live);
+        report.star = pane_trail(&db, &live).0;
         db.insert_card(&report).unwrap();
         launch(&report.id, "launched %12", born + 3, None, Some("Investigate"), None);
         assert_eq!(trail(), (topic.clone(), "Investigate".to_owned()));
+        assert!(investigation(), "an Investigate dispatch leaves its step awaiting approval");
 
         let ask = ask_card("%12", "ask-call");
         db.insert_card(&ask).unwrap();
         launch(&ask.id, "acting %12", born + 4, None, Some("Act"), None);
         assert_eq!(trail(), (ask.title.clone(), "Act".to_owned()));
+        assert!(!investigation(), "an Act launch owes no next step");
     }
 
     // On 2026-11-01 the %46 card reported an access-audit investigation whose answer ended
@@ -3515,11 +3537,13 @@ esac
     #[test]
     fn investigation_report_card_carries_its_recommended_action() {
         if let Some(root) = child_root("investigation_report_card_carries_its_recommended_action") {
+            let (_pty, tty) = new_pty();
+            fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
             fs::write(root.join("tmux-waiting"), b"").unwrap();
             let transcript = root.join("transcript.jsonl");
             write_transcript(
                 &root,
-                "/dev/pts/12",
+                &tty,
                 &transcript,
                 &[assistant_text_line(
                     "assistant-report",
@@ -3527,6 +3551,19 @@ esac
                 )],
             );
             let db = Db::open(&root.join("triage.db")).unwrap();
+            let finding = finding_card(&root);
+            db.insert_card(&finding).unwrap();
+            db.swipe(&Swipe {
+                card: finding.id.clone(),
+                action: "done".to_owned(),
+                option: None,
+                text: Some("Investigate".to_owned()),
+                note: None,
+                until_ms: None,
+                reason: Some("launched %12".to_owned()),
+                at_ms: events::now_ms(),
+            })
+            .unwrap();
             let mut tracker = Tracker::default();
             let written = tracker.tick(&db).written;
             let card = db
@@ -3555,6 +3592,72 @@ esac
         );
     }
 
+
+    // Regression: on 2026-11-01 an act dispatch reported "complete" but left a
+    // standing rule as its `Recommended action:` line, and the card offered
+    // "Do as recommended" for advice no session could carry out. A launch that
+    // carried the work out owes no next step, so its line stays in the body.
+    #[cfg(unix)]
+    #[test]
+    fn act_report_keeps_its_recommended_line_in_the_body() {
+        if let Some(root) = child_root("act_report_keeps_its_recommended_line_in_the_body") {
+            let (_pty, tty) = new_pty();
+            fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
+            fs::write(root.join("tmux-waiting"), b"").unwrap();
+            let transcript = root.join("transcript.jsonl");
+            write_transcript(
+                &root,
+                &tty,
+                &transcript,
+                &[assistant_text_line(
+                    "assistant-report",
+                    "ENVOY_STATUS: complete\n\nSkill updated.\n\nRecommended action: next cold-email task, read the field data first.",
+                )],
+            );
+            let db = Db::open(&root.join("triage.db")).unwrap();
+            let finding = finding_card(&root);
+            db.insert_card(&finding).unwrap();
+            db.swipe(&Swipe {
+                card: finding.id.clone(),
+                action: "done".to_owned(),
+                option: None,
+                text: Some("Act".to_owned()),
+                note: None,
+                until_ms: None,
+                reason: Some("launched %12".to_owned()),
+                at_ms: events::now_ms(),
+            })
+            .unwrap();
+            let mut tracker = Tracker::default();
+            let written = tracker.tick(&db).written;
+            let card = db
+                .queue(events::now_ms())
+                .unwrap()
+                .into_iter()
+                .find(|card| card.id == "done:%12:assistant-report");
+            let card = card
+                .as_ref()
+                .and_then(|card| card.body.as_deref().map(|body| (card.star.action.is_empty(), body)));
+            assert!(
+                written == 1
+                    && card.is_some_and(|(no_action, body)| {
+                        no_action
+                            && body.contains("Recommended action: next cold-email task, read the field data first.")
+                    }),
+                "card: {card:?}"
+            );
+            return;
+        }
+
+        let scratch = Scratch::new();
+        let bin = fake_tmux(scratch.path());
+        run_child(
+            "act_report_keeps_its_recommended_line_in_the_body",
+            scratch.path(),
+            Some(scratch.path()),
+            Some(&bin),
+        );
+    }
     #[cfg(unix)]
     #[test]
     fn agent_done_report_names_the_open_step() {
