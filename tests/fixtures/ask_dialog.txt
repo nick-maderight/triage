@@ -1,0 +1,39 @@
+
+                                            ████████████    
+                                               ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                                               ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                                               ▒▒  ██                  █
+                                                   ██       v18.11.3
+
+                        Tip: Try starting your prompt with a ->, and writing a list (1. Do X, 2.
+                                                         Do Y)
+
+ Connected to MCP servers: example-server.                                                                              
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available                                                                                                       
+ New version 18.12.1 is available. Run: omp update                                                                      
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+                                                                                                                        
+ Call the ask tool exactly once with one question 'Which color should the button be?' and three options: Red, Green,    
+ Blue. Mark Green as recommended with description 'matches the brand'. Do nothing else and reply with one word after.   
+                                                                                                                        
+
+ 2026-10-17 17:10:21  Δ 5.9s  ⤵ 29K  ⤴ 241  ⏱ 2.0s  ⚡ 99.4/s                                                           
+
+  ⎋ Choosing button color     
+
+╭─ Ask ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Which color should the button be?                                                                                    │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│   ○ Red                                                                                                              │
+│ ❯ ○ Green (Recommended)                                                                                              │
+│       matches the brand                                                                                              │
+│   ○ Blue                                                                                                             │
+│   ○ Other (type your own)                                                                                            │
+│                                                                                                                      │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ⏎ select · n note · ↑/↓ move · ⎋ cancel · Alt+H hide                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⬢ Example Model (272K) · ◒ high · 🗑 example-session    🎨 COLOR: Choose button color · 🪙 29K · $0.00 · ◫ 10.6%/272K ⟲ 

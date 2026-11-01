@@ -1,0 +1,2 @@
+{"type":"message","id":"4d2c002e","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_bdrk_01F9sZDXkT5zNBmzjiCthZTN","name":"write","arguments":{"path":"xd://propose","content":"planverify-proof"}}]}}
+{"type":"message","id":"6a2082eb","message":{"role":"toolResult","toolCallId":"toolu_bdrk_01F9sZDXkT5zNBmzjiCthZTN","toolName":"write","content":[{"type":"text","text":"Plan ready for review."}],"details":{"xdev":{"tool":"propose","inner":{"planFilePath":"local://planverify-proof-plan.md","title":"planverify-proof"}}},"isError":false}}

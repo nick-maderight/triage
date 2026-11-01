@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Triage — decision inbox</title>
+<meta name="description" content="A quiet decision inbox for coding-agent sessions. Review each request and answer, skip, or snooze it.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2040%2040'%3E%3Crect%20width='40'%20height='40'%20rx='8'%20fill='%23141414'/%3E%3Cpath%20d='M11%2012h18M15%2020h14M19%2028h10'%20stroke='%23ffffff'%20stroke-width='3'%20stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Triage">
+<meta name="theme-color" content="#f2f4f7">
+<link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script>
+try {
+  var t = localStorage.getItem('triage-theme');
+  if (t !== 'light' && t !== 'dark')
+    t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.dataset.theme = t;
+  if (t === 'dark') document.querySelector('meta[name="theme-color"]').content = '#0a0a0a';
+} catch {}
+</script>
+<script src="marked.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main" data-od-id="skip-link">Skip to card</a>
+<header class="top" data-od-id="header">
+<nav class="bar" aria-label="Inbox" data-od-id="header-nav">
+<h1 class="brand" data-od-id="wordmark"><svg class="brand-symbol" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 5h18M7 12h14M11 19h10" stroke-width="2.5" stroke-linecap="round"/></svg><span class="brand-name">Triage</span></h1>
+<span class="workspace-name">Personal inbox</span>
+<button type="button" class="count-toggle" id="count-toggle" aria-label="Toggle card counts" aria-controls="counts" aria-expanded="false" data-od-id="count-toggle">…</button>
+<ul class="counts" id="counts" aria-label="Cards waiting by kind" data-od-id="counts"></ul>
+<div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite" data-od-id="connection"><span class="connection-dot" aria-hidden="true"></span><span class="connection-label">Connecting</span></div>
+<div class="top-actions" data-od-id="header-actions">
+<button type="button" class="btn ghost square" id="btn-notify" aria-label="Notifications" aria-haspopup="dialog" data-od-id="notify-button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+<button type="button" class="btn ghost square" id="btn-theme" aria-label="Switch to dark mode" data-od-id="theme-toggle"></button>
+<button type="button" class="btn ghost" id="btn-compose" aria-keyshortcuts="c" data-od-id="compose-button"><svg class="compose-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="compose-label">New session</span> <kbd class="hint" aria-hidden="true">c</kbd></button>
+<button type="button" class="btn ghost" id="btn-history" aria-keyshortcuts="h" data-od-id="history-button">History <kbd class="hint" aria-hidden="true">h</kbd></button>
+<button type="button" class="btn ghost square" id="btn-keys" aria-label="Keyboard shortcuts" aria-keyshortcuts="?" data-od-id="keys-button">?</button>
+</div>
+</nav>
+</header>
+<main id="main" tabindex="-1" aria-label="Decision inbox" data-od-id="card-stage"></main>
+<div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true" data-od-id="announcer"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite" data-od-id="toasts"></div>
+<dialog id="peek" class="sheet" aria-labelledby="peek-title" data-od-id="peek-panel">
+<header class="sheet-head" data-od-id="peek-header">
+<h2 id="peek-title" data-od-id="peek-title">Peek <code id="peek-target"></code></h2>
+<span class="state" id="peek-state">…</span>
+<button type="button" class="btn ghost" id="peek-mode" aria-keyshortcuts="f" aria-label="Switch to Readable mode" data-od-id="peek-mode">Fit</button>
+<button type="button" class="btn ghost" data-close data-od-id="peek-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<p class="peek-fit-hint" id="peek-fit-hint" hidden data-od-id="peek-fit-hint">Landscape fits the whole screen.</p>
+<pre class="pane" id="peek-text" tabindex="0" aria-label="Pane contents" data-od-id="peek-contents"></pre>
+<form class="send" id="peek-form" data-od-id="peek-form">
+<label for="peek-input" class="sr-only">Text to send to the pane</label>
+<input class="field" id="peek-input" type="text" autocomplete="off" enterkeyhint="send" placeholder="Send text to the pane" disabled data-od-id="peek-input">
+<button type="submit" class="btn primary" id="peek-send" disabled data-od-id="peek-send">Send</button>
+</form>
+<p class="send-hint" id="peek-hint" aria-live="polite" data-od-id="peek-hint"></p>
+</dialog>
+<dialog id="history" class="sheet" aria-labelledby="history-title" data-od-id="history-drawer">
+<header class="sheet-head" data-od-id="history-header">
+<h2 id="history-title" data-od-id="history-title">History</h2>
+<button type="button" class="btn ghost" data-close data-od-id="history-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<ol class="history" id="history-list" data-od-id="history-list"></ol>
+</dialog>
+<dialog id="context" class="sheet" aria-labelledby="context-title" data-od-id="context-drawer">
+<header class="sheet-head" data-od-id="context-header">
+<h2 id="context-title" data-od-id="context-title">Context</h2>
+<button type="button" class="btn ghost" data-close data-od-id="context-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<ol class="context" id="context-list" data-od-id="context-list"></ol>
+<p class="send-hint" id="context-hint" aria-live="polite" data-od-id="context-hint"></p>
+</dialog>
+<dialog id="compose" class="modal" aria-labelledby="compose-title" data-od-id="compose-sheet">
+<header class="sheet-head" data-od-id="compose-header">
+<h2 id="compose-title" data-od-id="compose-title">New session</h2>
+<button type="button" class="btn ghost" data-close data-od-id="compose-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<form class="compose" id="compose-form" data-od-id="compose-form">
+<label for="compose-prompt">What should the session do?</label>
+<textarea class="field" id="compose-prompt" rows="4" required autocomplete="off" placeholder="Ask a question, give a task, or start a chat" data-od-id="compose-prompt"></textarea>
+<div class="compose-grid">
+<div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory</label>
+<button type="button" class="field picker-field" id="compose-cwd" value="" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
+<div class="pair"><label id="compose-session-label" for="compose-session">tmux session</label>
+<button type="button" class="field picker-field" id="compose-session" value="" aria-labelledby="compose-session-label compose-session" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-session"></button></div>
+<div class="pair"><label id="compose-model-label" for="compose-model">Model</label>
+<button type="button" class="field picker-field" id="compose-model" value="" aria-labelledby="compose-model-label compose-model" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-model"></button></div>
+<div class="pair"><label id="compose-thinking-label" for="compose-thinking">Thinking</label>
+<button type="button" class="field picker-field" id="compose-thinking" value="" aria-labelledby="compose-thinking-label compose-thinking" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-thinking"></button></div>
+</div>
+<span id="compose-mode-label" data-od-id="compose-mode-label">Mode</span>
+<div class="segmented" id="compose-mode" role="radiogroup" aria-labelledby="compose-mode-label" data-od-id="compose-mode">
+<button type="button" role="radio" class="seg" id="compose-mode-goal" data-mode="goal" aria-checked="true" data-od-id="compose-mode-goal">Goal</button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" data-od-id="compose-mode-plan">Plan</button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" data-od-id="compose-mode-plan-into">Plan into</button>
+</div>
+<p class="mode-help" id="compose-mode-help" data-od-id="compose-mode-help"></p>
+<div class="compose-grid" id="compose-models" hidden data-od-id="compose-models">
+<div class="pair"><label id="compose-executor-label" for="compose-executor">Execution model</label>
+<button type="button" class="field picker-field" id="compose-executor" value="" aria-labelledby="compose-executor-label compose-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor"></button></div>
+</div>
+<button type="submit" class="btn primary" id="compose-start" data-od-id="compose-start">Start</button>
+</form>
+<p class="send-hint" id="compose-hint" aria-live="polite" data-od-id="compose-hint"></p>
+</dialog>
+<dialog id="picker" class="picker" aria-labelledby="picker-title" data-od-id="picker">
+<header class="sheet-head" data-od-id="picker-header">
+<h2 id="picker-title" data-od-id="picker-title">Choose</h2>
+<button type="button" class="btn ghost" data-close data-od-id="picker-close">Cancel</button>
+</header>
+<div class="picker-body" data-od-id="picker-body">
+<input class="field" id="picker-search" type="text" role="combobox" aria-labelledby="picker-title" aria-autocomplete="list" aria-expanded="true" aria-controls="picker-list" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="done" data-od-id="picker-search">
+<ul class="picker-list" id="picker-list" role="listbox" aria-labelledby="picker-title" data-od-id="picker-list"></ul>
+<p class="picker-empty" id="picker-empty" hidden data-od-id="picker-empty">No match</p>
+</div>
+</dialog>
+<dialog id="dispatch" class="modal" aria-labelledby="dispatch-title" data-od-id="dispatch-sheet">
+<header class="sheet-head" data-od-id="dispatch-header">
+<h2 id="dispatch-title" data-od-id="dispatch-title">Dispatch</h2>
+<button type="button" class="btn ghost" data-close data-od-id="dispatch-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<form class="compose" id="dispatch-form" data-od-id="dispatch-form">
+<span id="dispatch-mode-label" data-od-id="dispatch-mode-label">Mode</span>
+<div class="segmented" id="dispatch-mode" role="radiogroup" aria-labelledby="dispatch-mode-label" data-od-id="dispatch-mode">
+<button type="button" role="radio" class="seg" id="dispatch-mode-investigate" data-mode="investigate" aria-checked="true" aria-keyshortcuts="i" data-od-id="dispatch-mode-investigate">Investigate</button>
+<button type="button" role="radio" class="seg" id="dispatch-mode-act" data-mode="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="a" data-od-id="dispatch-mode-act">Act</button>
+<button type="button" role="radio" class="seg" id="dispatch-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="dispatch-mode-plan">Plan</button>
+<button type="button" role="radio" class="seg" id="dispatch-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="Shift+P" data-od-id="dispatch-mode-plan-into">Plan into</button>
+</div>
+<p class="mode-help" id="dispatch-mode-help" data-od-id="dispatch-mode-help"></p>
+<div class="compose-grid" id="dispatch-models" hidden data-od-id="dispatch-models">
+<div class="pair"><label id="dispatch-model-label" for="dispatch-model">Planner model</label>
+<button type="button" class="field picker-field" id="dispatch-model" value="" aria-labelledby="dispatch-model-label dispatch-model" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-model"></button></div>
+<div class="pair"><label id="dispatch-executor-label" for="dispatch-executor">Execution model</label>
+<button type="button" class="field picker-field" id="dispatch-executor" value="" aria-labelledby="dispatch-executor-label dispatch-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-executor"></button></div>
+</div>
+<label for="dispatch-note">Instruction</label>
+<textarea class="field" id="dispatch-note" rows="4" autocomplete="off" placeholder="Optional direction for the session" data-od-id="dispatch-note"></textarea>
+<button type="submit" class="btn primary" id="dispatch-start" data-od-id="dispatch-start">Launch <kbd class="hint" aria-hidden="true">Ctrl+Enter</kbd></button>
+</form>
+<p class="send-hint" id="dispatch-hint" aria-live="polite" data-od-id="dispatch-hint"></p>
+</dialog>
+<dialog id="notify" class="modal" aria-labelledby="notify-title" data-od-id="notify-sheet">
+<header class="sheet-head" data-od-id="notify-header">
+<h2 id="notify-title" data-od-id="notify-title">Notifications</h2>
+<button type="button" class="btn ghost" data-close data-od-id="notify-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<div class="compose" data-od-id="notify-body">
+<p id="notify-status" data-od-id="notify-status">Checking this device…</p>
+<span id="notify-level-label" data-od-id="notify-level-label">Notify this device about</span>
+<div class="segmented" id="notify-level" role="radiogroup" aria-labelledby="notify-level-label" data-od-id="notify-level">
+<button type="button" role="radio" class="seg" data-level="1" aria-checked="false" tabindex="-1" data-od-id="notify-level-urgent">Urgent</button>
+<button type="button" role="radio" class="seg" data-level="2" aria-checked="true" data-od-id="notify-level-important">Important</button>
+<button type="button" role="radio" class="seg" data-level="5" aria-checked="false" tabindex="-1" data-od-id="notify-level-all">Everything</button>
+</div>
+<p class="mode-help" id="notify-level-help" data-od-id="notify-level-help"></p>
+<div class="notify-actions" data-od-id="notify-actions">
+<button type="button" class="btn" id="notify-test" disabled data-od-id="notify-test">Send test</button>
+<button type="button" class="btn primary" id="notify-toggle" disabled data-od-id="notify-toggle">Turn on</button>
+</div>
+</div>
+<p class="send-hint" id="notify-hint" aria-live="polite" data-od-id="notify-hint"></p>
+</dialog>
+<dialog id="keys" class="modal" aria-labelledby="keys-title" data-od-id="shortcut-sheet">
+<header class="sheet-head" data-od-id="keys-header">
+<h2 id="keys-title" data-od-id="keys-title">Keyboard</h2>
+<button type="button" class="btn ghost" data-close data-od-id="keys-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<dl class="keys" data-od-id="keys-list">
+<dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Pick an option</dd>
+<dt><kbd>Enter</kbd></dt><dd>Recommended option / Acknowledge &amp; close</dd>
+<dt><kbd>o</kbd></dt><dd>Other answer</dd>
+<dt><kbd>n</kbd></dt><dd>Note sent with your choice</dd>
+<dt><kbd>i</kbd></dt><dd>Dispatch with Investigate preselected</dd>
+<dt><kbd>a</kbd></dt><dd>Dispatch with Act preselected</dd>
+<dt><kbd>p</kbd></dt><dd>Dispatch with Plan preselected</dd>
+<dt><kbd>P</kbd></dt><dd>Dispatch with Plan into preselected</dd>
+<dt><kbd>x</kbd></dt><dd>Acknowledge, exit the session and close its tmux pane</dd>
+<dt><kbd>s</kbd></dt><dd>Skip</dd>
+<dt><kbd>l</kbd></dt><dd>Later menu, then <kbd>1</kbd>–<kbd>3</kbd></dd>
+<dt><kbd>v</kbd></dt><dd>Peek at pane</dd>
+<dt><kbd>t</kbd></dt><dd>Context thread of the shown card</dd>
+<dt><kbd>J</kbd></dt><dd>Jump to tmux pane</dd>
+<dt><kbd>j</kbd> <kbd>k</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>Next / previous without acting</dd>
+<dt><kbd>h</kbd></dt><dd>History</dd>
+<dt><kbd>c</kbd></dt><dd>New omp session from your own prompt</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt><dd>Start the session from the New session sheet</dd>
+<dt><kbd>?</kbd></dt><dd>This sheet</dd>
+<dt><kbd>f</kbd></dt><dd>Fit / Readable in Peek</dd>
+<dt><kbd>Esc</kbd></dt><dd>Close a dialog or popover, or cancel inline Other</dd>
+</dl>
+</dialog>
+</body>
+</html>
