@@ -238,6 +238,10 @@ impl Tracker {
     ///   written after the pane's pty appeared or the pane's omp was started with
     ///   `--resume` or `--restore` of that session, so a restored shell reads no
     ///   transcript left on a reused pts number.
+    /// - A Waiting to Working or Asking transition records `done` on unresolved info cards
+    ///   from that pane instance with reason `resumed in pane`.
+    /// - A pane that stays Waiting checks its transcript again after it grows.
+    ///   The new reply replaces the older card.
     /// - omp gone from a pane whose shell survives (title and `pane_current_command` no
     ///   longer omp): the session is audited once per transcript version with the
     ///   outcomes of `audit_ended_session`. A pane omp was never seen running in reads
@@ -361,7 +365,12 @@ impl Tracker {
                         {
                             false
                         } else {
-                            match ask {
+                            let resumed = if previous == Some(PaneState::Waiting) {
+                                finish_resumed_cards(db, pane, &mut written)
+                            } else {
+                                true
+                            };
+                            resumed && match ask {
                                 Some((path, call)) => {
                                     add_ask_card(db, pane, path, call, &mut written)
                                 }
@@ -370,6 +379,9 @@ impl Tracker {
                         }
                     }
                     (Some(PaneState::Asking), _) => finish_asking(db, pane, None, &mut written),
+                    (Some(PaneState::Waiting), PaneState::Working) => {
+                        finish_resumed_cards(db, pane, &mut written)
+                    }
                     (Some(PaneState::Working) | None, PaneState::Waiting) => {
                         add_info_card(db, pane, &panes, &mut self.stalled_info, &mut written)
                     }
@@ -381,6 +393,9 @@ impl Tracker {
                     }
                     continue;
                 }
+            }
+            if state == PaneState::Waiting && previous == Some(PaneState::Waiting) {
+                add_info_card(db, pane, &panes, &mut self.stalled_info, &mut written);
             }
             if state == PaneState::Asking && (previous != Some(state) || ask_changed) {
                 if let Some((_, call)) = ask {
@@ -868,12 +883,12 @@ fn card_options(question: &omp::Question) -> Vec<CardOption> {
         .collect()
 }
 
-/// Queue the info card for a pane that turned Waiting, only when its run stopped:
-/// a final reply or an error, with no background-job wait or auto-retry on screen.
-/// A reply followed by a delivered background-job result (`async-result`) also means
-/// the run continues, so the check retries on later polls. An interrupt queues nothing.
-/// `false` means retry on the next poll; `stalled` remembers the transcript version
-/// that read as still running, so it is not parsed again.
+/// Queue an info card only when a pane that turned Waiting has finished its run.
+/// A final reply or error qualifies when the pane shows no background-job wait or
+/// automatic retry. A delivered background result after a reply means the run continues.
+/// Retry on a later poll. An interrupt queues nothing.
+/// `false` means retry on the next poll. `stalled` remembers the last checked version,
+/// even when the run continued. Unchanged files are not parsed again.
 fn add_info_card(
     db: &Db,
     pane: &tmux::Pane,
@@ -907,11 +922,14 @@ fn add_info_card(
         Ok(end) => end,
         Err(_) => return false,
     };
-    stalled.remove(&pane.id);
-    match end {
+    let succeeded = match end {
         None => true,
         Some(end) => queue_turn_card(db, pane, panes, &path, end, written),
+    };
+    if succeeded {
+        stalled.insert(pane.id.clone(), (path, length));
     }
+    succeeded
 }
 
 /// Queue the card a live pane gets when its run ends as `end`: a reply card, a
@@ -1433,6 +1451,35 @@ fn finish_asking_after_recheck(
             None,
             Some("answered in pane".to_owned()),
         ) {
+            *written += 1;
+        } else {
+            succeeded = false;
+        }
+    }
+    succeeded
+}
+
+/// Mark unresolved info cards from this pane instance as done when its session resumes.
+/// Return false when database access fails so the caller can retry.
+fn finish_resumed_cards(db: &Db, pane: &tmux::Pane, written: &mut usize) -> bool {
+    let Ok(cards) = db.unresolved_cards() else {
+        return false;
+    };
+    let mut succeeded = true;
+    for card in cards
+        .into_iter()
+        .filter(|card| card.kind == Kind::Info && raised_by_live_pane(card, std::slice::from_ref(pane)))
+    {
+        let answer_lock = db.answer_lock(&card.id);
+        let _answer_guard = answer_lock.lock().unwrap();
+        let Ok(Some((_, swipe))) = db.card(&card.id) else {
+            succeeded = false;
+            continue;
+        };
+        if swipe.as_ref().is_some_and(|swipe| swipe.action != "later") {
+            continue;
+        }
+        if record_swipe(db, &card.id, "done", None, None, None, Some("resumed in pane".to_owned())) {
             *written += 1;
         } else {
             succeeded = false;
@@ -4375,6 +4422,165 @@ esac
         );
     }
 
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_resume_closes_queued_report_cards() {
+        if let Some(root) = child_root("manual_resume_closes_queued_report_cards") {
+            fs::write(root.join("tmux-waiting"), b"").unwrap();
+            let transcript = root.join("transcript.jsonl");
+            write_transcript(
+                &root,
+                "/dev/pts/12",
+                &transcript,
+                &[
+                    user_line("u1", "Ship it."),
+                    assistant_entry("a1", "stop", Some("ENVOY_STATUS: complete\n\nShipped."), None),
+                ],
+            );
+            let db = Db::open(&root.join("triage.db")).unwrap();
+            let mut tracker = Tracker::default();
+            let written = tracker.tick(&db).written;
+            let queue = done_cards(&db);
+            assert!(written == 1 && queue.len() == 1 && queue[0].id == "done:%12:a1", "first tick: written {written}, queue {queue:?}");
+
+            fs::remove_file(root.join("tmux-waiting")).unwrap();
+            fs::write(root.join("tmux-working"), b"").unwrap();
+            let written = tracker.tick(&db).written;
+            let swipe = current_swipe(&db, "done:%12:a1");
+            let queue = done_cards(&db);
+            assert!(
+                written == 1
+                    && queue.is_empty()
+                    && swipe.action == "done"
+                    && swipe.reason.as_deref() == Some("resumed in pane"),
+                "second tick: written {written}, queue {queue:?}, swipe {swipe:?}"
+            );
+            return;
+        }
+
+        let scratch = Scratch::new();
+        let bin = fake_tmux(scratch.path());
+        run_child("manual_resume_closes_queued_report_cards", scratch.path(), Some(scratch.path()), Some(&bin));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_resume_through_a_question_closes_report_cards() {
+        if let Some(root) = child_root("manual_resume_through_a_question_closes_report_cards") {
+            fs::write(root.join("tmux-waiting"), b"").unwrap();
+            let transcript = root.join("transcript.jsonl");
+            write_transcript(
+                &root,
+                "/dev/pts/12",
+                &transcript,
+                &[
+                    user_line("u1", "Ship it."),
+                    assistant_entry("a1", "stop", Some("ENVOY_STATUS: complete\n\nShipped."), None),
+                ],
+            );
+            let db = Db::open(&root.join("triage.db")).unwrap();
+            let mut tracker = Tracker::default();
+            assert_eq!(tracker.tick(&db).written, 1);
+
+            fs::remove_file(root.join("tmux-waiting")).unwrap();
+            let mut lines = fs::read_to_string(&transcript).unwrap();
+            lines.push_str(&format!("{}\n", ask_call("call-2", &["Red", "Blue"])));
+            fs::write(&transcript, lines).unwrap();
+            let written = tracker.tick(&db).written;
+            let report_swipe = current_swipe(&db, "done:%12:a1");
+            let queue = db.queue(events::now_ms()).unwrap();
+            assert!(
+                written == 2
+                    && report_swipe.reason.as_deref() == Some("resumed in pane")
+                    && queue.iter().any(|card| card.id == "ask:%12:call-2"),
+                "second tick: written {written}, queue {queue:?}, report swipe {report_swipe:?}"
+            );
+            return;
+        }
+
+        let scratch = Scratch::new();
+        let bin = fake_tmux(scratch.path());
+        run_child("manual_resume_through_a_question_closes_report_cards", scratch.path(), Some(scratch.path()), Some(&bin));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_between_polls_supersedes_report_card() {
+        if let Some(root) = child_root("resume_between_polls_supersedes_report_card") {
+            fs::write(root.join("tmux-waiting"), b"").unwrap();
+            let transcript = root.join("transcript.jsonl");
+            write_transcript(
+                &root,
+                "/dev/pts/12",
+                &transcript,
+                &[
+                    user_line("u1", "Ship it."),
+                    assistant_entry("a1", "stop", Some("ENVOY_STATUS: complete\n\nShipped."), None),
+                ],
+            );
+            let db = Db::open(&root.join("triage.db")).unwrap();
+            let mut tracker = Tracker::default();
+            assert_eq!(tracker.tick(&db).written, 1);
+
+            let mut lines = fs::read_to_string(&transcript).unwrap();
+            lines.push_str(&format!(
+                "{}\n{}\n",
+                user_line("u2", "Continue."),
+                assistant_entry("a2", "stop", Some("All settled."), None)
+            ));
+            fs::write(&transcript, lines).unwrap();
+            let written = tracker.tick(&db).written;
+            let old_swipe = current_swipe(&db, "done:%12:a1");
+            let queue = done_cards(&db);
+            assert!(
+                written == 2
+                    && old_swipe.reason.as_deref() == Some("superseded")
+                    && queue.len() == 1
+                    && queue[0].id == "done:%12:a2",
+                "second tick: written {written}, queue {queue:?}, old swipe {old_swipe:?}"
+            );
+            return;
+        }
+
+        let scratch = Scratch::new();
+        let bin = fake_tmux(scratch.path());
+        run_child("resume_between_polls_supersedes_report_card", scratch.path(), Some(scratch.path()), Some(&bin));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_keeps_cards_of_dead_pane_ids_and_other_panes() {
+        if let Some(root) = child_root("resume_keeps_cards_of_dead_pane_ids_and_other_panes") {
+            fs::write(root.join("tmux-working"), b"").unwrap();
+            fs::write(root.join("tmux-second-pane"), b"").unwrap();
+            let db = Db::open(&root.join("triage.db")).unwrap();
+            let current = info_card("done:%12:a1", "%12");
+            let dead = info_card("done:%3:old", "%3");
+            let other = info_card("done:%13:other", "%13");
+            db.insert_card(&current).unwrap();
+            db.insert_card(&dead).unwrap();
+            db.insert_card(&other).unwrap();
+            let mut tracker = Tracker::default();
+            tracker.states.insert("%12".to_owned(), PaneState::Waiting);
+
+            let written = tracker.tick(&db).written;
+            let current_swipe = current_swipe(&db, &current.id);
+            let cards = db.queue(events::now_ms()).unwrap();
+            assert!(
+                written == 1
+                    && current_swipe.reason.as_deref() == Some("resumed in pane")
+                    && cards.iter().any(|card| card.id == dead.id)
+                    && cards.iter().any(|card| card.id == other.id),
+                "written {written}, queue {cards:?}, current swipe {current_swipe:?}"
+            );
+            return;
+        }
+
+        let scratch = Scratch::new();
+        let bin = fake_tmux(scratch.path());
+        run_child("resume_keeps_cards_of_dead_pane_ids_and_other_panes", scratch.path(), Some(scratch.path()), Some(&bin));
+    }
     #[test]
     fn failed_ask_parse_retries_after_same_length_transcript_recovery() {
         if let Some(root) = child_root("failed_ask_parse_retries_after_same_length_transcript_recovery") {

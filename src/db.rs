@@ -1020,6 +1020,11 @@ impl Db {
             .collect())
     }
 
+    /// Every card with no swipe, or whose last swipe is `later`, queued or deferred.
+    pub(crate) fn unresolved_cards(&self) -> Result<Vec<Card>> {
+        self.cards_at(crate::events::now_ms(), true, false)
+    }
+
     /// Ask and plan cards of `pane` that a pane exit closes: answering an ask needs its
     /// live dialog and approving a plan needs its review overlay. Info and finding cards
     /// outlive their pane.

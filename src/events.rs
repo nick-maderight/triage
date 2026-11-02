@@ -136,7 +136,8 @@ pub struct Swipe {
     /// `later` only. Unix ms when the card returns to the queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<i64>,
-    /// Free text such as `answered in pane`, `pane exited`, `superseded`, `launched %41`.
+    /// Free-text reasons include `answered in pane` and `resumed in pane`.
+    /// Other examples include `pane exited`, `superseded` or `launched %41`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub at_ms: i64,
