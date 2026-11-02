@@ -289,16 +289,32 @@ const S = {
       shownId = S.shownId,
       shown = S.cards.find((c) => c.id === shownId),
       incomingIds = new Set(q.cards.map((c) => c.id)),
-      remoteRemoved = Boolean(shown && !incomingIds.has(shownId) && !S.pending);
+      remoteRemoved = Boolean(shown && !incomingIds.has(shownId) && !S.pending),
+      shownDraft = S.drafts.get(shownId);
     S.version = q.version ?? S.version;
+    const oldTop = S.cards[0] || null;
     // A card whose action is in flight stays hidden until the daemon answers.
     S.cards = q.cards.filter((c) => !S.inflight.has(c.id)).sort(byPriority);
+    // A card that outranks the deck leader takes the view to the top unless the shown card is active.
+    const lead = S.cards[0] || null,
+      takeTop = Boolean(
+        oldTop &&
+          lead &&
+          byPriority(lead, oldTop) < 0 &&
+          !S.pending &&
+          !S.laterOpen &&
+          !(shownDraft && (shownDraft.open || shownDraft.note.trim() || shownDraft.other.trim())),
+      );
     S.counts = countsFrom(S.cards);
     for (const id of S.drafts.keys()) {
       if (!incomingIds.has(id)) S.drafts.delete(id);
     }
     const keep = S.cards.findIndex((c) => c.id === S.shownId);
     S.idx = keep >= 0 ? keep : Math.min(S.idx, Math.max(0, S.cards.length - 1));
+    if (takeTop && S.idx > 0) {
+      S.idx = 0;
+      S.direction = -1;
+    }
     S.initialized = true;
     if (!S.cards.length && (!empty || version !== S.version)) {
       S.history.loaded = false;
@@ -313,7 +329,7 @@ const S = {
       if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
         setTimeout(() => render(view, message), 150);
       else render(view, message);
-    } else if (shownId && keep >= 0) {
+    } else if (!takeTop && shownId && keep >= 0) {
       // Card data never changes under an id, so the shown card keeps its DOM, focus and scroll.
       updateHeader();
       updateQueueLine();
@@ -1511,8 +1527,9 @@ const S = {
     const i = S.cards.findIndex((x) => x.id === c.id);
     if (i >= 0) S.cards.splice(i, 1);
     S.counts = { ...S.counts, [c.kind]: Math.max(0, (Number(S.counts[c.kind]) || 1) - 1) };
-    S.idx = Math.min(S.idx, Math.max(0, S.cards.length - 1));
-    S.direction = dir === 'right' ? -1 : 1;
+    // After an answer, show the highest-ranked waiting card.
+    S.idx = i > 0 ? 0 : Math.min(S.idx, Math.max(0, S.cards.length - 1));
+    S.direction = i > 0 || dir === 'right' ? -1 : 1;
     if (!S.cards.length) {
       S.history.loaded = false;
       S.history.error = null;
