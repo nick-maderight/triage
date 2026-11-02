@@ -14,13 +14,13 @@ const functionSource = (name, async = false) => {
 const card = (id, kind = 'ask') => ({ id, kind, title: id.toUpperCase(), options: [{ label: 'Yes' }] });
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness({ cards, inflight = [], api = async () => ({}) }) {
+function harness({ cards, inflight = [], api = async () => ({}), idx = 0 }) {
   const state = {
       cards: [...cards],
       counts: {},
       version: 0,
-      idx: 0,
-      shownId: cards[0]?.id ?? null,
+      idx,
+      shownId: cards[idx]?.id ?? null,
       drafts: new Map(cards.map((c) => [c.id, { note: `note ${c.id}`, other: '', open: false }])),
       pending: null,
       inflight: new Set(inflight),
@@ -96,6 +96,16 @@ test('an action moves to the next card before the daemon answers', async () => {
   assert.equal(state.inflight.size, 0);
   assert.equal(calls.refreshes, 1);
   assert.equal(state.drafts.has('a'), false);
+});
+
+test('answering mid-deck lands on the top-ranked card', async () => {
+  const cards = [card('a'), card('b'), card('c')],
+    { state, context } = harness({ cards, idx: 1 });
+
+  await context.act(state.cards[1], 'answer', { option: 0 }, 'opt-0');
+
+  assert.equal(state.idx, 0);
+  assert.equal(state.shownId, 'a');
 });
 
 test('a failed action reports its error and keeps the draft for the returning card', async () => {
