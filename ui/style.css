@@ -1893,10 +1893,6 @@ dialog.picker::backdrop {
   .empty.offline .btn {
     justify-self: center;
   }
-  .toasts {
-    top: calc(var(--bar) + env(safe-area-inset-top) + 4px);
-    bottom: auto;
-  }
   dialog.modal {
     width: 100vw;
     max-width: 100vw;
