@@ -1,14 +1,5 @@
-//! CLI entry. Owner: server worker.
-//!
-//! triage serve [--listen 127.0.0.1:7340] [--db PATH] [--session NAME] [--model SELECTOR] [--thinking LEVEL] [--allow-host HOST]... [--no-notify]
-//! triage emit [FILE|-]           POST one CloudEvent (JSON file or stdin) to /v1/ingest
-//! triage finding --source URI --title T [--situation ..] [--task ..] [--action ..] [--result ..]
-//!                [--option LABEL]... [--ref PATH]... [--org-id ID] [--cwd DIR] [--priority N] [--id ID]
-//!                Convenience wrapper that builds a triage.finding CloudEvent and posts it.
-//! triage queue                   print the queue as JSON (for scripts and the status line)
-//! triage status-line             print `✋N` style count for the tmux status bar, empty when zero
-//! Default DB: $XDG_DATA_HOME/triage/triage.db or ~/.local/share/triage/triage.db.
-//! Default URL for client commands: http://127.0.0.1:7340, override with TRIAGE_URL.
+//! CLI entry: `triage serve`, `triage emit` and `triage finding`. README.md documents the
+//! flags, the default database path and `TRIAGE_URL`.
 
 mod cards;
 mod client;
@@ -81,8 +72,6 @@ enum Commands {
         #[arg(long)]
         id: Option<String>,
     },
-    Queue,
-    StatusLine,
 }
 
 fn main() {
@@ -176,18 +165,6 @@ async fn run() -> Result<(), String> {
                 }),
             };
             print_json(client::ingest(&event)?)
-        }
-        Commands::Queue => print_json(client::queue()?),
-        Commands::StatusLine => {
-            match client::queue() {
-                Ok(reply) => {
-                    if let Some(count) = reply.get("cards").and_then(serde_json::Value::as_array).map(Vec::len).filter(|count| *count > 0) {
-                        println!("✋{count}");
-                    }
-                }
-                Err(_) => println!("✋?"),
-            }
-            Ok(())
         }
     }
 }

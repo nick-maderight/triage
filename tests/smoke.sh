@@ -49,11 +49,8 @@ until server_owns_port && curl --max-time 1 -fsS "$URL/v1/queue" >/dev/null 2>&1
 done
 
 "$TRIAGE_BIN" finding --source test://smoke --title 'Smoke finding' --id "smoke-$$" >/dev/null
-queue=$("$TRIAGE_BIN" queue)
+queue=$(curl -fsS "$URL/v1/queue")
 printf '%s' "$queue" | jq -e '.cards | length == 1' >/dev/null
 card_id=$(printf '%s' "$queue" | jq -r '.cards[0].id | @uri')
 curl -fsS -X POST "$URL/v1/cards/$card_id/skip" >/dev/null
-queue=$("$TRIAGE_BIN" queue)
-printf '%s' "$queue" | jq -e '.cards | length == 0' >/dev/null
-status=$(TRIAGE_URL=http://127.0.0.1:0 "$TRIAGE_BIN" status-line)
-[ "$status" = '✋?' ]
+curl -fsS "$URL/v1/queue" | jq -e '.cards | length == 0' >/dev/null

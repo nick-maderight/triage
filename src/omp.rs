@@ -165,7 +165,6 @@ pub struct AskCall {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Propose {
-    pub index: usize,
     pub tool_call_id: String,
     pub title: String,
     pub plan_path: PathBuf,
@@ -290,8 +289,7 @@ pub fn proposes(transcript: &Path) -> io::Result<Vec<Propose>> {
     let session_directory = transcript.with_extension("");
     Ok(calls
         .into_iter()
-        .enumerate()
-        .map(|(index, (tool_call_id, content))| {
+        .map(|(tool_call_id, content)| {
             let result = results.get(&tool_call_id);
             let title = result
                 .and_then(|(title, _)| title.as_deref())
@@ -306,7 +304,6 @@ pub fn proposes(transcript: &Path) -> io::Result<Vec<Propose>> {
                 .map(|basename| session_directory.join("local").join(basename))
                 .unwrap_or_default();
             Propose {
-                index,
                 tool_call_id,
                 title,
                 plan_path,
@@ -599,7 +596,19 @@ pub fn run_paused(screen: &str) -> bool {
 }
 
 /// Replace common secret shapes (AWS keys, bearer tokens, long hex/base64 runs) with `…`.
+/// For a captured screen or a plan file, where paths and hashes matter less than a leak.
 pub fn redact(text: &str) -> String {
+    redact_with(text, true)
+}
+
+/// Replace only unambiguous credentials, AWS access keys and `Bearer` tokens, with `…`.
+/// For card text that the user reads as a report, where a masked path or commit hash would
+/// cost more than the long-run rule catches.
+pub fn redact_credentials(text: &str) -> String {
+    redact_with(text, false)
+}
+
+fn redact_with(text: &str, long_runs: bool) -> String {
     let bytes = text.as_bytes();
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
@@ -617,7 +626,7 @@ pub fn redact(text: &str) -> String {
             }
         }
 
-        if secret_byte(bytes[index]) {
+        if long_runs && secret_byte(bytes[index]) {
             let mut end = index;
             while end < bytes.len() && secret_byte(bytes[end]) {
                 end += 1;
@@ -794,24 +803,6 @@ pub fn dispatch_audit(transcript: &Path) -> io::Result<DispatchAudit> {
         true
     })?;
     Ok(audit)
-}
-
-/// First user message text of the transcript, used to recognise a brief path.
-pub fn first_user_text(transcript: &std::path::Path) -> std::io::Result<Option<String>> {
-    let mut first = None;
-    scan_jsonl(transcript, |value| {
-        let Some(message) = message(&value) else {
-            return true;
-        };
-        if message.get("role").and_then(Value::as_str) == Some("user") {
-            if let Some(text) = text_blocks(message) {
-                first = Some(text);
-                return false;
-            }
-        }
-        true
-    })?;
-    Ok(first)
 }
 
 fn scan_jsonl(path: &Path, mut visit: impl FnMut(Value) -> bool) -> io::Result<()> {
@@ -1093,7 +1084,6 @@ mod tests {
             .join("tests/fixtures/transcript_propose.jsonl");
         let proposals = proposes(&transcript).unwrap();
         assert_eq!(proposals.len(), 1);
-        assert_eq!(proposals[0].index, 0);
         assert_eq!(proposals[0].title, "planverify-proof");
         assert!(proposals[0]
             .plan_path
@@ -1112,7 +1102,6 @@ mod tests {
 
         let proposals = proposes(&path).unwrap();
         assert_eq!(proposals.len(), 1);
-        assert_eq!(proposals[0].index, 0);
         assert_eq!(proposals[0].title, "");
         assert!(proposals[0].plan_path.as_os_str().is_empty());
         fs::remove_file(path).unwrap();
@@ -1140,7 +1129,6 @@ mod tests {
     fn reads_ask_result_and_assistant_text() {
         assert_eq!(ask_result(&transcript(), "call_ask_1").unwrap(), Some(vec!["Blue".to_owned()]));
         assert_eq!(last_assistant_text(&transcript()).unwrap().unwrap().1, "Blue");
-        assert!(first_user_text(&transcript()).unwrap().unwrap().starts_with("Call the ask tool exactly once"));
     }
 
     #[test]

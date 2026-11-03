@@ -79,8 +79,6 @@ For `triage.finding`, `data` may contain `title`, `star` (an object with `situat
 - `triage serve [--listen 127.0.0.1:7340] [--db PATH] [--session NAME] [--model SELECTOR] [--thinking LEVEL] [--allow-host HOST]... [--no-notify]` starts the server and pane tracker.
 - `triage emit [FILE|-]` posts a CloudEvent from a JSON file or standard input.
 - `triage finding --source URI --title T [--situation TEXT] [--task TEXT] [--action TEXT] [--result TEXT] [--option LABEL]... [--ref PATH]... [--org-id ID] [--cwd DIR] [--priority N] [--id ID]` posts a finding event.
-- `triage queue` prints the queue as JSON.
-- `triage status-line` prints the tmux status count, or nothing when the queue is empty, and `✋?` when the daemon is unreachable.
 - `deploy/finding-example.sh` shows a scheduled job posting a finding.
 
 The client commands use `TRIAGE_URL` when set. Otherwise they connect to `http://127.0.0.1:7340`.
@@ -146,7 +144,7 @@ Two performance limits are known. Each poll tick scans and parses every open and
 
 ## Development
 
-Run `cargo test --release`, `node --check ui/app.js && node --check ui/sw.js`, `node --test tests/*.test.js`, and `cargo build && tests/smoke.sh`. The smoke test uses `target/debug/triage` unless `TRIAGE_BIN` names another binary.
+Run `cargo test --release`, `node --check ui/app.js && node --check ui/sw.js`, `node --test tests/*.test.js`, and `cargo build && tests/smoke.sh`. The smoke test uses `target/debug/triage` unless `TRIAGE_BIN` names another binary. The Rust unit tests of `cards`, `server` and `db` live beside their module in `src/<module>/tests.rs`.
 
 ## License
 

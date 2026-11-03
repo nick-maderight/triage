@@ -12,9 +12,7 @@ pub struct CloudEvent {
     pub source: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    #[serde(default)]
     pub subject: Option<String>,
-    #[serde(default)]
     pub time: Option<String>,
     #[serde(default, deserialize_with = "deserialize_priority")]
     pub priority: Option<u8>,
@@ -49,10 +47,10 @@ pub struct Source {
     #[serde(default)]
     pub cwd: String,
     /// tmux pane id such as `%12`, when the source is a pane.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
     /// Human tmux target such as `bill:1.0`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
 }
 
@@ -101,14 +99,14 @@ pub struct Card {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<CardQuestion>,
     /// Info cards: the final reply text of an agent turn, or a report body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     #[serde(default)]
     pub refs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<String>,
     /// Ask cards: the omp tool call id, used to notice an answer given in the pane.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
 
@@ -127,18 +125,18 @@ pub struct Swipe {
     pub card: String,
     /// `done`, `skipped`, or `later`.
     pub action: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub option: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// `later` only. Unix ms when the card returns to the queue.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<i64>,
     /// Free-text reasons include `answered in pane` and `resumed in pane`.
     /// Other examples include `pane exited`, `superseded` or `launched %41`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub at_ms: i64,
 }
@@ -153,11 +151,8 @@ pub struct Answer {
 /// Request body of `POST /v1/cards/{id}/answer`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AnswerReq {
-    #[serde(default)]
     pub option: Option<usize>,
-    #[serde(default)]
     pub text: Option<String>,
-    #[serde(default)]
     pub note: Option<String>,
     /// One per card question, multi-question ask cards only.
     #[serde(default)]

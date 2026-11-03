@@ -148,20 +148,6 @@ fn spawn_daemon(temp: &TestDir, tmux_dir: &Path, db_path: &Path, addr: SocketAdd
 }
 
 #[test]
-fn status_line_prints_unavailable_when_queue_cannot_be_reached() {
-    let endpoint = unused_loopback_addr();
-    let output = Command::new(env!("CARGO_BIN_EXE_triage"))
-        .args(["status-line"])
-        .env_clear()
-        .env("TRIAGE_URL", format!("http://{endpoint}"))
-        .output()
-        .expect("run status line");
-
-    assert!(output.status.success());
-    assert_eq!(String::from_utf8(output.stdout).expect("status output is UTF-8"), "✋?\n");
-}
-
-#[test]
 fn serve_with_explicit_db_without_home() {
     let temp = TestDir::new();
     let db_path = temp.0.join("triage.db");
