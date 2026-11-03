@@ -859,6 +859,8 @@
       probe.textContent = 'Skipped · ' + 'word '.repeat(200);
       document.querySelector('#toasts').append(probe);
       const clamped = probe.clientHeight < probe.scrollHeight - 1;
+      const rect = probe.getBoundingClientRect();
+      assert(rect.top > innerHeight / 2, 'a toast stays clear of the title at the top of a phone screen');
       probe.remove();
       assert(clamped, 'a long toast clamps instead of covering the screen');
       return { scenario: 'long-title', passed: true };
