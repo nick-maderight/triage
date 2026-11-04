@@ -667,9 +667,10 @@ impl Db {
         self.cards_at(crate::events::now_ms(), true, false)
     }
 
-    /// Ask and plan cards of `pane` that a pane exit closes: answering an ask needs its
-    /// live dialog and approving a plan needs its review overlay. Info and finding cards
-    /// outlive their pane.
+    /// Ask and plan cards of `pane` that a pane exit closes. Answering an ask requires its live
+    /// dialog. Approving a plan requires its review overlay. Finding cards always stay queued.
+    /// Information cards close with them only when `tick` sees the pane vanish alone
+    /// (`finish_gone`). Several panes vanishing in one poll, or a gone tmux server, keep them queued.
     pub(crate) fn cards_for_exited_pane(&self, pane: &str) -> Result<Vec<Card>> {
         Ok(self
             .cards_at(crate::events::now_ms(), false, true)?
