@@ -28,6 +28,9 @@ pub struct Tracker {
     /// Pane id -> last snapshot and transcript of every pane where omp itself runs, so a
     /// pane that disappears can still have its session audited.
     seen: HashMap<String, (tmux::Pane, PathBuf)>,
+    /// Panes whose gone-pane close ran but whose session audit has not yet succeeded.
+    /// A retried audit must not sweep the information cards its first run raised.
+    audit_pending: HashSet<String>,
     #[cfg(test)]
     pending_ask_reads: usize,
     #[cfg(test)]
@@ -72,6 +75,7 @@ impl Tracker {
             exit_scans: HashMap::new(),
             stalled_info: HashMap::new(),
             seen: HashMap::new(),
+            audit_pending: HashSet::new(),
             #[cfg(test)]
             pending_ask_reads: 0,
             #[cfg(test)]
@@ -246,10 +250,13 @@ impl Tracker {
     ///   longer omp): the session is audited once per transcript version with the
     ///   outcomes of `audit_ended_session`. A pane omp was never seen running in reads
     ///   its breadcrumb and can raise only `Unreported:`.
-    /// - A pane that disappears: its asks and plans close `pane exited`, its info and
-    ///   finding cards stay, and its session is audited once from the transcript it last
-    ///   showed while omp ran, with the outcomes of `audit_ended_session`, except for a
-    ///   pane closed from one of its cards.
+    /// - When a pane disappears, its asks and plans close `pane exited`. Its session is
+    ///   audited once from the transcript it last showed while omp ran, with the outcomes
+    ///   of `audit_ended_session`, except when one of its cards closed the pane. A pane
+    ///   that vanishes alone, such as a closed window, also closes its queued and deferred
+    ///   information cards. When several panes vanish in one tick, or the tmux server dies,
+    ///   information cards stay queued. Unread reports survive a tmux server death. Finding
+    ///   cards are never swept.
     /// - Plan proposals from the transcript add a card only while the review overlay is open.
     ///   The tracker completes it after the overlay closes or supersedes it when a newer proposal appears.
     /// Non-omp panes are ignored.
@@ -420,17 +427,25 @@ impl Tracker {
             .filter(|pane| !present.contains(pane.as_str()))
             .cloned()
             .collect::<HashSet<_>>();
+        // One pane gone while tmux still lists panes means its window was closed by hand.
+        // An empty listing means the tmux server died. Unread reports must survive that.
+        let individual = gone.len() == 1 && !panes.is_empty();
         for pane in gone {
             self.pending_ask_cache.remove(&pane);
             self.stalled_info.remove(&pane);
             self.pending_proposals.remove(&pane);
             self.proposal_cache.remove(&pane);
-            if finish_gone(db, &pane, &mut written) {
+            // Information cards are swept once per vanish. A retried audit skips the sweep,
+            // which keeps the card its first run raised.
+            let close_info = individual && !self.audit_pending.contains(&pane);
+            if finish_gone(db, &pane, close_info, &mut written) {
+                self.audit_pending.insert(pane.clone());
                 self.states.remove(&pane);
                 self.pending_ask_ids.remove(&pane);
                 self.pending_panes.remove(&pane);
                 if self.audit_gone_pane(db, &pane, &panes, &live_transcripts, &mut written) {
                     self.seen.remove(&pane);
+                    self.audit_pending.remove(&pane);
                 }
             }
         }
@@ -1479,10 +1494,18 @@ fn finish_resumed_cards(db: &Db, pane: &tmux::Pane, written: &mut usize) -> bool
     finish_cards(db, cards, "resumed in pane", written)
 }
 
-fn finish_gone(db: &Db, pane: &str, written: &mut usize) -> bool {
-    let Ok(cards) = db.cards_for_exited_pane(pane) else {
+/// Ask and plan cards of a gone pane close `pane exited`, because their answers need the
+/// live pane. With `close_info`, its queued and deferred information cards close too.
+fn finish_gone(db: &Db, pane: &str, close_info: bool, written: &mut usize) -> bool {
+    let Ok(mut cards) = db.cards_for_exited_pane(pane) else {
         return false;
     };
+    if close_info {
+        let Ok(open) = db.unresolved_cards_for_pane(pane) else {
+            return false;
+        };
+        cards.extend(open.into_iter().filter(|card| matches!(card.kind, Kind::Info)));
+    }
     finish_cards(db, cards, "pane exited", written)
 }
 

@@ -108,7 +108,9 @@ list-panes)
     tag_file="$HOME/tmux-tag-$pane"
     tag=''
     if [ -f "$tag_file" ]; then IFS= read -r tag < "$tag_file"; fi
-    printf '%s\t%s\t%s\t%s\tsession:1.0\t%s\tsession\t80\t24\t0\t%s\n' "$pane" "$title" "$command" "$tty" "$HOME" "$tag"
+    if [ ! -f "$HOME/tmux-pane-12-gone" ]; then
+        printf '%s\t%s\t%s\t%s\tsession:1.0\t%s\tsession\t80\t24\t0\t%s\n' "$pane" "$title" "$command" "$tty" "$HOME" "$tag"
+    fi
     if [ -f "$HOME/tmux-second-pane" ]; then
         tag13=''
         if [ -f "$HOME/tmux-tag-%13" ]; then IFS= read -r tag13 < "$HOME/tmux-tag-%13"; fi
@@ -1665,8 +1667,53 @@ fn swipe_reason(db: &Db, id: &str) -> Option<String> {
 
 #[cfg(unix)]
 #[test]
-fn vanished_pane_keeps_its_info_card() {
-    if let Some(root) = child_root("vanished_pane_keeps_its_info_card") {
+fn vanished_pane_closes_its_info_card() {
+    if let Some(root) = child_root("vanished_pane_closes_its_info_card") {
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[
+                user_line("u1", "Ship it."),
+                assistant_entry(
+                    "a1",
+                    "stop",
+                    Some("ENVOY_STATUS: complete\n\nShipped."),
+                    None,
+                ),
+            ],
+        );
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-second-pane"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        tracker.tick(&db);
+        fs::write(root.join("tmux-pane-12-gone"), b"").unwrap();
+        tracker.tick(&db);
+        let queue = db.queue(events::now_ms()).unwrap();
+        let reason = swipe_reason(&db, "done:%12:a1");
+        assert!(
+            queue.is_empty() && reason.as_deref() == Some("pane exited"),
+            "queue: {queue:?} reason: {reason:?}"
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "vanished_pane_closes_its_info_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn tmux_server_gone_keeps_a_lone_pane_info_card() {
+    if let Some(root) = child_root("tmux_server_gone_keeps_a_lone_pane_info_card") {
         let transcript = root.join("transcript.jsonl");
         write_transcript(
             &root,
@@ -1704,7 +1751,56 @@ fn vanished_pane_keeps_its_info_card() {
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child(
-        "vanished_pane_keeps_its_info_card",
+        "tmux_server_gone_keeps_a_lone_pane_info_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mass_vanish_keeps_info_cards() {
+    if let Some(root) = child_root("mass_vanish_keeps_info_cards") {
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &root.join("transcript.jsonl"),
+            &[assistant_text_line("a1", "Pane twelve is done.")],
+        );
+        write_transcript(
+            &root,
+            "/dev/pts/13",
+            &root.join("transcript-13.jsonl"),
+            &[assistant_text_line("a2", "Pane thirteen is done.")],
+        );
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-second-pane"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        tracker.tick(&db);
+        fs::write(root.join("tmux-missing-pane"), b"").unwrap();
+        tracker.tick(&db);
+        let queue = db.queue(events::now_ms()).unwrap();
+        let ids = queue.iter().map(|card| card.id.as_str()).collect::<Vec<_>>();
+        let swipes = [
+            swipe_reason(&db, "done:%12:a1"),
+            swipe_reason(&db, "done:%13:a2"),
+        ];
+        assert!(
+            ids.len() == 2
+                && ids.contains(&"done:%12:a1")
+                && ids.contains(&"done:%13:a2")
+                && swipes.iter().all(Option::is_none),
+            "queue: {ids:?} swipes: {swipes:?}"
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "mass_vanish_keeps_info_cards",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
