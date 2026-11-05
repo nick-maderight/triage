@@ -2818,6 +2818,19 @@ const S = {
   }
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   document.addEventListener('visibilitychange', pruneNotifications);
+  function resumeStream() {
+    if (S.stream) S.stream.close();
+    S.stream = null;
+    S.streamOpen = false;
+    clearTimeout(S.reconnectTimer);
+    S.reconnectTimer = 0;
+    S.reconnectDelay = 1000;
+    connectStream();
+  }
+  window.addEventListener('online', resumeStream);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') resumeStream();
+  });
   pruneNotifications();
   boot();
 })();
