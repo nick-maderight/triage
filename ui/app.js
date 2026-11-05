@@ -1263,29 +1263,29 @@ const S = {
               c,
               'act',
               'btn primary',
-              { 'data-primary': 'true', 'aria-keyshortcuts': 'Enter' },
+              { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter' },
               () => doRecommended(c),
               'Do as recommended',
-              key('Enter'),
+              key('a'),
             )
           : paneOf(c)
             ? button(
                 c,
                 'close',
                 'btn primary',
-                { 'data-primary': 'true', 'aria-keyshortcuts': 'Enter x' },
+                { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter x' },
                 () => closePane(c),
                 'Acknowledge & close',
-                key('Enter'),
+                key('a'),
               )
             : button(
                 c,
                 'ack',
                 'btn primary',
-                { 'data-primary': 'true', 'aria-keyshortcuts': 'Enter' },
+                { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter' },
                 () => acknowledge(c),
                 'Acknowledge',
-                key('Enter'),
+                key('a'),
               )),
       el(
         'div',
@@ -1294,7 +1294,7 @@ const S = {
           c,
           'dispatch',
           'btn',
-          { 'aria-keyshortcuts': 'i a p Shift+P' },
+          { 'aria-keyshortcuts': 'i Shift+A p Shift+P' },
           () => openDispatch(c),
           'Dispatch',
           key('i'),
@@ -2576,6 +2576,7 @@ const S = {
       if (!t.closest?.('button,a,select')) run(() => primary(c));
       return;
     }
+    if (key === 'a') return run(() => primary(c));
     switch (key) {
       case 'Escape':
         if (c.allow_other && draft(c).open) toggleOther(c);
@@ -2593,7 +2594,7 @@ const S = {
       case 'i':
         run(() => openDispatch(c, 'investigate'));
         break;
-      case 'a':
+      case 'A':
         run(() => openDispatch(c, 'act'));
         break;
       case 'x':

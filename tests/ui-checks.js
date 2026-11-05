@@ -735,9 +735,9 @@
         assert(note.value === 'fixture instruction\nsecond line', 'the instruction draft persists');
         assert(mode('act').getAttribute('aria-checked') === 'true', 'Act mode persists');
         dialog.close();
-        press('a');
-        await waitFor(() => dialog.open, 'dispatch dialog open from a');
-        assert(mode('act').getAttribute('aria-checked') === 'true', 'a preselects Act');
+        press('A');
+        await waitFor(() => dialog.open, 'dispatch dialog open from A');
+        assert(mode('act').getAttribute('aria-checked') === 'true', 'A preselects Act');
         return { scenario: 'dispatch', passed: true };
       } finally {
         if (dialog.open) dialog.close();

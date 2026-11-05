@@ -17,7 +17,7 @@ const keydownStart = app.indexOf("  document.addEventListener('keydown', (e) => 
 assert.ok(keydownStart >= 0 && keydownEnd > keydownStart, 'app.js defines the global key handler');
 const keydownSource = app.slice(keydownStart, keydownEnd + '\n  });'.length);
 
-test('i, a, p and P open dispatch with matching modes while v keeps Peek', () => {
+test('i, A, p and P open dispatch with matching modes while v keeps Peek', () => {
   const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests' },
     buttons = ['investigate', 'act', 'plan', 'plan-into'].map((mode) => ({
       dataset: { mode },
@@ -104,7 +104,7 @@ test('i, a, p and P open dispatch with matching modes while v keeps Peek', () =>
   assert.equal(dialog.open, true);
   assert.equal(selected(), 'investigate');
   dialog.open = false;
-  press('a');
+  press('A');
   assert.equal(selected(), 'act');
   assert.equal(elements['#dispatch-models'].hidden, true);
   dialog.open = false;
@@ -119,7 +119,7 @@ test('i, a, p and P open dispatch with matching modes while v keeps Peek', () =>
   assert.equal(elements['#dispatch-models'].hidden, false);
   assert.match(elements['#dispatch-mode-help'].textContent, /without review/);
   dialog.open = false;
-  press('a');
+  press('A');
   assert.equal(selected(), 'act');
   assert.equal(elements['#dispatch-models'].hidden, true);
   dialog.open = false;
@@ -130,6 +130,69 @@ test('i, a, p and P open dispatch with matching modes while v keeps Peek', () =>
     ['peek', card.id],
     ['pick', card.id, 1],
     ['primary', card.id],
+  ]);
+});
+
+test('a confirms the primary action even when a button holds focus', () => {
+  const card = { id: 'card-1', kind: 'info', title: 'Report' },
+    actions = [],
+    listeners = {},
+    state = {
+      cards: [card],
+      idx: 0,
+      pending: null,
+      remoteSwapUntil: 0,
+      laterOpen: false,
+      countsExpanded: false,
+      dispatchId: null,
+      composeMode: 'goal',
+      drafts: new Map(),
+    },
+    context = vm.createContext({
+      S: state,
+      $: (selector) => (selector === '#peek' ? { open: false } : null),
+      document: {
+        addEventListener(type, listener) {
+          listeners[type] = listener;
+        },
+        querySelector: () => null,
+      },
+      textField: () => false,
+      current: () => card,
+      Date: { now: () => 1000 },
+      primary: (current) => actions.push(['primary', current.id]),
+    });
+  vm.runInContext(keydownSource, context);
+
+  const press = (key, onButton) => {
+    const event = {
+      key,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      isComposing: false,
+      defaultPrevented: false,
+      target: { closest: (selector) => (onButton && selector === 'button,a,select' ? {} : null) },
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+    listeners.keydown(event);
+    return event;
+  };
+
+  const focusedA = press('a', true);
+  assert.deepEqual(actions, [['primary', 'card-1']]);
+  assert.equal(focusedA.defaultPrevented, true);
+  const focusedEnter = press('Enter', true);
+  assert.deepEqual(actions, [['primary', 'card-1']]);
+  assert.equal(focusedEnter.defaultPrevented, false);
+  press('Enter', false);
+  press('a', false);
+  assert.deepEqual(actions, [
+    ['primary', 'card-1'],
+    ['primary', 'card-1'],
+    ['primary', 'card-1'],
   ]);
 });
 
