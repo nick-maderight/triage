@@ -106,6 +106,16 @@ test('answering mid-deck lands on the top-ranked card', async () => {
 
   assert.equal(state.idx, 0);
   assert.equal(state.shownId, 'a');
+  assert.equal(state.direction, -1);
+});
+
+test('answering the top card advances forward', async () => {
+  const { state, context } = harness({ cards: [card('a'), card('b')] });
+
+  await context.act(state.cards[0], 'answer', { option: 0 }, 'opt-0');
+
+  assert.equal(state.direction, 1);
+  assert.equal(state.shownId, 'b');
 });
 
 test('a failed action reports its error and keeps the draft for the returning card', async () => {

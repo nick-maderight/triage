@@ -69,6 +69,7 @@ test('remote removal announces handling, prunes its draft, advances and guards i
   assert.deepEqual(harness.renders, ['Handled elsewhere · Current card']);
   assert.deepEqual(harness.leaves, ['leaving-right']);
   assert.deepEqual(harness.timers, [150]);
+  assert.equal(harness.state.direction, 1);
 });
 
 test('queue refresh after the local action splice does not announce remote handling', () => {

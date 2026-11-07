@@ -325,7 +325,7 @@ const S = {
       S.remoteSwapUntil = Date.now() + 500;
       toast(message);
       $('.card')?.classList.add('leaving-right');
-      S.direction = -1;
+      S.direction = 1;
       if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
         setTimeout(() => render(view, message), 150);
       else render(view, message);
@@ -1529,7 +1529,7 @@ const S = {
     S.counts = { ...S.counts, [c.kind]: Math.max(0, (Number(S.counts[c.kind]) || 1) - 1) };
     // After an answer, show the highest-ranked waiting card.
     S.idx = i > 0 ? 0 : Math.min(S.idx, Math.max(0, S.cards.length - 1));
-    S.direction = i > 0 || dir === 'right' ? -1 : 1;
+    S.direction = i > 0 ? -1 : 1;
     if (!S.cards.length) {
       S.history.loaded = false;
       S.history.error = null;
