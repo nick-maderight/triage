@@ -2171,6 +2171,71 @@ async fn models_answers_immediately_while_the_first_load_runs() {
         "an in-flight load must answer with an empty list"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn models_reload_only_when_omp_config_changes() {
+    if run_with_fake_tmux_child("server::tests::models_reload_only_when_omp_config_changes") {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let agent = TestDir::new("triage-omp-agent");
+    let catalog = agent.0.join("catalog.json");
+    let config = agent.0.join("config.yml");
+    // The child's PATH holds only the fake bin directory, so the fake omp calls cat by absolute path.
+    let omp = PathBuf::from(std::env::var_os("PATH").unwrap()).join("omp");
+    std::fs::write(
+        &omp,
+        format!(
+            r#"#!/bin/sh
+case "$*" in
+"models --json") /bin/cat '{catalog}' ;;
+"config get "*) printf '%s\n' '{{"value":null}}' ;;
+*) exit 1 ;;
+esac
+"#,
+            catalog = catalog.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&omp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&config, "modelRoles: {}\n").unwrap();
+    let serve_catalog = |selector: &str| {
+        std::fs::write(
+            &catalog,
+            format!(r#"{{"models":[{{"selector":"{selector}","name":"Model"}}]}}"#),
+        )
+        .unwrap();
+    };
+    let snapshot = || -> Vec<String> {
+        super::MODELS.read().unwrap().iter().map(|model| model.selector.clone()).collect()
+    };
+    let mut loaded = None;
+
+    serve_catalog("provider/old");
+    assert!(super::refresh_models(Some(agent.0.as_path()), &mut loaded));
+    assert_eq!(snapshot(), ["provider/old"]);
+
+    serve_catalog("provider/new");
+    assert!(
+        !super::refresh_models(Some(agent.0.as_path()), &mut loaded),
+        "an unchanged omp config must not rerun the slow catalog load"
+    );
+    assert_eq!(snapshot(), ["provider/old"]);
+
+    std::fs::File::options()
+        .write(true)
+        .open(&config)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+    assert!(
+        super::refresh_models(Some(agent.0.as_path()), &mut loaded),
+        "a changed omp config must reload the catalog"
+    );
+    assert_eq!(snapshot(), ["provider/new"]);
+}
 #[test]
 fn pane_directories_list_each_directory_once_most_shared_first() {
     assert_eq!(

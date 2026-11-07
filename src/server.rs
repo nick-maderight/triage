@@ -538,21 +538,70 @@ struct Model {
 }
 
 /// omp's model catalog plus the configured roles. `omp models --json` takes about twenty seconds,
-/// so one background thread loads it at startup and the endpoint answers from the snapshot it has;
-/// the roles come from `omp config get modelRoles --json` in the same load.
+/// so a background thread loads it and the endpoint answers from the snapshot it has; the roles
+/// come from `omp config get modelRoles --json` in the same load.
 static MODELS: std::sync::RwLock<Vec<Model>> = std::sync::RwLock::new(Vec::new());
 
-/// Starts the one catalog load thread when first forced; forcing only spawns, it never waits.
+/// The files in omp's agent directory that hold its roles, enabledModels whitelist and custom models.
+// shortcut: an omp upgrade that adds bundled models without a config change waits for a restart; watch the omp binary if that matters.
+const OMP_CONFIG_FILES: [&str; 2] = ["config.yml", "models.yml"];
+
+/// How often the catalog thread checks omp's config files for a change.
+const MODELS_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The modification times of [`OMP_CONFIG_FILES`] in order; a missing file reads as `None`.
+type ConfigStamp = Vec<Option<std::time::SystemTime>>;
+
+/// Starts the catalog thread when first forced; forcing only spawns, it never waits. The thread
+/// loads at once, then reloads whenever omp's config files change, so a model or role change in
+/// omp reaches the picker without a daemon restart.
 static MODELS_LOAD: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
     let _ = std::thread::Builder::new()
         .name("triage-models".to_owned())
         .spawn(|| {
-            let models = load_models();
-            if let Ok(mut slot) = MODELS.write() {
-                *slot = models;
+            let dir = omp_agent_dir();
+            let mut loaded = None;
+            loop {
+                refresh_models(dir.as_deref(), &mut loaded);
+                // Without omp's agent directory there is nothing to watch, so the first load stands.
+                if dir.is_none() {
+                    break;
+                }
+                std::thread::sleep(MODELS_CHECK);
             }
         });
 });
+
+/// omp's agent directory as `omp config path` prints it, which follows profiles and `PI_CODING_AGENT_DIR`.
+fn omp_agent_dir() -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("omp").args(["config", "path"]).output().ok()?;
+    let dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && !dir.is_empty()).then(|| dir.into())
+}
+
+fn config_stamp(dir: &std::path::Path) -> ConfigStamp {
+    OMP_CONFIG_FILES
+        .iter()
+        .map(|file| std::fs::metadata(dir.join(file)).and_then(|meta| meta.modified()).ok())
+        .collect()
+}
+
+/// Loads the catalog when nothing is loaded yet or omp's config files changed since the last load,
+/// and says whether it loaded. The stamp is taken before the load, so a change during the load
+/// triggers another. A failed load still records its stamp: its roles-only result stands until the
+/// next config change instead of rerunning the twenty-second load on every check.
+fn refresh_models(dir: Option<&std::path::Path>, loaded: &mut Option<ConfigStamp>) -> bool {
+    let stamp = dir.map(config_stamp).unwrap_or_default();
+    if loaded.as_ref() == Some(&stamp) {
+        return false;
+    }
+    let models = load_models();
+    if let Ok(mut slot) = MODELS.write() {
+        *slot = models;
+    }
+    *loaded = Some(stamp);
+    true
+}
 
 /// Parses `omp config get modelRoles --json` output into `@role` picker entries; a missing or
 /// null `value`, or invalid JSON, yields none. The entry name carries the role's model so the
@@ -635,9 +684,8 @@ fn load_models() -> Vec<Model> {
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> axum::response::Response {
-    // Never waits for the load: an in-flight load answers with an empty list, and a failed command
-    // leaves the list with whatever did load until restart; the UI still accepts typed selectors.
-    // ponytail: the load runs once per process and is never refreshed; restart to pick up models or roles.
+    // Never waits for the load: until the first load finishes the list is empty, and a failed command
+    // leaves whatever did load until omp's config next changes; the UI still accepts typed selectors.
     let models = MODELS.try_read().map(|slot| slot.clone()).unwrap_or_default();
     axum::Json(serde_json::json!({
         "models": models,
