@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneState {
@@ -80,6 +81,11 @@ pub fn transcript_path(pane: &tmux::Pane) -> Option<PathBuf> {
     .then_some(path)
 }
 
+/// The session id a transcript's file name carries. It is the stem after the first `_`.
+fn session_id(transcript: &Path) -> Option<&str> {
+    transcript.file_stem()?.to_str()?.split_once('_').map(|(_, id)| id)
+}
+
 /// Whether argv starts omp on this transcript's session. `-r`, `--resume` and
 /// `--restore` take the session as the next argument, `--resume=<v>` and
 /// `--restore=<v>` carry it inline. A value names the session when it equals the
@@ -88,11 +94,7 @@ pub fn transcript_path(pane: &tmux::Pane) -> Option<PathBuf> {
 /// session: omp rewrites the crumb whenever it continues a different session than
 /// the crumb names.
 pub fn resumes(argv: &[String], transcript: &Path) -> bool {
-    let session_id = transcript
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.split_once('_'))
-        .map(|(_, id)| id);
+    let session_id = session_id(transcript);
     let mut value_expected = false;
     for argument in argv.iter().skip(1) {
         if value_expected {
@@ -345,15 +347,16 @@ pub enum TurnEnd {
     /// `stopReason` `aborted`: an interrupt or a terminal tool ended the run.
     Aborted,
     /// `toolUse`, a missing or unknown stop reason, a stop without text, or a trailing
-    /// delivered background-job result: the run is still going, or its last message is
-    /// not on disk yet.
+    /// delivered background-job result or supervised-process exit: the run is still going, or
+    /// its last message is not on disk yet.
     Running,
 }
 
 /// Classify the transcript's last assistant message the way omp settles a run:
 /// `error` is an error, `aborted` is idle, a `stop` with text is done. A trailing
-/// delivered background-job result (`async-result`) wakes the run, so it reads as
-/// `Running` until the resumed turn writes its next message.
+/// delivered background-job result (`async-result`) or supervised-process exit
+/// (`launch-completion`) wakes the run. It reads as `Running` until the resumed turn
+/// writes its next message.
 pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
     // (entry id, stopReason, errorMessage, non-blank text)
     let mut last: Option<(String, Option<String>, Option<String>, Option<String>)> = None;
@@ -361,7 +364,10 @@ pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
     let mut woken = false;
     scan_jsonl(transcript, |value| {
         if value.get("type").and_then(Value::as_str) == Some("custom_message") {
-            if value.get("customType").and_then(Value::as_str) == Some("async-result") {
+            if matches!(
+                value.get("customType").and_then(Value::as_str),
+                Some("async-result" | "launch-completion")
+            ) {
                 woken = true;
             }
             return true;
@@ -410,6 +416,82 @@ pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
             _ => TurnEnd::Running,
         }
     }))
+}
+
+/// A running supervised process holds a reply card for at most this long, counted from its start.
+/// Past that, a keepalive loop or other process meant to outlive the run cannot hide replies for good.
+const SERVICE_HOLD_MS: u64 = 2 * 60 * 60 * 1000;
+/// How long after a supervised process exits its completion may still be on its way to
+/// the session. omp appends it within seconds, whether the session is idle or mid-turn.
+const COMPLETION_DELIVERY_MS: u64 = 60 * 1000;
+
+/// Whether omp will start another turn for the session behind `transcript` when one of
+/// its supervised processes (`bash` with `name`) exits. omp settles the run while such a
+/// process runs, then reports the exit as a new turn. That covers a process the session
+/// owns, started without a readiness gate and with completion events on, that either
+/// runs (state `starting`, `running` or `restarting`, pid alive when known) and started
+/// less than `SERVICE_HOLD_MS` ago, or exited less than `COMPLETION_DELIVERY_MS` ago with
+/// its completion still pending. A process with a readiness gate is a server meant to
+/// outlive the run and never counts.
+pub fn service_wake_pending(transcript: &Path) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return false;
+    };
+    // shortcut: omp moves this root to $XDG_STATE_HOME/omp/run/daemons once that omp
+    // directory exists, which this host lacks. Read that root if this host migrates.
+    service_wake_pending_in(&PathBuf::from(home).join(".omp/run/daemons"), transcript, SystemTime::now())
+}
+
+fn service_wake_pending_in(root: &Path, transcript: &Path, now: SystemTime) -> bool {
+    let Some(owner) = session_id(transcript) else {
+        return false;
+    };
+    let now = now.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64);
+    let read = |path: PathBuf| fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let Ok(scopes) = fs::read_dir(root) else {
+        return false;
+    };
+    scopes
+        .flatten()
+        .filter_map(|scope| fs::read_dir(scope.path().join("daemons")).ok())
+        .flatten()
+        .flatten()
+        .any(|service| {
+            let dir = service.path();
+            let Some(meta) = read(dir.join("meta.json")) else {
+                return false;
+            };
+            let daemon = &meta["daemon"];
+            if daemon["owner"].as_str() != Some(owner) || meta["completionEvents"].as_bool() != Some(true) {
+                return false;
+            }
+            if read(dir.join("spec.json")).is_none_or(|spec| !spec["ready"].is_null()) {
+                return false;
+            }
+            let since = |key: &str| daemon[key].as_u64().map(|at| now.saturating_sub(at));
+            let running = matches!(daemon["state"].as_str(), Some("starting" | "running" | "restarting"))
+                && since("startedAt").is_some_and(|age| age < SERVICE_HOLD_MS)
+                && daemon["pid"].as_u64().is_none_or(|pid| Path::new("/proc").join(pid.to_string()).exists());
+            let undelivered = since("exitedAt").is_some_and(|age| age < COMPLETION_DELIVERY_MS)
+                && meta["pendingCompletions"].as_array().is_some_and(|pending| !pending.is_empty());
+            running || undelivered
+        })
+}
+
+/// Whether the transcript's latest goal state is an active goal. Its last `mode_change` has
+/// mode `goal` and goal status `active`. omp's TUI then starts a continuation turn 800 ms
+/// after each settled turn, unless a gate it keeps only in memory (no progress, composer
+/// text) skips it.
+pub fn goal_active(transcript: &Path) -> io::Result<bool> {
+    let mut active = false;
+    scan_jsonl(transcript, |value| {
+        if value.get("type").and_then(Value::as_str) == Some("mode_change") {
+            active = value.get("mode").and_then(Value::as_str) == Some("goal")
+                && value.pointer("/data/goal/status").and_then(Value::as_str) == Some("active");
+        }
+        true
+    })?;
+    Ok(active)
 }
 
 /// Options the toolResult of `tool_call_id` recorded as selected, if present.
@@ -944,6 +1026,7 @@ mod tests {
         let user = r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"go"}]}}"#;
         let report = r#"{"type":"message","id":"a1","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"ENVOY_STATUS: complete\n\nShipped."}]}}"#;
         let wake = r#"{"type":"custom_message","id":"c1","customType":"async-result","content":"done"}"#;
+        let exit = r#"{"type":"custom_message","id":"c2","customType":"launch-completion","content":"Supervised process build exited with exit code 0."}"#;
         let reply = r#"{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Background job finished."}]}}"#;
         let tool_use = r#"{"type":"message","id":"t1","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"text","text":"Dumping rows now."}]}}"#;
         let length = r#"{"type":"message","id":"l1","message":{"role":"assistant","stopReason":"length","content":[{"type":"text","text":"Cut off"}]}}"#;
@@ -962,6 +1045,7 @@ mod tests {
             })
         );
         assert_eq!(turn_end_of(&[user, report, wake]), Some(TurnEnd::Running));
+        assert_eq!(turn_end_of(&[user, report, exit]), Some(TurnEnd::Running));
         assert_eq!(
             turn_end_of(&[report, wake, user, reply]),
             Some(TurnEnd::Reply {
@@ -1294,5 +1378,89 @@ mod tests {
         assert!(audit.dispatched && !audit.reported);
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn service_wake_pending_reads_owned_job_processes() {
+        let root = std::env::temp_dir().join(format!("triage-omp-services-{}", std::process::id()));
+        let dir = root.join("0000000000000000/daemons/build");
+        fs::create_dir_all(&dir).unwrap();
+        let transcript = Path::new("/sessions/-tmp/2026-11-07T16-18-24-308Z_01a1b6cd-test.jsonl");
+        let now = SystemTime::now();
+        let ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let (pid, started) = (std::process::id(), ms - 60_000);
+        let check = |spec: &Value, meta: &Value| {
+            fs::write(dir.join("spec.json"), spec.to_string()).unwrap();
+            fs::write(dir.join("meta.json"), meta.to_string()).unwrap();
+            service_wake_pending_in(&root, transcript, now)
+        };
+        let spec = serde_json::json!({"name": "build"});
+        let base = serde_json::json!({
+            "daemon": {"name": "build", "state": "running", "owner": "01a1b6cd-test", "pid": pid, "startedAt": started},
+            "completionEvents": true,
+            "pendingCompletions": []
+        });
+        assert!(check(&spec, &base));
+
+        let ready = serde_json::json!({"name": "build", "ready": {"port": 8080}});
+        assert!(!check(&ready, &base));
+        let mut meta = base.clone();
+        meta["daemon"]["owner"] = serde_json::json!("someone-else");
+        assert!(!check(&spec, &meta));
+        meta = base.clone();
+        meta["daemon"]["pid"] = serde_json::json!(999_999_999);
+        assert!(!check(&spec, &meta));
+        meta = base.clone();
+        meta["daemon"]["startedAt"] = serde_json::json!(ms - 3 * 60 * 60 * 1000);
+        assert!(!check(&spec, &meta));
+        meta = base.clone();
+        meta["completionEvents"] = serde_json::json!(false);
+        assert!(!check(&spec, &meta));
+        meta = base.clone();
+        meta["daemon"]["state"] = serde_json::json!("stopping");
+        assert!(!check(&spec, &meta));
+        meta = base.clone();
+        meta["daemon"]["state"] = serde_json::json!("starting");
+        meta["daemon"].as_object_mut().unwrap().remove("pid");
+        assert!(check(&spec, &meta));
+
+        let mut exited = base.clone();
+        exited["daemon"]["state"] = serde_json::json!("exited");
+        exited["daemon"].as_object_mut().unwrap().remove("pid");
+        exited["daemon"]["exitedAt"] = serde_json::json!(ms - 1000);
+        exited["pendingCompletions"] = serde_json::json!([{"name": "build"}]);
+        assert!(check(&spec, &exited));
+        exited["daemon"]["exitedAt"] = serde_json::json!(ms - 120_000);
+        assert!(!check(&spec, &exited));
+        exited["daemon"]["exitedAt"] = serde_json::json!(ms - 1000);
+        exited["pendingCompletions"] = serde_json::json!([]);
+        assert!(!check(&spec, &exited));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn goal_active_of(lines: &[&str]) -> bool {
+        let path = std::env::temp_dir().join(format!("triage-omp-goal-{}-{}.jsonl", std::process::id(), lines.len()));
+        fs::write(&path, lines.join("\n")).unwrap();
+        let active = goal_active(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        active
+    }
+
+    #[test]
+    fn goal_active_reads_latest_mode_change() {
+        let user = r#"{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"go"}]}}"#;
+        let active = r#"{"type":"mode_change","id":"m1","mode":"goal","data":{"goal":{"id":"g1","status":"active"}}}"#;
+        let complete = r#"{"type":"mode_change","id":"m1","mode":"goal","data":{"goal":{"id":"g1","status":"complete"}}}"#;
+        let none = r#"{"type":"mode_change","id":"m2","mode":"none"}"#;
+        let paused = r#"{"type":"mode_change","id":"m3","mode":"goal_paused","data":{"goal":{"id":"g1","status":"paused"}}}"#;
+        let budget = r#"{"type":"mode_change","id":"m4","mode":"goal","data":{"goal":{"id":"g1","status":"budget-limited"}}}"#;
+
+        assert!(goal_active_of(&[active]));
+        assert!(!goal_active_of(&[active, complete]));
+        assert!(!goal_active_of(&[active, none]));
+        assert!(!goal_active_of(&[paused]));
+        assert!(!goal_active_of(&[budget]));
+        assert!(!goal_active_of(&[user]));
     }
 }

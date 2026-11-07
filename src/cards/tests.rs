@@ -122,6 +122,13 @@ list-panes)
     fi
     ;;
 capture-pane)
+    if [ -d "$HOME/tmux-capture-seq" ]; then
+        count=0
+        if [ -f "$HOME/tmux-captures.log" ]; then count=$(/bin/wc -l < "$HOME/tmux-captures.log"); fi
+        printf 'x\n' >> "$HOME/tmux-captures.log"
+        if [ -f "$HOME/tmux-capture-seq/$count" ]; then /bin/cat "$HOME/tmux-capture-seq/$count"; else /bin/cat "$HOME/tmux-capture-seq/rest"; fi
+        exit 0
+    fi
     if [ -d "$HOME/tmux-screens" ]; then
         count=0
         if [ -f "$HOME/tmux-keys.log" ]; then count=$(/bin/wc -l < "$HOME/tmux-keys.log"); fi
@@ -2350,6 +2357,136 @@ fn wake_pending_defers_info_card() {
         Some(&bin),
     );
 }
+#[cfg(unix)]
+#[test]
+fn live_service_holds_reply_card() {
+    if let Some(root) = child_root("live_service_holds_reply_card") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let session = "01a1b6cd-0000-7000-8000-000000000001";
+        let transcript = root.join(format!("2026-11-07T16-18-24-308Z_{session}.jsonl"));
+        write_transcript(&root, "/dev/pts/12", &transcript, &[
+            user_line("u1", "Retry the build."),
+            assistant_entry("a1", "stop", Some("Build still running; the service reports when it finishes."), None),
+        ]);
+        let service = root.join(".omp/run/daemons/0000000000000000/daemons/build");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(service.join("spec.json"), r#"{"name":"build"}"#).unwrap();
+        let meta = |state: &str, exited_at: Option<u64>, pending: bool| {
+            let mut daemon = serde_json::json!({"name":"build","state":state,"owner":session,"pid":if state == "running" { serde_json::json!(std::process::id()) } else { serde_json::Value::Null },"startedAt":events::now_ms()});
+            if let Some(exited_at) = exited_at { daemon["exitedAt"] = exited_at.into(); }
+            serde_json::json!({"daemon":daemon,"completionEvents":true,"pendingCompletions":if pending { serde_json::json!([{"name":"build"}]) } else { serde_json::json!([]) }}).to_string()
+        };
+        fs::write(service.join("meta.json"), meta("running", None, false)).unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(done_cards(&db).is_empty());
+
+        fs::write(service.join("meta.json"), meta("exited", Some(events::now_ms() as u64), true)).unwrap();
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(done_cards(&db).is_empty());
+
+        let mut lines = fs::read_to_string(&transcript).unwrap();
+        lines.push_str(&serde_json::json!({"type":"custom_message","id":"c1","customType":"launch-completion","content":"Supervised process build exited with exit code 0."}).to_string());
+        lines.push('\n');
+        fs::write(&transcript, lines).unwrap();
+        fs::write(service.join("meta.json"), meta("exited", Some(events::now_ms() as u64), false)).unwrap();
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(done_cards(&db).is_empty());
+
+        let mut lines = fs::read_to_string(&transcript).unwrap();
+        lines.push_str(&assistant_entry("a2", "stop", Some("Build finished green."), None));
+        lines.push('\n');
+        fs::write(&transcript, lines).unwrap();
+        assert_eq!(tracker.tick(&db).written, 1);
+        assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a2"]);
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("live_service_holds_reply_card", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
+#[cfg(unix)]
+#[test]
+fn active_goal_holds_reply_card_until_grace_ends() {
+    if let Some(root) = child_root("active_goal_holds_reply_card_until_grace_ends") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[
+            serde_json::json!({"type":"mode_change","id":"m1","mode":"goal","data":{"goal":{"id":"g1","status":"active"}}}).to_string(),
+            user_line("u1", "Retry the gate."),
+            assistant_entry("a1", "stop", Some("Gate attempt 1 still in flight."), None),
+        ]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(done_cards(&db).is_empty());
+        let old = std::time::SystemTime::now().checked_sub(Duration::from_secs(60)).unwrap();
+        fs::File::options().write(true).open(&transcript).unwrap().set_modified(old).unwrap();
+        assert_eq!(tracker.tick(&db).written, 1);
+        assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a1"]);
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("active_goal_holds_reply_card_until_grace_ends", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
+#[cfg(unix)]
+#[test]
+fn final_report_cards_despite_pending_turn() {
+    if let Some(root) = child_root("final_report_cards_despite_pending_turn") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let session = "01a1b6cd-0000-7000-8000-000000000001";
+        let transcript = root.join(format!("2026-11-07T16-18-24-308Z_{session}.jsonl"));
+        let service = root.join(".omp/run/daemons/0000000000000000/daemons/build");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(service.join("spec.json"), r#"{"name":"build"}"#).unwrap();
+        fs::write(service.join("meta.json"), serde_json::json!({"daemon":{"name":"build","state":"running","owner":session,"pid":std::process::id(),"startedAt":events::now_ms()},"completionEvents":true,"pendingCompletions":[]}).to_string()).unwrap();
+        write_transcript(&root, "/dev/pts/12", &transcript, &[
+            serde_json::json!({"type":"mode_change","id":"m1","mode":"goal","data":{"goal":{"id":"g1","status":"active"}}}).to_string(),
+            user_line("u1", "Ship it."),
+            assistant_entry("a1", "stop", Some("ENVOY_STATUS: complete\n\nShipped; watcher still running."), None),
+        ]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        assert_eq!(tracker.tick(&db).written, 1);
+        let queue = done_cards(&db);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, "done:%12:a1");
+        assert_eq!(queue[0].title, "Done: Shipped; watcher still running.");
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("final_report_cards_despite_pending_turn", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
+#[cfg(unix)]
+#[test]
+fn torn_wait_row_holds_card() {
+    if let Some(root) = child_root("torn_wait_row_holds_card") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let screens = root.join("tmux-capture-seq");
+        fs::create_dir_all(&screens).unwrap();
+        fs::write(screens.join("0"), "  ⎋ Waiting fo\n\n───\n\n───\n status\n").unwrap();
+        fs::write(screens.join("rest"), include_str!("../../tests/fixtures/async_wait.txt")).unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_entry("a1", "stop", Some("Ending turn to await bg_5."), None)]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(done_cards(&db).is_empty());
+        fs::write(screens.join("rest"), "───\n\n───\n status\n").unwrap();
+        assert_eq!(tracker.tick(&db).written, 1);
+        assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a1"]);
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("torn_wait_row_holds_card", scratch.path(), Some(scratch.path()), Some(&bin));
+}
 
 #[cfg(unix)]
 #[test]
@@ -2883,6 +3020,7 @@ fn status_only_report_warns_and_preserves_info_ack() {
             &db,
             &pane,
             std::slice::from_ref(&pane),
+            &mut HashMap::new(),
             &mut HashMap::new(),
             &mut written,
         );

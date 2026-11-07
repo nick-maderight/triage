@@ -25,6 +25,8 @@ pub struct Tracker {
     /// Pane id -> transcript path and length at the last info-card check that read
     /// the run as still going.
     stalled_info: HashMap<String, (PathBuf, u64)>,
+    /// Pane id -> the reply an info-card check held because omp will start the next turn itself.
+    held_info: HashMap<String, HeldReply>,
     /// Pane id -> last snapshot and transcript of every pane where omp itself runs, so a
     /// pane that disappears can still have its session audited.
     seen: HashMap<String, (tmux::Pane, PathBuf)>,
@@ -56,6 +58,15 @@ struct CachedExit {
     length: u64,
 }
 
+/// A finished reply whose card waits because omp starts the session's next turn itself.
+/// It keeps the transcript version the reply was read from, and whether the goal was
+/// active then. Later polls recheck only the hold while the file stays unchanged.
+struct HeldReply {
+    path: PathBuf,
+    length: u64,
+    goal: bool,
+}
+
 /// Outcome of one tick: how many events were written. The caller broadcasts a
 /// queue change when it is above zero.
 pub struct TickReport {
@@ -74,6 +85,7 @@ impl Tracker {
             pending_panes,
             exit_scans: HashMap::new(),
             stalled_info: HashMap::new(),
+            held_info: HashMap::new(),
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
             #[cfg(test)]
@@ -226,9 +238,16 @@ impl Tracker {
     ///   only waits on background jobs, so the title alone cannot tell a stop. A `stop`
     ///   reply earns a card; an `error` stop earns a `Stopped with error` card with level
     ///   `error`; an `aborted` turn (an interrupt) earns none. A mid-turn message, a
-    ///   working row that shows a background-job wait or auto-retry (`omp::run_paused`),
-    ///   or a reply followed by a delivered background-job result (`async-result`), means
-    ///   the run continues, so the check retries on later polls. When the reply is
+    ///   working row that shows a background-job wait or auto-retry (`omp::run_paused`,
+    ///   read on three captures because omp redraws the row on every spinner tick), or a
+    ///   reply followed by a delivered background-job result (`async-result`) or
+    ///   supervised-process exit (`launch-completion`), means the run continues. The check
+    ///   retries on later polls. A reply without a status line also waits while omp will
+    ///   start the next turn itself. That is the case while the session owns a supervised
+    ///   process that will report its exit (`omp::service_wake_pending`), and for
+    ///   `GOAL_CONTINUATION_GRACE` after the transcript last changed while the session's
+    ///   goal is active (`omp::goal_active`). Later polls recheck only that hold until the
+    ///   transcript changes. When the reply is
     ///   a final report (opens with a `*_STATUS: complete|agent-done|incomplete` line, see
     ///   `omp::final_report`), the card body is the report; a report written before a
     ///   background wait carries over, followed by the closing reply. A reply without a
@@ -320,6 +339,7 @@ impl Tracker {
                 }
                 self.states.remove(&pane.id);
                 self.stalled_info.remove(&pane.id);
+                self.held_info.remove(&pane.id);
                 self.pending_ask_ids.remove(&pane.id);
                 continue;
             }
@@ -390,7 +410,7 @@ impl Tracker {
                         finish_resumed_cards(db, pane, &mut written)
                     }
                     (Some(PaneState::Working) | None, PaneState::Waiting) => {
-                        add_info_card(db, pane, &panes, &mut self.stalled_info, &mut written)
+                        add_info_card(db, pane, &panes, &mut self.stalled_info, &mut self.held_info, &mut written)
                     }
                     _ => true,
                 };
@@ -402,7 +422,7 @@ impl Tracker {
                 }
             }
             if state == PaneState::Waiting && previous == Some(PaneState::Waiting) {
-                add_info_card(db, pane, &panes, &mut self.stalled_info, &mut written);
+                add_info_card(db, pane, &panes, &mut self.stalled_info, &mut self.held_info, &mut written);
             }
             if state == PaneState::Asking && (previous != Some(state) || ask_changed) {
                 if let Some((_, call)) = ask {
@@ -423,6 +443,7 @@ impl Tracker {
             .keys()
             .chain(self.pending_panes.iter())
             .chain(self.stalled_info.keys())
+            .chain(self.held_info.keys())
             .chain(self.seen.keys())
             .filter(|pane| !present.contains(pane.as_str()))
             .cloned()
@@ -433,6 +454,7 @@ impl Tracker {
         for pane in gone {
             self.pending_ask_cache.remove(&pane);
             self.stalled_info.remove(&pane);
+            self.held_info.remove(&pane);
             self.pending_proposals.remove(&pane);
             self.proposal_cache.remove(&pane);
             // Information cards are swept once per vanish. A retried audit skips the sweep,
@@ -898,10 +920,18 @@ fn card_options(question: &omp::Question) -> Vec<CardOption> {
         .collect()
 }
 
+/// How long a reply without a status line waits for an active goal's continuation, counted
+/// from the transcript's last change. omp's TUI starts that turn 800 ms after a settled one
+/// unless a gate it keeps only in memory skips it.
+const GOAL_CONTINUATION_GRACE: Duration = Duration::from_secs(30);
+
 /// Queue an info card only when a pane that turned Waiting has finished its run.
-/// A final reply or error qualifies when the pane shows no background-job wait or
-/// automatic retry. A delivered background result after a reply means the run continues.
-/// Retry on a later poll. An interrupt queues nothing.
+/// A final reply or error qualifies when three screen captures show no background-job
+/// wait or automatic retry. A delivered background result or supervised-process exit
+/// after a reply means the run continues. A reply without a status line also waits while
+/// omp will start the next turn itself (see `omp::service_wake_pending` and
+/// `omp::goal_active`). `held` keeps that reply's transcript version. Later polls recheck
+/// only the hold. An interrupt queues nothing.
 /// `false` means retry on the next poll. `stalled` remembers the last checked version,
 /// even when the run continued. Unchanged files are not parsed again.
 fn add_info_card(
@@ -909,20 +939,31 @@ fn add_info_card(
     pane: &tmux::Pane,
     panes: &[tmux::Pane],
     stalled: &mut HashMap<String, (PathBuf, u64)>,
+    held: &mut HashMap<String, HeldReply>,
     written: &mut usize,
 ) -> bool {
     let Some(path) = omp::transcript_path(pane) else {
         return false;
     };
-    let Ok(length) = fs::metadata(&path).map(|metadata| metadata.len()) else {
+    let Ok(metadata) = fs::metadata(&path) else {
         return false;
     };
+    let length = metadata.len();
     if stalled
         .get(&pane.id)
         .is_some_and(|(stalled_path, stalled_length)| *stalled_path == path && *stalled_length == length)
     {
         return false;
     }
+    let fresh = metadata
+        .modified()
+        .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < GOAL_CONTINUATION_GRACE));
+    if held.get(&pane.id).is_some_and(|reply| {
+        reply.path == path && reply.length == length && ((reply.goal && fresh) || omp::service_wake_pending(&path))
+    }) {
+        return false;
+    }
+    held.remove(&pane.id);
     let Ok(screen) = tmux::screen(&pane.id) else {
         return false;
     };
@@ -937,6 +978,28 @@ fn add_info_card(
         Ok(end) => end,
         Err(_) => return false,
     };
+    if let Some(omp::TurnEnd::Reply { text, .. }) = &end {
+        // omp starts the next turn itself. Only a final report may card before that turn.
+        if omp::final_report(text).is_none() {
+            let goal = fresh && omp::goal_active(&path).unwrap_or(false);
+            if goal || omp::service_wake_pending(&path) {
+                held.insert(pane.id.clone(), HeldReply { path, length, goal });
+                return false;
+            }
+        }
+    }
+    // omp rewrites its working row on every spinner tick. One capture can miss a background-job
+    // wait or retry. Two more captures must agree before a card goes out.
+    if matches!(end, Some(omp::TurnEnd::Reply { .. } | omp::TurnEnd::Error { .. })) {
+        for _ in 0..2 {
+            let Ok(screen) = tmux::screen(&pane.id) else {
+                return false;
+            };
+            if omp::run_paused(&screen) {
+                return false;
+            }
+        }
+    }
     let succeeded = match end {
         None => true,
         Some(end) => queue_turn_card(db, pane, panes, &path, end, written),
