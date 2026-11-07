@@ -48,7 +48,7 @@ function harness(apiImpl) {
 
 const card = { id: 'x', title: 'T' };
 
-test('reload success posts, toasts, announces, refreshes and toggles the button', async () => {
+test('reload success posts, announces, refreshes and toggles the button', async () => {
   const button = { disabled: false };
   let during;
   const { context, log } = harness(async () => {
@@ -58,7 +58,7 @@ test('reload success posts, toasts, announces, refreshes and toggles the button'
   await context.reloadHistoryCard(card, button);
   assert.equal(log.api.length, 1);
   assert.equal(log.api[0][0], '/v1/cards/x/reload');
-  assert.deepEqual(log.toasts, [['Reloaded · T', false]]);
+  assert.deepEqual(log.toasts, []);
   assert.deepEqual(log.announced, ['Reloaded · T']);
   assert.equal(log.refreshes, 1);
   assert.equal(during, true, 'button disabled during the request');
@@ -69,7 +69,7 @@ test('reload id is URL-encoded and untitled cards get a fallback name', async ()
   const { context, log } = harness(async () => ({ ok: true }));
   await context.reloadHistoryCard({ id: 'a/b' }, { disabled: false });
   assert.equal(log.api[0][0], '/v1/cards/a%2Fb/reload');
-  assert.deepEqual(log.toasts, [['Reloaded · Untitled card', false]]);
+  assert.deepEqual(log.announced, ['Reloaded · Untitled card']);
 });
 
 test('reload 409 reports already queued as an error toast', async () => {

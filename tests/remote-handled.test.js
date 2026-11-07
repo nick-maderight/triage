@@ -62,7 +62,7 @@ test('remote removal announces handling, prunes its draft, advances and guards i
 
   harness.context.applyQueue({ cards: [next], version: 1 });
 
-  assert.deepEqual(harness.toasts, [{ message: 'Handled elsewhere · Current card', error: false }]);
+  assert.deepEqual(harness.toasts, []);
   assert.deepEqual([...harness.state.drafts.keys()], ['next']);
   assert.equal(harness.state.shownId, 'next');
   assert.equal(harness.state.remoteSwapUntil, 1500);

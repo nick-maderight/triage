@@ -154,6 +154,7 @@ const S = {
     const e = $('#announcer');
     if (e) e.textContent = t;
   }
+  // Toasts report errors only; announce() carries every successful result.
   function toast(t, error = false) {
     const e = el('div', `toast${error ? ' error' : ''}`, error && el('strong', null, '! '), t);
     e.setAttribute('role', error ? 'alert' : 'status');
@@ -323,7 +324,6 @@ const S = {
     if (remoteRemoved) {
       const message = `Handled elsewhere · ${titleOf(shown)}`;
       S.remoteSwapUntil = Date.now() + 500;
-      toast(message);
       $('.card')?.classList.add('leaving-right');
       S.direction = 1;
       if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
@@ -844,12 +844,10 @@ const S = {
         : !(title.scrollHeight > title.clientHeight + 1);
   }
   async function copyReport(c) {
-    toast('Copying reply…');
     announce('Copying reply…');
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable.');
       await navigator.clipboard.writeText(String(c.body || ''));
-      toast('Reply copied');
       announce('Reply copied.');
     } catch (e) {
       toast(`Copy failed: ${e.message}`, true);
@@ -1519,7 +1517,6 @@ const S = {
     const dir = verb === 'skip' ? 'left' : verb === 'later' ? 'down' : 'right',
       text = resultMessage(c, verb, body, choice);
     $('.card')?.classList.add(`leaving-${dir}`);
-    toast(text);
     if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
       await new Promise((r) => setTimeout(r, 180));
     const after = snapshot();
@@ -1547,7 +1544,7 @@ const S = {
       const conflict = e.status === 409 || e.status === 404,
         message = conflict ? `Already handled elsewhere · ${titleOf(c)}` : `${e.message} · ${titleOf(c)}`;
       if (conflict) S.drafts.delete(c.id);
-      toast(message, !conflict);
+      if (!conflict) toast(message, true);
       announce(conflict ? message : `Error: ${message}`);
     } finally {
       S.inflight.delete(c.id);
@@ -1629,7 +1626,6 @@ const S = {
       S.pending = null;
       render(v);
       const text = `Jumped to ${c.source?.target || pane}`;
-      toast(text);
       announce(text);
     } catch (e) {
       failed(c, e, v);
@@ -2184,7 +2180,7 @@ const S = {
       const data = await api('/v1/sessions', body);
       $('#compose-prompt').value = '';
       $('#compose').close();
-      toast(`Started · ${data.pane}`);
+      announce(`Started · ${data.pane}`);
     } catch (err) {
       hint.textContent = err.message || 'Could not start the session.';
     } finally {
@@ -2309,7 +2305,6 @@ const S = {
     const name = card.title || 'Untitled card';
     try {
       await api(`/v1/cards/${enc(card.id)}/reload`, {});
-      toast(`Reloaded · ${name}`);
       announce(`Reloaded · ${name}`);
       void refresh();
     } catch (e) {

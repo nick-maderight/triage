@@ -289,7 +289,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
         requests.push({ url, init });
         return { ok: true, json: async () => ({ pane: '%51' }) };
       },
-      toast() {},
+      announce() {},
     });
   vm.runInContext(
     `${functionSource('api', true)}\n${functionSource('submitCompose', true)}\nglobalThis.submitCompose = submitCompose;`,

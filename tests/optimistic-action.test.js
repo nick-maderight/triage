@@ -90,7 +90,7 @@ test('an action moves to the next card before the daemon answers', async () => {
   assert.deepEqual(state.cards.map((c) => c.id), ['b']);
   assert.equal(state.shownId, 'b');
   assert.ok(state.inflight.has('a'));
-  assert.deepEqual(calls.toasts, [{ message: 'Sent Yes · A', error: false }]);
+  assert.deepEqual(calls.toasts, []);
   reply({ ok: true });
   await settled();
   assert.equal(state.inflight.size, 0);
@@ -129,10 +129,7 @@ test('a failed action reports its error and keeps the draft for the returning ca
   await context.act(state.cards[0], 'answer', { option: 0 }, 'opt-0');
   await settled();
 
-  assert.deepEqual(calls.toasts, [
-    { message: 'Sent Yes · A', error: false },
-    { message: 'ask dialog not found · A', error: true },
-  ]);
+  assert.deepEqual(calls.toasts, [{ message: 'ask dialog not found · A', error: true }]);
   assert.deepEqual(calls.announcements, ['Error: ask dialog not found · A']);
   assert.equal(state.drafts.get('a').note, 'note a');
   assert.equal(state.inflight.size, 0);
@@ -151,7 +148,7 @@ test('409 and 404 report a card handled elsewhere without an error', async () =>
     await context.act(state.cards[0], 'answer', { option: 0 }, 'opt-0');
     await settled();
 
-    assert.deepEqual(calls.toasts.at(-1), { message: 'Already handled elsewhere · A', error: false });
+    assert.deepEqual(calls.toasts, []);
     assert.deepEqual(calls.announcements, ['Already handled elsewhere · A']);
     assert.equal(state.drafts.has('a'), false);
     assert.equal(state.remoteSwapUntil, 0);

@@ -442,9 +442,10 @@
         document.querySelector('#compose-prompt').value = 'fixture prompt';
         document.querySelector('#compose-form').requestSubmit();
         await waitFor(
-          () => started === 1 && !dialog.open && text('#toasts').includes('Started · %fixture'),
-          'session started toast',
+          () => started === 1 && !dialog.open && text('#announcer').includes('Started · %fixture'),
+          'session started announcement',
         );
+        assert(!text('#toasts').includes('Started'), 'starting a session shows no toast');
         await new Promise((resolve) => setTimeout(resolve, 500));
         assert(!peek.open, 'starting a session leaves the peek panel closed');
         return { scenario: 'compose-stays', passed: true };
