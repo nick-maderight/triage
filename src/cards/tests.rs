@@ -2157,21 +2157,35 @@ fn background_wait_defers_info_card() {
             &transcript,
             &[assistant_entry("a1", "stop", Some("started"), None)],
         );
+        let append = |line: String| {
+            let mut lines = fs::read_to_string(&transcript).unwrap();
+            lines.push_str(&line);
+            lines.push('\n');
+            fs::write(&transcript, lines).unwrap();
+        };
         let db = Db::open(&root.join("triage.db")).unwrap();
         let mut tracker = Tracker::default();
-        let waiting = tracker.tick(&db).written;
-        let waiting_queue = done_cards(&db);
+        assert_eq!(tracker.tick(&db).written, 0, "wait row shown");
+        // omp drops the row as the job finishes, before the job's result reaches the transcript.
         fs::remove_file(screens.join("0")).unwrap();
-        let finished = tracker.tick(&db).written;
-        let queue = done_cards(&db);
-        assert!(
-            waiting == 0
-                && waiting_queue.is_empty()
-                && finished == 1
-                && queue.len() == 1
-                && queue[0].id == "done:%12:a1",
-            "queue: {queue:?}"
+        assert_eq!(tracker.tick(&db).written, 0, "row gone, transcript unchanged");
+        append(
+            serde_json::json!({
+                "type": "custom_message",
+                "id": "c1",
+                "customType": "async-result",
+                "content": "bg_1 finished"
+            })
+            .to_string(),
         );
+        assert_eq!(tracker.tick(&db).written, 0, "job result delivered");
+        append(assistant_entry("a2", "stop", Some("Background job finished."), None));
+        assert_eq!(tracker.tick(&db).written, 1, "closing reply");
+        assert_eq!(
+            done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(),
+            ["done:%12:a2"]
+        );
+        assert!(db.card("done:%12:a1").unwrap().is_none());
         return;
     }
 
@@ -2479,6 +2493,10 @@ fn torn_wait_row_holds_card() {
         assert_eq!(tracker.tick(&db).written, 0);
         assert!(done_cards(&db).is_empty());
         fs::write(screens.join("rest"), "───\n\n───\n status\n").unwrap();
+        assert_eq!(tracker.tick(&db).written, 0, "row gone, transcript unchanged");
+        assert!(done_cards(&db).is_empty());
+        // A run that settles without a wake reports after the grace expires.
+        tracker.paused_info.get_mut("%12").unwrap().2 = Instant::now().checked_sub(WAIT_ROW_GRACE).unwrap();
         assert_eq!(tracker.tick(&db).written, 1);
         assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a1"]);
         return;
@@ -3020,6 +3038,7 @@ fn status_only_report_warns_and_preserves_info_ack() {
             &db,
             &pane,
             std::slice::from_ref(&pane),
+            &mut HashMap::new(),
             &mut HashMap::new(),
             &mut HashMap::new(),
             &mut written,

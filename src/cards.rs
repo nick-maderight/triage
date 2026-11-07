@@ -10,7 +10,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Remembers each pane's last state so only transitions produce cards.
 #[derive(Default)]
@@ -27,6 +27,9 @@ pub struct Tracker {
     stalled_info: HashMap<String, (PathBuf, u64)>,
     /// Pane id -> the reply an info-card check held because omp will start the next turn itself.
     held_info: HashMap<String, HeldReply>,
+    /// Pane id -> transcript path and length when a capture last showed omp's wait or
+    /// retry row, and when it did.
+    paused_info: HashMap<String, (PathBuf, u64, Instant)>,
     /// Pane id -> last snapshot and transcript of every pane where omp itself runs, so a
     /// pane that disappears can still have its session audited.
     seen: HashMap<String, (tmux::Pane, PathBuf)>,
@@ -86,6 +89,7 @@ impl Tracker {
             exit_scans: HashMap::new(),
             stalled_info: HashMap::new(),
             held_info: HashMap::new(),
+            paused_info: HashMap::new(),
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
             #[cfg(test)]
@@ -241,26 +245,25 @@ impl Tracker {
     ///   working row that shows a background-job wait or auto-retry (`omp::run_paused`,
     ///   read on three captures because omp redraws the row on every spinner tick), or a
     ///   reply followed by a delivered background-job result (`async-result`) or
-    ///   supervised-process exit (`launch-completion`), means the run continues. The check
-    ///   retries on later polls. A reply without a status line also waits while omp will
-    ///   start the next turn itself. That is the case while the session owns a supervised
-    ///   process that will report its exit (`omp::service_wake_pending`), and for
-    ///   `GOAL_CONTINUATION_GRACE` after the transcript last changed while the session's
-    ///   goal is active (`omp::goal_active`). Later polls recheck only that hold until the
-    ///   transcript changes. When the reply is
+    ///   supervised-process exit (`launch-completion`) means the run continues. Check
+    ///   again on later polls. omp drops the wait row when a job finishes, seconds before
+    ///   its result reaches the transcript. A reply last seen with that row waits
+    ///   `WAIT_ROW_GRACE` while the transcript stays unchanged. Replies without a status
+    ///   line also wait when omp starts the next turn itself. This occurs while the session
+    ///   owns a supervised process that reports its exit (`omp::service_wake_pending`), or
+    ///   for `GOAL_CONTINUATION_GRACE` after a transcript update during an active goal
+    ///   (`omp::goal_active`). Later polls check those holds until the transcript changes.
+    ///   When the reply is
     ///   a final report (opens with a `*_STATUS: complete|agent-done|incomplete` line, see
     ///   `omp::final_report`), the card body is the report; a report written before a
     ///   background wait carries over, followed by the closing reply. A reply without a
     ///   status line is titled with its first non-empty line and has the reply as body.
-    ///   A pane first seen Waiting gets the
-    ///   same check, so a short run whose Working window fell between polls still reports;
-    ///   the card id makes the check idempotent. A reply keeps one card across pane
-    ///   ids: when tmux restarts and omp resumes under a new pane id, a reply the user
-    ///   already dealt with stays handled, and only a reply whose card closed because
-    ///   its pane exited comes back. A pane's omp breadcrumb counts only when it was
-    ///   written after the pane's pty appeared or the pane's omp was started with
-    ///   `--resume` or `--restore` of that session, so a restored shell reads no
-    ///   transcript left on a reused pts number.
+    ///   A pane first seen Waiting gets the same check, so a short run whose Working
+    ///   window fell between polls still reports; the card id makes the check idempotent.
+    ///   A reply keeps one card across pane ids: when tmux restarts and omp resumes under
+    ///   a new pane id, an already-handled reply stays handled. A card closed because its
+    ///   pane exited may return. A pane's omp breadcrumb counts only when it was written
+    ///   after the pty appeared or the pane's omp started with `--resume` or `--restore`.
     /// - A Waiting to Working or Asking transition records `done` on unresolved info cards
     ///   from that pane instance with reason `resumed in pane`.
     /// - A pane that stays Waiting checks its transcript again after it grows.
@@ -340,6 +343,7 @@ impl Tracker {
                 self.states.remove(&pane.id);
                 self.stalled_info.remove(&pane.id);
                 self.held_info.remove(&pane.id);
+                self.paused_info.remove(&pane.id);
                 self.pending_ask_ids.remove(&pane.id);
                 continue;
             }
@@ -410,7 +414,15 @@ impl Tracker {
                         finish_resumed_cards(db, pane, &mut written)
                     }
                     (Some(PaneState::Working) | None, PaneState::Waiting) => {
-                        add_info_card(db, pane, &panes, &mut self.stalled_info, &mut self.held_info, &mut written)
+                        add_info_card(
+                            db,
+                            pane,
+                            &panes,
+                            &mut self.stalled_info,
+                            &mut self.held_info,
+                            &mut self.paused_info,
+                            &mut written,
+                        )
                     }
                     _ => true,
                 };
@@ -422,7 +434,15 @@ impl Tracker {
                 }
             }
             if state == PaneState::Waiting && previous == Some(PaneState::Waiting) {
-                add_info_card(db, pane, &panes, &mut self.stalled_info, &mut self.held_info, &mut written);
+                add_info_card(
+                    db,
+                    pane,
+                    &panes,
+                    &mut self.stalled_info,
+                    &mut self.held_info,
+                    &mut self.paused_info,
+                    &mut written,
+                );
             }
             if state == PaneState::Asking && (previous != Some(state) || ask_changed) {
                 if let Some((_, call)) = ask {
@@ -444,6 +464,7 @@ impl Tracker {
             .chain(self.pending_panes.iter())
             .chain(self.stalled_info.keys())
             .chain(self.held_info.keys())
+            .chain(self.paused_info.keys())
             .chain(self.seen.keys())
             .filter(|pane| !present.contains(pane.as_str()))
             .cloned()
@@ -455,6 +476,7 @@ impl Tracker {
             self.pending_ask_cache.remove(&pane);
             self.stalled_info.remove(&pane);
             self.held_info.remove(&pane);
+            self.paused_info.remove(&pane);
             self.pending_proposals.remove(&pane);
             self.proposal_cache.remove(&pane);
             // Information cards are swept once per vanish. A retried audit skips the sweep,
@@ -925,21 +947,24 @@ fn card_options(question: &omp::Question) -> Vec<CardOption> {
 /// unless a gate it keeps only in memory skips it.
 const GOAL_CONTINUATION_GRACE: Duration = Duration::from_secs(30);
 
-/// Queue an info card only when a pane that turned Waiting has finished its run.
-/// A final reply or error qualifies when three screen captures show no background-job
-/// wait or automatic retry. A delivered background result or supervised-process exit
-/// after a reply means the run continues. A reply without a status line also waits while
-/// omp will start the next turn itself (see `omp::service_wake_pending` and
-/// `omp::goal_active`). `held` keeps that reply's transcript version. Later polls recheck
-/// only the hold. An interrupt queues nothing.
-/// `false` means retry on the next poll. `stalled` remembers the last checked version,
-/// even when the run continued. Unchanged files are not parsed again.
+/// How long a reply last seen with omp's wait or retry row stays held once the row is
+/// gone. omp drops the row as a background job finishes before its result reaches the
+/// transcript. Panes stayed waiting up to 20 s in that gap.
+const WAIT_ROW_GRACE: Duration = Duration::from_secs(30);
+
+/// Queue an info card after a pane that turned Waiting finishes its run.
+/// The wait-row hold delays replies after a clean capture if an earlier one saw the row.
+/// It applies only to the same transcript version and `WAIT_ROW_GRACE` window.
+/// `paused` records the last sighting of the row. A delivered result or process exit means
+/// the run continues. Replies without status lines also wait for goal or process continuations.
+/// `held` stores that reply's transcript version. Later polls check the hold only.
 fn add_info_card(
     db: &Db,
     pane: &tmux::Pane,
     panes: &[tmux::Pane],
     stalled: &mut HashMap<String, (PathBuf, u64)>,
     held: &mut HashMap<String, HeldReply>,
+    paused: &mut HashMap<String, (PathBuf, u64, Instant)>,
     written: &mut usize,
 ) -> bool {
     let Some(path) = omp::transcript_path(pane) else {
@@ -968,6 +993,14 @@ fn add_info_card(
         return false;
     };
     if omp::run_paused(&screen) {
+        paused.insert(pane.id.clone(), (path, length, Instant::now()));
+        return false;
+    }
+    // shortcut: an entry between the row vanishing and job result releases the hold early.
+    // Key on reply id if one appears in card history.
+    if paused.get(&pane.id).is_some_and(|(seen_path, seen_length, seen)| {
+        *seen_path == path && *seen_length == length && seen.elapsed() < WAIT_ROW_GRACE
+    }) {
         return false;
     }
     let end = match omp::turn_end(&path) {
@@ -996,6 +1029,7 @@ fn add_info_card(
                 return false;
             };
             if omp::run_paused(&screen) {
+                paused.insert(pane.id.clone(), (path.clone(), length, Instant::now()));
                 return false;
             }
         }
