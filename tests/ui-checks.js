@@ -598,6 +598,51 @@
         if (dialog.open) dialog.close();
       }
     },
+    checkPlanApproval = async () => {
+      await waitFor(() => document.querySelector('.card[data-kind="plan"]'), 'a plan card in the queue');
+      const picker = document.querySelector('#picker'),
+        field = document.querySelector('#plan-executor'),
+        nativeFetch = window.fetch,
+        models = [
+          { selector: '@default', name: 'default role (Fixture Model)' },
+          { selector: '@smol', name: 'smol role (Fixture Model)' },
+        ];
+      let posted = null;
+      const fixtureFetch = function (input, init) {
+        const request = input instanceof Request ? input : null,
+          method = (init?.method || request?.method || 'GET').toUpperCase(),
+          url = new URL(request?.url || String(input), location.href);
+        if (url.origin !== location.origin) return nativeFetch.call(this, input, init);
+        if (method === 'GET' && url.pathname === '/v1/models')
+          return json({ models, execution_models: models, default: '@default', thinking: ['low'], default_thinking: 'low' });
+        if (method === 'POST' && /^\/v1\/cards\/[^/]+\/answer$/.test(url.pathname)) {
+          posted = JSON.parse(init?.body ?? '{}');
+          return json({ ok: true });
+        }
+        return nativeFetch.call(this, input, init);
+      };
+      try {
+        window.fetch = fixtureFetch;
+        assert(field, 'an answerable plan card shows its Execution model field');
+        field.click();
+        await waitFor(() => picker.open && rows().length === 3, 'execution roles loaded in the picker');
+        assert(text('#picker-title') === 'Execution model', 'picker title identifies the plan execution model');
+        assert(rows()[1].textContent.includes('@default') || rows()[1].textContent.includes('default role'), 'cycle role appears after Default');
+        setQuery('smol');
+        await waitFor(() => rows().length === 1, 'smol role search');
+        keydown(document.querySelector('#picker-search'), 'Enter');
+        await closed(field, 'execution model picker closes');
+        assert(field.value === '@smol', 'picker stores selected execution role');
+        document.querySelector('#opt-0').click();
+        await waitFor(() => posted !== null, 'approval request is posted');
+        assert(posted.option === 0 && posted.executor === '@smol', 'Approve posts selected role');
+        await waitFor(() => document.querySelector('#plan-executor'), 'mocked plan card returns after refresh');
+        return { scenario: 'plan-approval', passed: true };
+      } finally {
+        window.fetch = nativeFetch;
+        if (picker.open) picker.close();
+      }
+    },
     checkPlanInto = async () => {
       await waitFor(() => document.querySelector('.card'), 'a card in the queue');
       const compose = document.querySelector('#compose'),
@@ -932,6 +977,7 @@
     if (scenario === 'mobile-card') return checkMobileCard();
     if (scenario === 'long-title') return checkLongTitle();
     if (scenario === 'plan-into') return checkPlanInto();
+    if (scenario === 'plan-approval') return checkPlanApproval();
     if (scenario === 'notify') return checkNotify();
     fail(`unknown scenario ${String(scenario)}`);
   };

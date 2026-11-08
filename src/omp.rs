@@ -612,6 +612,37 @@ pub fn plan_review_open(screen: &str) -> bool {
     screen.lines().any(|line| line.starts_with("╭─ Plan Review"))
 }
 
+/// Reads the visible role track and selected index from Plan Review.
+pub fn plan_execution_models(screen: &str) -> Option<(Vec<String>, usize)> {
+    if !screen.lines().any(|line| line.contains("←/→ model")) {
+        return None;
+    }
+    let line = screen.lines().find(|line| line.contains("continue with"))?;
+    let track = line.split_once('◂')?.1.split_once('▸')?.0
+        .replace('', "◀")
+        .replace('', "▶")
+        .replace('', "┆");
+    let (before, remaining) = track.split_once('◀')?;
+    let (selected, after) = remaining.split_once('▶')?;
+    let split_roles = |part: &str| {
+        part.split('┆')
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let mut roles = split_roles(before);
+    let selected_index = roles.len();
+    let selected = selected.trim();
+    if selected.is_empty() {
+        return None;
+    }
+    roles.push(selected.to_owned());
+    roles.extend(split_roles(after));
+    Some((roles, selected_index))
+}
+
+
 /// Detects plan mode from the idle-screen status row only.
 pub fn plan_mode_on(screen: &str) -> bool {
     screen.lines().any(|line| line.contains("🗺 Plan"))
@@ -926,6 +957,7 @@ fn bearer_byte(byte: u8) -> bool {
     secret_byte(byte) || matches!(byte, b'.' | b'~')
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -940,6 +972,24 @@ mod tests {
         assert_eq!(classify("π > waiting"), PaneState::Waiting);
         assert_eq!(classify("π ! asking"), PaneState::Asking);
         assert_eq!(classify("zsh"), PaneState::Other);
+    }
+
+    #[test]
+    fn parses_plan_execution_models_in_display_order() {
+        assert_eq!(
+            plan_execution_models(include_str!("../tests/fixtures/plan_review_overlay.txt")),
+            Some((vec!["smol", "default", "slow"].into_iter().map(str::to_owned).collect(), 1))
+        );
+        assert_eq!(
+            plan_execution_models("continue with ◂ smol ┆ default ◀ slow ▶ plan ┆ task ▸\n↑/↓ select · ⏎ confirm · ←/→ model"),
+            Some((vec!["smol", "default", "slow", "plan", "task"].into_iter().map(str::to_owned).collect(), 2))
+        );
+        assert_eq!(
+            plan_execution_models("continue with ◂ smol \u{e0b1} default \u{e0b2}slow\u{e0b0} plan ▸\n↑/↓ select · ⏎ confirm · ←/→ model"),
+            Some((vec!["smol", "default", "slow", "plan"].into_iter().map(str::to_owned).collect(), 2))
+        );
+        assert_eq!(plan_execution_models("continue with ◂ smol ◀ default ▶ slow ▸"), None);
+        assert_eq!(plan_execution_models("continue with ◂ smol ◀ default ▶ slow ▸\n↑/↓ scroll · ⏎ open"), None);
     }
 
     #[test]

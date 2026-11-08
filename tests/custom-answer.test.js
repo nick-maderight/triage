@@ -52,6 +52,7 @@ test('custom answers are hidden from findings and available on ask and plan card
       ident: (name, card) => `${name}-${card.id}`,
       paneOf: () => null,
       paneButtons: () => null,
+      planExecutorView: () => null,
       h: node,
       el: (tag, props, ...children) => node(tag, props || {}, ...children),
       button: (_card, _action, className, props, onClick, ...children) =>
@@ -206,6 +207,7 @@ test('plan cards from the queue render and answer through the answer route', asy
       recIndex: (item) => Math.max(0, item.options.findIndex((option) => option.recommended)),
       ident: (name, item) => `${name}-${item.id}`,
       paneButtons: () => null,
+      planExecutorView: () => null,
       h: node,
       el: (tag, props, ...children) => node(tag, props || {}, ...children),
       button: (_item, _action, className, props, onClick, ...children) =>
@@ -266,5 +268,6 @@ test('plan cards from the queue render and answer through the answer route', asy
   assert.equal(answer.body.option, 1);
   assert.equal(answer.body.text, 'Split the parser into smaller helpers');
   assert.equal(answer.body.note, 'Keep existing callers');
+  assert.equal('executor' in answer.body, false);
   await new Promise((resolve) => setImmediate(resolve));
 });

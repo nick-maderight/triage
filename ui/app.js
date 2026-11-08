@@ -147,6 +147,7 @@ const S = {
         dispatchMode: 'investigate',
         step: 0,
         answers: [],
+        executor: '',
       });
     return S.drafts.get(c.id);
   }
@@ -933,6 +934,29 @@ const S = {
       ),
     );
   }
+  function planExecutorView(c) {
+    const id = 'plan-executor',
+      field = h('button', {
+        type: 'button',
+        class: 'field picker-field',
+        id,
+        value: draft(c).executor,
+        'aria-labelledby': 'plan-executor-label plan-executor',
+        'aria-haspopup': 'dialog',
+        'aria-expanded': 'false',
+        'aria-controls': 'picker',
+        'data-od-id': ident(id, c),
+      });
+    setPickerValue(id, draft(c).executor, field);
+    bindPicker(id, field);
+    return el(
+      'div',
+      'plan-executor',
+      h('label', { id: 'plan-executor-label', for: id }, 'Execution model'),
+      field,
+    );
+  }
+
   function optionsView(c) {
     if (c.kind === 'info') return null;
     const live = answerable(c),
@@ -980,6 +1004,7 @@ const S = {
     });
     if ((c.kind === 'ask' || c.kind === 'plan') && c.allow_other && live) rows.push(otherRow(c));
     const out = [
+      c.kind === 'plan' && live && planExecutorView(c),
       h('ol', { class: 'options', 'aria-label': live ? 'Options' : 'Options, read only' }, ...rows),
     ];
     if (!live)
@@ -1444,6 +1469,7 @@ const S = {
   function render(view = snapshot(), result = null) {
     const c = current(),
       changed = (c?.id || null) !== S.shownId;
+    if (changed && S.picker?.id === 'plan-executor') $('#picker').close();
     if (changed) S.laterOpen = false;
     updateHeader();
     // The first paint shows the card in place. Only a card that replaces another view slides in.
@@ -1568,7 +1594,9 @@ const S = {
       announce(`Error: ${message}`);
       return;
     }
-    act(c, 'answer', { option: i, text, note: noteValue(c) }, `option-${i}`);
+    const body = { option: i, text, note: noteValue(c) };
+    if (c.kind === 'plan' && option.label === 'Approve') body.executor = draft(c).executor || null;
+    act(c, 'answer', body, `option-${i}`);
   }
   function toggleOther(c) {
     if (Date.now() < S.remoteSwapUntil) return;
@@ -1970,7 +1998,7 @@ const S = {
     loadComposeSessions();
     loadModels();
   }
-  // New session and Dispatch fields share the picker.
+  // New session, Dispatch and Plan approval fields share the picker.
   const PICKERS = {
     'compose-cwd': { title: 'Working directory', placeholder: 'Search or type a path', free: true, fallback: 'Home directory', options: [] },
     'compose-session': { title: 'tmux session', placeholder: 'Search sessions', free: false, fallback: 'Daemon default', options: [] },
@@ -1979,8 +2007,9 @@ const S = {
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
     'dispatch-model': { title: 'Planner model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'dispatch-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
+    'plan-executor': { title: 'Execution model', placeholder: 'Search roles', free: false, fallback: 'current Plan Review role', options: [] },
   };
-  const MODEL_PICKERS = ['compose-model', 'compose-executor', 'dispatch-model', 'dispatch-executor'];
+  const MODEL_PICKERS = ['compose-model', 'compose-executor', 'dispatch-model', 'dispatch-executor', 'plan-executor'];
   function pickerOption(value, label = value, hint = null) {
     return { value, label, hint, search: `${label} ${value}`.toLowerCase() };
   }
@@ -2012,9 +2041,9 @@ const S = {
     row.hint && ' ',
     row.hint && el('span', 'opt-desc', row.hint),
   ];
-  function setPickerValue(id, value) {
-    const field = $(`#${id}`),
-      cfg = PICKERS[id],
+  function setPickerValue(id, value, field = $(`#${id}`)) {
+    if (!field) return;
+    const cfg = PICKERS[id],
       row = value
         ? cfg.options.find((option) => option.value === value) || { label: value, hint: null }
         : { label: 'Default', hint: cfg.fallback };
@@ -2023,8 +2052,23 @@ const S = {
     field.replaceChildren(el('span', 'picker-value', pickerContent(row)));
   }
   function refreshPicker(id) {
-    setPickerValue(id, $(`#${id}`).value);
+    const field = $(`#${id}`);
+    if (!field) return;
+    setPickerValue(id, field.value, field);
     if (S.picker?.id === id) renderPicker();
+  }
+  function bindPicker(id, field) {
+    field.addEventListener('click', () => openPicker(id));
+    field.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.isComposing) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        openPicker(id);
+      } else if (e.key.length === 1 && e.key !== ' ' && !e.altKey) {
+        e.preventDefault();
+        openPicker(id, e.key);
+      }
+    });
   }
   function openPicker(id, query) {
     const dialog = $('#picker'),
@@ -2046,7 +2090,7 @@ const S = {
     // A short list on a touch screen needs no keyboard; a long one opens ready to type.
     if (!matchMedia('(pointer: coarse)').matches || cfg.options.length > 12 || S.picker.query)
       search.focus({ preventScroll: true });
-    if (MODEL_PICKERS.includes(id) && !cfg.options.length) void loadModels();
+    if (MODEL_PICKERS.includes(id) && (!cfg.options.length || id === 'plan-executor')) void loadModels();
   }
   function renderPicker() {
     const p = S.picker,
@@ -2093,6 +2137,7 @@ const S = {
       row = p?.rows[i];
     if (!row) return;
     setPickerValue(p.id, row.value);
+    if (p.id === 'plan-executor' && current()?.kind === 'plan') draft(current()).executor = row.value;
     $('#picker').close();
   }
   // Phones fill the visual viewport, so the on-screen keyboard never hides rows. Wider screens
@@ -2138,6 +2183,9 @@ const S = {
       thinking = PICKERS['compose-thinking'];
     try {
       const data = await api('/v1/models');
+      const execution = (data.execution_models || []).map(({ selector, name }) =>
+        pickerOption(selector, name, name === selector ? null : selector),
+      );
       model.options = data.models.map(({ selector, name }) =>
         pickerOption(selector, name, name === selector ? null : selector),
       );
@@ -2148,8 +2196,7 @@ const S = {
       thinking.fallback = data.default_thinking ?? 'omp default';
       for (const id of MODEL_PICKERS) {
         const cfg = PICKERS[id];
-        cfg.options = model.options;
-        // Only the planner fields name the daemon default; the execution fields keep the smol role.
+        cfg.options = id === 'plan-executor' ? execution : model.options;
         if (id === 'compose-model' || id === 'dispatch-model') cfg.fallback = model.fallback;
         refreshPicker(id);
       }
@@ -2753,19 +2800,9 @@ const S = {
   });
   for (const id of Object.keys(PICKERS)) {
     const field = $(`#${id}`);
+    if (!field) continue;
     setPickerValue(id, '');
-    field.addEventListener('click', () => openPicker(id));
-    field.addEventListener('keydown', (e) => {
-      if (e.ctrlKey || e.metaKey || e.isComposing) return;
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        openPicker(id);
-      } else if (e.key.length === 1 && e.key !== ' ' && !e.altKey) {
-        // Typing on a field opens its picker with that character as the query.
-        e.preventDefault();
-        openPicker(id, e.key);
-      }
-    });
+    bindPicker(id, field);
   }
   $('#picker-search').addEventListener('input', (e) => {
     if (!S.picker) return;
@@ -2795,7 +2832,7 @@ const S = {
   // Dragging the list on a phone drops the keyboard so more rows show, as native search lists do.
   $('#picker-list').addEventListener('touchmove', () => $('#picker-search').blur(), { passive: true });
   $('#picker').addEventListener('close', () => {
-    if (S.picker) $(`#${S.picker.id}`).setAttribute('aria-expanded', 'false');
+    if (S.picker) $(`#${S.picker.id}`)?.setAttribute('aria-expanded', 'false');
     S.picker = null;
     closeDialog($('#picker'));
   });

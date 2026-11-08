@@ -689,6 +689,15 @@ main {
   padding: 0;
   list-style: none;
 }
+.plan-executor {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.plan-executor label {
+  font-size: 13px;
+  font-weight: 500;
+}
 .block-content > .md + .options {
   margin-top: 14px;
 }
@@ -1787,6 +1796,10 @@ dialog.picker::backdrop {
     order: -3;
     margin: 0 0 10px;
   }
+  .action-block .plan-executor {
+    order: -2;
+    margin-bottom: 10px;
+  }
   .action-block .options {
     order: -2;
     margin: 0;
@@ -2080,6 +2093,10 @@ dialog.picker::backdrop {
   .action-block .block-content {
     display: flex;
     flex-direction: column;
+  }
+  .action-block .plan-executor {
+    order: -1;
+    margin-bottom: 8px;
   }
   .action-block .options {
     order: -1;

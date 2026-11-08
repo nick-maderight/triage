@@ -57,14 +57,33 @@ fn roles_from_config_parses_role_names_as_role_selectors() {
 }
 
 #[test]
-fn enabled_from_config_parses_selector_strings() {
+fn string_list_from_config_parses_value_arrays() {
     let config = r#"{"key":"enabledModels","value":["provider/a","provider/b"],"type":"list","description":""}"#;
-    assert_eq!(
-        super::enabled_from_config(config),
-        ["provider/a", "provider/b"]
+    assert_eq!(super::string_list_from_config(config), ["provider/a", "provider/b"]);
+    assert!(super::string_list_from_config(r#"{"value":null}"#).is_empty());
+    assert!(super::string_list_from_config("not json").is_empty());
+}
+
+#[test]
+fn execution_models_follow_cycle_order_and_name_missing_roles() {
+    let models = super::roles_from_config(
+        r#"{"key":"modelRoles","value":{"smol":"provider/b","default":"provider/a","plan":"provider/c"}}"#,
     );
-    assert!(super::enabled_from_config(r#"{"key":"enabledModels","value":null}"#).is_empty());
-    assert!(super::enabled_from_config("not json").is_empty());
+    let cycle = ["smol", "default", "missing", "plan"].map(str::to_owned);
+    let execution = super::execution_models(&models, &cycle);
+    let entries: Vec<(&str, &str)> = execution
+        .iter()
+        .map(|model| (model.selector.as_str(), model.name.as_str()))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            ("@smol", "smol role (provider/b)"),
+            ("@default", "default role (provider/a)"),
+            ("@missing", "missing role"),
+            ("@plan", "plan role (provider/c)")
+        ]
+    );
 }
 
 #[test]
@@ -2165,11 +2184,8 @@ async fn models_answers_immediately_while_the_first_load_runs() {
         .await
         .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        parsed["models"],
-        serde_json::json!([]),
-        "an in-flight load must answer with an empty list"
-    );
+    assert_eq!(parsed["models"], serde_json::json!([]));
+    assert_eq!(parsed["execution_models"], serde_json::json!([]));
 }
 
 #[cfg(unix)]
@@ -2209,7 +2225,7 @@ esac
         .unwrap();
     };
     let snapshot = || -> Vec<String> {
-        super::MODELS.read().unwrap().iter().map(|model| model.selector.clone()).collect()
+        super::MODELS.read().unwrap().models.iter().map(|model| model.selector.clone()).collect()
     };
     let mut loaded = None;
 

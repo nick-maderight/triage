@@ -315,3 +315,70 @@ test('compose posts its mode and the execution model only for Plan into', async 
   assert.equal(bodies[2].executor, 'provider/executor');
   assert.ok(!('executor' in bodies[0]) && !('executor' in bodies[1]));
 });
+
+test('plan picker loads cycle roles without replacing the general model catalog', async () => {
+  const pickers = {
+      'compose-model': { options: [], fallback: 'Daemon default' },
+      'compose-executor': { options: [], fallback: 'omp smol role' },
+      'dispatch-model': { options: [], fallback: 'Daemon default' },
+      'dispatch-executor': { options: [], fallback: 'omp smol role' },
+      'compose-thinking': { options: [], fallback: 'Daemon default' },
+      'plan-executor': { options: [], fallback: 'current Plan Review role' },
+    },
+    modelPickers = ['compose-model', 'compose-executor', 'dispatch-model', 'dispatch-executor', 'plan-executor'],
+    data = {
+      models: [{ selector: 'provider/model', name: 'Concrete model' }, { selector: '@smol', name: 'smol role' }],
+      execution_models: [{ selector: '@default', name: 'default role' }, { selector: '@smol', name: 'smol role' }],
+      default: '@kimi',
+      thinking: ['low', 'high'],
+      default_thinking: 'high',
+    },
+    context = vm.createContext({
+      PICKERS: pickers,
+      MODEL_PICKERS: modelPickers,
+      pickerOption: (value, label, hint) => ({ value, label, hint }),
+      api: async () => data,
+      refreshPicker() {},
+    });
+  vm.runInContext(`${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`, context);
+  await context.loadModels();
+  assert.deepEqual(pickers['plan-executor'].options.map((option) => option.value), ['@default', '@smol']);
+  assert.deepEqual(pickers['compose-executor'].options.map((option) => option.value), ['provider/model', '@smol']);
+});
+
+test('plan approval sends chosen role while Default and Refine keep their request contracts', () => {
+  const approve = { id: 'plan-picked', kind: 'plan', options: [{ label: 'Approve' }, { label: 'Refine' }] },
+    defaultApprove = { id: 'plan-default', kind: 'plan', options: [{ label: 'Approve' }] },
+    refine = { id: 'plan-refine', kind: 'plan', options: [{ label: 'Approve' }, { label: 'Refine' }] },
+    ask = { id: 'ask', kind: 'ask', options: [{ label: 'Yes' }] },
+    drafts = new Map([
+      [approve.id, { executor: '@slow', other: '' }],
+      [defaultApprove.id, { executor: '', other: '' }],
+      [refine.id, { executor: '@smol', other: 'Add a rollback step' }],
+      [ask.id, { executor: '@smol', other: '' }],
+    ]),
+    actions = [],
+    context = vm.createContext({
+      S: { remoteSwapUntil: 0 },
+      Date: { now: () => 1000 },
+      answerable: () => true,
+      draft: (card) => drafts.get(card.id),
+      noteValue: () => null,
+      act: (...args) => actions.push(args),
+      toast() {},
+      announce() {},
+      toggleOther() {},
+      $: () => null,
+    });
+  vm.runInContext(`${functionSource('pick')}\nglobalThis.pick = pick;`, context);
+  context.pick(approve, 0);
+  context.pick(defaultApprove, 0);
+  context.pick(refine, 1);
+  context.pick(ask, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(actions.map(([, , body]) => body))), [
+    { option: 0, text: null, note: null, executor: '@slow' },
+    { option: 0, text: null, note: null, executor: null },
+    { option: 1, text: 'Add a rollback step', note: null },
+    { option: 0, text: null, note: null },
+  ]);
+});

@@ -3616,7 +3616,8 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         let unknown = plan_card(&pane, 2);
         let refine = plan_card(&pane, 3);
         let other = plan_card(&pane, 4);
-        for card in [&approve, &empty, &unknown, &refine, &other] {
+        let refine_with_executor = plan_card(&pane, 5);
+        for card in [&approve, &empty, &unknown, &refine, &other, &refine_with_executor] {
             db.insert_card(card).unwrap();
         }
 
@@ -3651,6 +3652,17 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
             },
             &Launch::default(),
         );
+        let executor_refine_result = answer(
+            &db,
+            &refine_with_executor,
+            &AnswerReq {
+                option: Some(1),
+                text: Some("Use @smol".to_owned()),
+                executor: Some("@smol".to_owned()),
+                ..AnswerReq::default()
+            },
+            &Launch::default(),
+        );
         let other_result = answer(
             &db,
             &other,
@@ -3678,6 +3690,10 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
             unknown_result.as_ref().err().map(String::as_str),
             Some("unknown plan option")
         );
+        assert_eq!(
+            executor_refine_result.as_ref().err().map(String::as_str),
+            Some("execution model requires Approve")
+        );
         assert!(approve_result.is_ok() && refine_result.is_ok() && other_result.is_ok());
         assert!(db.card(&empty.id).unwrap().unwrap().1.is_none());
         assert!(db.card(&unknown.id).unwrap().unwrap().1.is_none());
@@ -3701,6 +3717,103 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "plan_answers_approve_refine_and_reject_invalid_refinements",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_approval_selects_execution_model_before_enter() {
+    if let Some(root) = child_root("plan_approval_selects_execution_model_before_enter") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
+        let screens = root.join("tmux-screens");
+        fs::create_dir_all(&screens).unwrap();
+        let review = |selected: &str| {
+            let track = match selected {
+                "smol" => "◀ smol ▶ default ┆ slow",
+                "default" => "smol ◀ default ▶ slow",
+                "slow" => "smol ┆ default ◀ slow ▶",
+                _ => unreachable!(),
+            };
+            format!("╭─ Plan Review ─╮\n│ continue with ◂ {track} ▸\n│ ↑/↓ select · ⏎ confirm · ←/→ model\n")
+        };
+        for (index, selected) in ["default", "slow", "default", "default", "default", "default"].iter().enumerate() {
+            fs::write(screens.join(index.to_string()), review(selected)).unwrap();
+        }
+        let selected = plan_card(&pane, 0);
+        let blank = plan_card(&pane, 4);
+        let unavailable = plan_card(&pane, 1);
+        let default = plan_card(&pane, 2);
+        let mismatch = plan_card(&pane, 3);
+        db.insert_card(&blank).unwrap();
+        for card in [&selected, &unavailable, &default, &mismatch] {
+            db.insert_card(card).unwrap();
+        }
+
+        let selected_result = answer(
+            &db,
+            &selected,
+            &AnswerReq { option: Some(0), executor: Some("@slow".to_owned()), ..AnswerReq::default() },
+            &Launch::default(),
+        );
+        let unavailable_result = answer(
+            &db,
+            &unavailable,
+            &AnswerReq { option: Some(0), executor: Some("@missing".to_owned()), ..AnswerReq::default() },
+            &Launch::default(),
+        );
+        let default_result = answer(
+            &db,
+            &default,
+            &AnswerReq { option: Some(0), executor: Some("@default".to_owned()), ..AnswerReq::default() },
+            &Launch::default(),
+        );
+        let mismatch_result = answer(
+            &db,
+            &mismatch,
+            &AnswerReq { option: Some(0), executor: Some("@slow".to_owned()), ..AnswerReq::default() },
+            &Launch::default(),
+        );
+        let blank_result = answer(
+            &db,
+            &blank,
+            &AnswerReq { option: Some(0), ..AnswerReq::default() },
+            &Launch::default(),
+        );
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
+        let keys: Vec<_> = keys.lines().collect();
+
+        assert!(selected_result.is_ok() && default_result.is_ok() && blank_result.is_ok());
+        assert_eq!(
+            unavailable_result.as_ref().err().map(String::as_str),
+            Some("plan review does not offer @missing")
+        );
+        assert_eq!(
+            mismatch_result.as_ref().err().map(String::as_str),
+            Some("plan execution model is not @slow")
+        );
+        assert_eq!(keys, [
+            "send-keys -t %12 Right",
+            "send-keys -t %12 Enter",
+            "send-keys -t %12 Enter",
+            "send-keys -t %12 Right",
+            "send-keys -t %12 Enter",
+        ]);
+        assert_eq!(current_swipe(&db, &selected.id).text.as_deref(), Some("@slow"));
+        assert_eq!(current_swipe(&db, &default.id).text.as_deref(), Some("@default"));
+        assert!(current_swipe(&db, &blank.id).text.is_none());
+        assert!(db.card(&unavailable.id).unwrap().unwrap().1.is_none());
+        assert!(db.card(&mismatch.id).unwrap().unwrap().1.is_none());
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "plan_approval_selects_execution_model_before_enter",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),

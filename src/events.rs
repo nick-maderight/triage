@@ -154,6 +154,9 @@ pub struct AnswerReq {
     pub option: Option<usize>,
     pub text: Option<String>,
     pub note: Option<String>,
+    /// omp role selected in the Plan Review overlay for Approve.
+    #[serde(default)]
+    pub executor: Option<String>,
     /// One per card question, multi-question ask cards only.
     #[serde(default)]
     pub answers: Vec<Answer>,

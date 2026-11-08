@@ -1931,6 +1931,7 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
     if !card.answerable {
         return Err("plan card is not answerable".to_owned());
     }
+    let executor = model_selector(req.executor.as_deref())?;
     let refinement = req
         .text
         .as_deref()
@@ -1940,8 +1941,10 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
     let (option, refinement) = match req.option {
         Some(0) if req.text.as_deref().is_none_or(str::is_empty) => (Some(0), None),
         Some(0) => return Err("Approve does not accept text".to_owned()),
-        Some(1) => (Some(1), Some(refinement.ok_or_else(|| "Refine requires nonempty text".to_owned())?)),
-        None => (None, Some(refinement.ok_or_else(|| "Refine requires nonempty text".to_owned())?)),
+        Some(1) if executor.is_none() => (Some(1), Some(refinement.ok_or_else(|| "Refine requires nonempty text".to_owned())?)),
+        Some(1) => return Err("execution model requires Approve".to_owned()),
+        None if executor.is_none() => (None, Some(refinement.ok_or_else(|| "Refine requires nonempty text".to_owned())?)),
+        None => return Err("execution model requires Approve".to_owned()),
         Some(_) => return Err("unknown plan option".to_owned()),
     };
     let pane = card
@@ -1949,30 +1952,62 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
         .pane
         .as_deref()
         .ok_or_else(|| "plan card has no pane".to_owned())?;
-    let screen = tmux::screen(pane).map_err(|error| error.to_string())?;
+    let mut screen = tmux::screen(pane).map_err(|error| error.to_string())?;
     if !omp::plan_review_open(&screen) {
         return Err("plan review is not open".to_owned());
     }
-    if option == Some(0) {
+    let recorded = if option == Some(0) {
+        let role = if let Some(executor) = executor {
+            let role = executor
+                .strip_prefix('@')
+                .filter(|role| !role.is_empty())
+                .ok_or_else(|| "plan executor must be an omp @role".to_owned())?;
+            let (roles, selected) = omp::plan_execution_models(&screen)
+                .ok_or_else(|| "plan review has no execution model selector".to_owned())?;
+            let target = roles
+                .iter()
+                .position(|candidate| candidate == role)
+                .ok_or_else(|| format!("plan review does not offer {executor}"))?;
+            if target != selected {
+                let key = if target < selected { "Left" } else { "Right" };
+                for _ in 0..target.abs_diff(selected) {
+                    tmux::send_keys(pane, &[key]).map_err(|error| error.to_string())?;
+                }
+                thread::sleep(DIALOG_SETTLE);
+                screen = tmux::screen(pane).map_err(|error| error.to_string())?;
+                let (shown_roles, shown) = omp::plan_execution_models(&screen)
+                    .filter(|_| omp::plan_review_open(&screen))
+                    .ok_or_else(|| "plan review has no execution model selector".to_owned())?;
+                if shown_roles.get(shown).map(String::as_str) != Some(role) {
+                    return Err(format!("plan execution model is not {executor}"));
+                }
+            }
+            Some(executor.to_owned())
+        } else {
+            None
+        };
         tmux::send_keys(pane, &["Enter"]).map_err(|error| error.to_string())?;
+        record_swipe(db, &card.id, "done", option, role, req.note.clone(), Some("typed".to_owned()))
     } else {
         tmux::send_keys(pane, &["Escape"]).map_err(|error| error.to_string())?;
         tmux::send_text(pane, refinement.unwrap()).map_err(|error| error.to_string())?;
-    }
-    if record_swipe(
-        db,
-        &card.id,
-        "done",
-        option,
-        refinement.map(str::to_owned),
-        req.note.clone(),
-        Some("typed".to_owned()),
-    ) {
+        record_swipe(
+            db,
+            &card.id,
+            "done",
+            option,
+            refinement.map(str::to_owned),
+            req.note.clone(),
+            Some("typed".to_owned()),
+        )
+    };
+    if recorded {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
 }
+
 
 
 fn answer_finding(

@@ -530,20 +530,26 @@ struct SessionRequest {
     executor: Option<String>,
 }
 
-/// A model the New session sheet offers, with the selector omp takes and the name it shows.
+/// A model entry for the shared pickers, named by its omp selector.
 #[derive(Clone, serde::Serialize)]
 struct Model {
     selector: String,
     name: String,
 }
 
-/// omp's model catalog plus the configured roles. `omp models --json` takes about twenty seconds,
-/// so a background thread loads it and the endpoint answers from the snapshot it has; the roles
-/// come from `omp config get modelRoles --json` in the same load.
-static MODELS: std::sync::RwLock<Vec<Model>> = std::sync::RwLock::new(Vec::new());
+#[derive(Clone, Default)]
+struct ModelCatalog {
+    models: Vec<Model>,
+    execution_models: Vec<Model>,
+}
+
+/// One nonblocking snapshot holds omp's general and Plan Review model choices.
+static MODELS: std::sync::RwLock<ModelCatalog> = std::sync::RwLock::new(ModelCatalog {
+    models: Vec::new(),
+    execution_models: Vec::new(),
+});
 
 /// The files in omp's agent directory that hold its roles, enabledModels whitelist and custom models.
-// shortcut: an omp upgrade that adds bundled models without a config change waits for a restart; watch the omp binary if that matters.
 const OMP_CONFIG_FILES: [&str; 2] = ["config.yml", "models.yml"];
 
 /// How often the catalog thread checks omp's config files for a change.
@@ -596,8 +602,9 @@ fn refresh_models(dir: Option<&std::path::Path>, loaded: &mut Option<ConfigStamp
         return false;
     }
     let models = load_models();
+    let execution_models = load_execution_models(&models);
     if let Ok(mut slot) = MODELS.write() {
-        *slot = models;
+        *slot = ModelCatalog { models, execution_models };
     }
     *loaded = Some(stamp);
     true
@@ -634,14 +641,14 @@ fn load_roles() -> Vec<Model> {
     roles_from_config(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Parses `omp config get enabledModels --json` output into selector strings.
-fn enabled_from_config(stdout: &str) -> Vec<String> {
+/// Parses string-array values printed by `omp config get`.
+fn string_list_from_config(stdout: &str) -> Vec<String> {
     let parsed: serde_json::Value = serde_json::from_str(stdout).unwrap_or_default();
     parsed["value"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|selector| selector.as_str().map(str::to_owned))
+        .filter_map(|value| value.as_str().map(str::to_owned))
         .collect()
 }
 
@@ -649,7 +656,29 @@ fn enabled_from_config(stdout: &str) -> Vec<String> {
 fn load_enabled() -> Vec<String> {
     let output = std::process::Command::new("omp").args(["config", "get", "enabledModels", "--json"]).output();
     let Some(output) = output.ok().filter(|o| o.status.success()) else { return Vec::new() };
-    enabled_from_config(&String::from_utf8_lossy(&output.stdout))
+    string_list_from_config(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Builds role selectors in Plan Review's configured order.
+fn execution_models(models: &[Model], cycle: &[String]) -> Vec<Model> {
+    cycle
+        .iter()
+        .map(|role| {
+            let selector = format!("@{role}");
+            models
+                .iter()
+                .find(|model| model.selector == selector)
+                .cloned()
+                .unwrap_or_else(|| Model { selector, name: format!("{role} role") })
+        })
+        .collect()
+}
+
+/// Loads model roles in the configured Plan Review order.
+fn load_execution_models(models: &[Model]) -> Vec<Model> {
+    let output = std::process::Command::new("omp").args(["config", "get", "cycleOrder", "--json"]).output();
+    let Some(output) = output.ok().filter(|o| o.status.success()) else { return Vec::new() };
+    execution_models(models, &string_list_from_config(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Parses `omp models --json` output. The catalog carries every bundled model, valid or not —
@@ -684,11 +713,11 @@ fn load_models() -> Vec<Model> {
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> axum::response::Response {
-    // Never waits for the load: until the first load finishes the list is empty, and a failed command
-    // leaves whatever did load until omp's config next changes; the UI still accepts typed selectors.
-    let models = MODELS.try_read().map(|slot| slot.clone()).unwrap_or_default();
+    // Never waits for the load. Before the first snapshot, both lists are empty.
+    let catalog = MODELS.try_read().map(|slot| slot.clone()).unwrap_or_default();
     axum::Json(serde_json::json!({
-        "models": models,
+        "models": catalog.models,
+        "execution_models": catalog.execution_models,
         "default": state.launch.model,
         "thinking": crate::cards::THINKING_LEVELS,
         "default_thinking": state.launch.thinking,
