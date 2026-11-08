@@ -149,6 +149,7 @@ fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> 
         .route("/v1/cards/{id}/later", axum::routing::post(later))
         .route("/v1/cards/{id}/dispatch", axum::routing::post(dispatch))
         .route("/v1/cards/{id}/report", axum::routing::post(request_report))
+        .route("/v1/cards/{id}/restore", axum::routing::post(restore))
         .route("/v1/cards/{id}/close", axum::routing::post(close))
         .route("/v1/cards/{id}/reload", axum::routing::post(reload))
         .route("/v1/sessions", axum::routing::post(start_session))
@@ -534,6 +535,14 @@ async fn request_report(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> axum::response::Response {
     card_action(state, id, |db, card| crate::cards::request_report(db, &card)).await
+}
+
+async fn restore(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let launch = state.launch.clone();
+    card_action(state, id, move |db, card| crate::cards::restore(db, &card, &launch)).await
 }
 
 /// Puts a fresh copy of a handled card back in the queue. The original and its swipes stay as they are.

@@ -110,7 +110,8 @@ const S = {
     return hit ? { label: hit[1], tone: hit[2], title: heading(c.body) || title.slice(hit[0].length) } : null;
   };
   const answerable = (c) => (c.kind !== 'ask' && c.kind !== 'plan') || c.answerable !== false,
-    paneOf = (c) => c.source?.pane || null;
+    paneOf = (c) => c.source?.pane || null,
+    restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id);
   const current = () => S.cards[S.idx] || null;
   const recIndex = (c) => {
     const i = (c.options || []).findIndex((o) => o.recommended);
@@ -1341,6 +1342,8 @@ const S = {
           c.report_due &&
           paneOf(c) &&
           button(c, 'request', 'btn', { 'aria-keyshortcuts': 'r' }, () => requestReport(c), 'Request final report', key('r')),
+        restorable(c) &&
+          button(c, 'restore', 'btn', { 'aria-keyshortcuts': 'R' }, () => restoreRun(c), 'Restore run', key('R')),
         (recommended ? !paneOf(c) : paneOf(c)) &&
           button(c, 'ack', 'btn', {}, () => acknowledge(c), 'Acknowledge'),
         button(c, 'skip', 'btn', { 'aria-keyshortcuts': 's' }, () => skip(c), 'Skip', key('s')),
@@ -1533,6 +1536,7 @@ const S = {
       return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
     if (verb === 'close') return `Closed pane · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
+    if (verb === 'restore') return `Restoring run · ${c.title}`;
     if (c.kind === 'info') return `Acknowledged · ${c.title}`;
     if (body.answers)
       return `Sent ${body.answers
@@ -1627,6 +1631,7 @@ const S = {
       act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),
     planRecommended = (c) => openDispatch(c, 'plan', true),
     requestReport = (c) => { if (c.kind === 'info' && c.report_due && paneOf(c)) act(c, 'report', {}, 'request'); },
+    restoreRun = (c) => { if (restorable(c)) act(c, 'restore', {}, 'restore'); },
     skip = (c) => act(c, 'skip', {}, 'skip'),
     closePane = (c) => paneOf(c) && act(c, 'close', { note: noteValue(c) }, 'close'),
     later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
@@ -2677,6 +2682,9 @@ const S = {
         break;
       case 'r':
         run(() => requestReport(c));
+        break;
+      case 'R':
+        run(() => restoreRun(c));
         break;
       case 't':
         run(() => openContext(c.id));

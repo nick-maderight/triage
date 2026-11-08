@@ -758,6 +758,48 @@ pub fn request_report(db: &Db, card: &Card) -> Result<(), String> {
     }
 }
 
+/// Open a new window that resumes an ended session with `omp --restore`. A crashed or
+/// killed run then continues with its todos and context instead of a fresh brief. The
+/// window opens in the daemon's launch session at the pane's own cwd. The restored run's
+/// next card supersedes this one. Reason `restored <pane>`.
+pub fn restore(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
+    let answer_lock = db.answer_lock(&card.id);
+    let _answer_guard = answer_lock.lock().unwrap();
+    let swipe = db.card(&card.id).map_err(|error| error.to_string())?.and_then(|(_, swipe)| swipe);
+    if !restorable(card) {
+        return Err("card is not an ended-session card".to_owned());
+    }
+    if !queued_for_answer(swipe.as_ref()) {
+        return Err("card is not queued".to_owned());
+    }
+    let transcript = card.refs.first().ok_or_else(|| "card has no transcript".to_owned())?;
+    let id = session_id(transcript).ok_or_else(|| "no session id in transcript name".to_owned())?;
+    let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
+    let command = format!("omp --restore {}", shell_quote(&id));
+    let pane = tmux::new_window(session, &card.source.cwd, &command).map_err(|error| error.to_string())?;
+    if record_swipe(db, &card.id, "done", None, Some("Restore run".to_owned()), None, Some(format!("restored {pane}"))) {
+        Ok(())
+    } else {
+        Err("could not record swipe".to_owned())
+    }
+}
+
+/// An `exited:` card (Unreported or Ended mid-turn, including a reloaded copy) whose
+/// transcript names a session omp can restore.
+fn restorable(card: &Card) -> bool {
+    (card.id.starts_with("exited:") || card.id.starts_with("reload:exited:"))
+        && card.kind == Kind::Info
+        && card.refs.first().is_some_and(|path| session_id(path).is_some())
+}
+
+/// The session id omp names a transcript file by, after the timestamp:
+/// `<iso timestamp>_<session id>.jsonl`.
+fn session_id(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next()?.strip_suffix(".jsonl")?;
+    let (_, id) = name.rsplit_once('_')?;
+    uuid::Uuid::parse_str(id).ok().map(|_| id.to_owned())
+}
+
 /// Launch an omp session from free text. Returns the new pane id. The session's asks and final
 /// report reach the inbox through the tracker like any other pane. A plan launch starts in
 /// read-only plan mode and a plan-into launch runs `--plan-yolo`, where omp approves the plan

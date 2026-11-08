@@ -5662,3 +5662,73 @@ fn stale_breadcrumb_on_shell_pane_raises_no_exit_card() {
         Some(&bin),
     );
 }
+
+#[test]
+fn session_id_is_read_from_the_transcript_name() {
+    assert_eq!(
+        session_id(
+            "/home/u/.omp/agent/sessions/-tmp/2026-11-08T22-33-32-271Z_01a1bd4b-9f6f-74e6-bf2d-8d1618a31655.jsonl"
+        )
+        .as_deref(),
+        Some("01a1bd4b-9f6f-74e6-bf2d-8d1618a31655")
+    );
+    assert_eq!(session_id("/tmp/notes.txt"), None);
+    assert_eq!(session_id("/tmp/2026-11-08T22-33-32-271Z_not-a-uuid.jsonl"), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_opens_a_window_running_omp_restore_and_resolves_the_card() {
+    if let Some(root) =
+        child_root("restore_opens_a_window_running_omp_restore_and_resolves_the_card")
+    {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let transcript =
+            root.join("2026-11-08T22-33-32-271Z_01a1bd4b-9f6f-74e6-bf2d-8d1618a31655.jsonl");
+        fs::write(&transcript, b"").unwrap();
+        let mut card = info_card("exited:%12:t1", "%12");
+        card.refs = vec![transcript.display().to_string()];
+        card.source.cwd = root.display().to_string();
+        db.insert_card(&card).unwrap();
+        let result = restore(&db, &card, &in_session("session"));
+        let swipe = current_swipe(&db, &card.id);
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+        let launch = log
+            .lines()
+            .find(|line| line.starts_with("new-window "))
+            .map(str::to_owned);
+
+        let refused = info_card("done:%12:a1", "%12");
+        db.insert_card(&refused).unwrap();
+        let refusal = restore(&db, &refused, &in_session("session"));
+        let mut broken = info_card("exited:%12:broken", "%12");
+        broken.refs = vec![root.join("transcript.jsonl").display().to_string()];
+        db.insert_card(&broken).unwrap();
+        let no_id = restore(&db, &broken, &in_session("session"));
+
+        assert!(
+            result.is_ok()
+                && swipe.text.as_deref() == Some("Restore run")
+                && swipe.reason.as_deref() == Some("restored %42")
+                && launch
+                    .as_deref()
+                    .is_some_and(|line| line.contains(" -t session: ")
+                        && line.contains(&format!("-c {}", root.display()))
+                        && line.contains("omp --restore '01a1bd4b-9f6f-74e6-bf2d-8d1618a31655'")),
+            "result: {result:?}, swipe: {swipe:?}, launch: {launch:?}"
+        );
+        assert!(refusal.is_err() && db.card(&refused.id).unwrap().unwrap().1.is_none());
+        assert!(no_id.is_err());
+        assert_eq!(new_window_count(&root), 1);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "restore_opens_a_window_running_omp_restore_and_resolves_the_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}

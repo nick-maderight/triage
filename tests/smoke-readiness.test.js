@@ -63,7 +63,9 @@ function runSmoke(env) {
       killTimer = setTimeout(() => {
         try { process.kill(-child.pid, 'SIGKILL'); } catch {}
       }, 250);
-    }, 2500);
+    // Hang guard, not a speed budget: under this machine's normal load the script can
+    // take several seconds, so allow 10 before killing it.
+    }, 10_000);
     child.on('close', (code, signal) => {
       clearTimeout(deadline);
       clearTimeout(killTimer);

@@ -42,6 +42,8 @@ function harness() {
       button: (_card, _control, className, props, onClick, ...children) =>
         node('button', { ...props, class: className, onClick }, ...children),
       paneOf: (card) => card.source?.pane || null,
+      restorable: () => false,
+      restoreRun: (card) => actions.push(['restore', card]),
       answerable: (card) => (card.kind !== 'ask' && card.kind !== 'plan') || card.answerable !== false,
       closePane: (card) => actions.push(['close', card]),
       acknowledge: (card) => actions.push(['ack', card]),
