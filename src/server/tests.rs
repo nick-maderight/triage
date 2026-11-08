@@ -157,6 +157,7 @@ fn test_plan_card(pane: &str) -> crate::events::Card {
         refs: Vec::new(),
         level: None,
         tool_call_id: None,
+        report_due: false,
     }
 }
 
@@ -1163,7 +1164,108 @@ async fn same_event_id_from_different_sources_stores_and_looks_up_distinct_cards
     assert!(state.db.card(&second_card.id).unwrap().unwrap().1.is_none());
     server.abort();
 }
+#[tokio::test]
+async fn duplicate_queued_finding_folds_without_queueing() {
+    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
+    let (address, server) = start_http_server(state.clone()).await;
+    let post = |id: &str, title: &str| {
+        let event = event_with_id(
+            crate::events::T_FINDING,
+            "jobs://runner1",
+            id,
+            serde_json::json!({"title": title}),
+        );
+        async move {
+            http_request(address, "POST", "/v1/ingest", &serde_json::to_string(&event).unwrap()).await
+        }
+    };
 
+    let first = post("first", "Alert flush failed").await;
+    let duplicate = post("duplicate", "Alert flush failed").await;
+    assert_eq!(first.status, StatusCode::ACCEPTED);
+    assert_eq!(first.body["stored"], true);
+    assert_eq!(duplicate.status, StatusCode::ACCEPTED);
+    assert_eq!(duplicate.body["stored"], true);
+    let first_id = card_from_event(&event_with_id(
+        crate::events::T_FINDING,
+        "jobs://runner1",
+        "first",
+        serde_json::json!({"title": "Alert flush failed"}),
+    )).unwrap().id;
+    let duplicate_id = card_from_event(&event_with_id(
+        crate::events::T_FINDING,
+        "jobs://runner1",
+        "duplicate",
+        serde_json::json!({"title": "Alert flush failed"}),
+    )).unwrap().id;
+    let queue = state.db.queue(crate::events::now_ms()).unwrap();
+    let swipe = state.db.card(&duplicate_id).unwrap().unwrap().1.unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].id, first_id);
+    assert_eq!(swipe.action, "done");
+    assert_eq!(swipe.reason.as_deref(), Some(format!("duplicate of {first_id}").as_str()));
+
+    assert_eq!(post("different", "Another alert").await.body["stored"], true);
+    assert_eq!(state.db.queue(crate::events::now_ms()).unwrap().len(), 2);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn folded_duplicate_sends_no_push() {
+    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
+    let (base, mut pushes) = stub_push_service(StatusCode::CREATED).await;
+    state.db.upsert_push_subscription(&subscription(format!("{base}duplicate"), 2)).unwrap();
+    let (address, server) = start_http_server(state.clone()).await;
+    let event = |id| event_with_id(
+        crate::events::T_FINDING,
+        "jobs://runner1",
+        id,
+        serde_json::json!({"title": "Alert flush failed"}),
+    );
+    for id in ["first", "duplicate"] {
+        let response = http_request(
+            address,
+            "POST",
+            "/v1/ingest",
+            &serde_json::to_string(&event(id)).unwrap(),
+        ).await;
+        assert_eq!(response.status, StatusCode::ACCEPTED);
+    }
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), pushes.recv()).await.unwrap().unwrap().0,
+        "duplicate"
+    );
+    assert!(tokio::time::timeout(Duration::from_millis(500), pushes.recv()).await.is_err());
+    server.abort();
+}
+#[tokio::test]
+async fn report_route_handles_unknown_and_paneless_cards() {
+    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
+    let card = card_from_event(&event(crate::events::T_INFO, "urn:test:report", serde_json::json!({"title": "Report"}))).unwrap();
+    state.db.insert_card(&card).unwrap();
+    let (address, server) = start_http_server(state.clone()).await;
+    let unknown = http_request(address, "POST", "/v1/cards/missing/report", "{}").await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    let response = http_request(address, "POST", &format!("/v1/cards/{}/report", card.id), "{}").await;
+    assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.body["error"], "card has no pane");
+    assert!(state.db.card(&card.id).unwrap().unwrap().1.is_none());
+    server.abort();
+}
+
+
+#[tokio::test]
+async fn report_route_rejects_handled_card() {
+    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
+    let card = card_from_event(&event(crate::events::T_INFO, "urn:test:report-handled", serde_json::json!({"title": "Report"}))).unwrap();
+    state.db.insert_card(&card).unwrap();
+    state.db.swipe(&Swipe { card: card.id.clone(), action: "done".to_owned(), option: None, text: None, note: None, until_ms: None, reason: None, at_ms: crate::events::now_ms() }).unwrap();
+    let (address, server) = start_http_server(state.clone()).await;
+    let response = http_request(address, "POST", &format!("/v1/cards/{}/report", card.id), "{}").await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    assert_eq!(response.body["error"], "card is not queued");
+    server.abort();
+}
 #[tokio::test]
 async fn failed_action_is_not_reported_as_already_handled() {
     let db = Db::open(Path::new(":memory:")).unwrap();
@@ -1534,7 +1636,7 @@ esac
 }
 
 #[tokio::test]
-async fn dispatch_rejects_models_outside_plan_into_and_bad_selectors_before_touching_the_card() {
+async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let card = card_from_event(&event(
         crate::events::T_INFO,
@@ -1547,36 +1649,78 @@ async fn dispatch_rejects_models_outside_plan_into_and_bad_selectors_before_touc
     let state = state(db, None);
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{id}/dispatch");
-    let outside = http_request(
-        address,
-        "POST",
-        &path,
-        r#"{"mode":"act","executor":"provider/x"}"#,
-    )
-    .await;
+    let outside = http_request(address, "POST", &path, r#"{"mode":"act","executor":"provider/x"}"#).await;
     assert_eq!(outside.status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        outside.body["error"],
-        "model and executor need mode plan-into"
-    );
-    let model = http_request(address, "POST", &path, r#"{"model":"provider/x"}"#).await;
-    assert_eq!(model.status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        model.body["error"],
-        "model and executor need mode plan-into"
-    );
-    let bad = http_request(
-        address,
-        "POST",
-        &path,
-        r#"{"mode":"plan-into","executor":"x; rm -rf ~"}"#,
-    )
-    .await;
+    assert_eq!(outside.body["error"], "executor needs mode plan-into");
+    let bad = http_request(address, "POST", &path, r#"{"mode":"plan-into","executor":"x; rm -rf ~"}"#).await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
     assert_eq!(bad.body["error"], "invalid model x; rm -rf ~");
+    let thinking = http_request(address, "POST", &path, r#"{"mode":"act","thinking":"sideways"}"#).await;
+    assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
+    assert_eq!(thinking.body["error"], "unknown thinking level sideways");
     assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
     server.abort();
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn finding_answer_launches_with_requested_mode_model_and_thinking() {
+    if run_with_fake_tmux_child("server::tests::finding_answer_launches_with_requested_mode_model_and_thinking") {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let tmux = PathBuf::from(std::env::var_os("PATH").unwrap()).join("tmux");
+    std::fs::write(
+        &tmux,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$TRIAGE_BUGHUNT_1792294661_TMUX_LOG.args"
+case "$1" in list-panes) printf '' ;; esac
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&tmux).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tmux, permissions).unwrap();
+    let directory = TestDir::new("triage-finding-launch-choices");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let card = card_from_event(&event(
+        crate::events::T_FINDING,
+        "urn:test:finding-launch-choices",
+        serde_json::json!({"title": "Finding launch choices", "options": [{"label": "Do as recommended"}]}),
+    )).unwrap();
+    db.insert_card(&card).unwrap();
+    let state = state_with(db, crate::cards::Launch { session: Some("triage".to_owned()), model: None, thinking: None });
+    let (address, server) = start_http_server(state.clone()).await;
+    let path = format!("/v1/cards/{}/answer", card.id);
+    let response = http_request(address, "POST", &path,
+        r#"{"option":0,"mode":"act","model":"provider/chosen","thinking":"high"}"#).await;
+    let mut args_path = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
+    args_path.push(".args");
+    let launch = std::fs::read_to_string(&args_path).unwrap();
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(launch.contains("--model=provider/chosen --plan=provider/chosen --thinking=high --goal"), "{launch}");
+    assert!(state.db.card(&card.id).unwrap().unwrap().1.is_some());
+    server.abort();
+}
+
+#[tokio::test]
+async fn finding_answer_rejects_unknown_mode_and_thinking_level() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let card = card_from_event(&event(crate::events::T_FINDING, "urn:test:finding-validation", serde_json::json!({"title": "Finding"}))).unwrap();
+    db.insert_card(&card).unwrap();
+    let id = card.id;
+    let state = state(db, None);
+    let (address, server) = start_http_server(state.clone()).await;
+    let path = format!("/v1/cards/{id}/answer");
+    let mode = http_request(address, "POST", &path, r#"{"option":0,"mode":"fix"}"#).await;
+    assert_eq!(mode.status, StatusCode::BAD_REQUEST);
+    assert_eq!(mode.body["error"], "unknown mode");
+    let thinking = http_request(address, "POST", &path, r#"{"option":0,"thinking":"sideways"}"#).await;
+    assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
+    assert_eq!(thinking.body["error"], "unknown thinking level sideways");
+    assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
+    server.abort();
+}
+
 
 #[tokio::test]
 async fn new_session_rejects_unknown_mode_and_executor_outside_plan_into() {

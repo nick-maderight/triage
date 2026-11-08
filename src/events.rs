@@ -108,6 +108,9 @@ pub struct Card {
     /// Ask cards: the omp tool call id, used to notice an answer given in the pane.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Info replies from launched panes without a status line can request a final report.
+    #[serde(default)]
+    pub report_due: bool,
 }
 
 /// One question of a multi-question ask card.
@@ -154,10 +157,14 @@ pub struct AnswerReq {
     pub option: Option<usize>,
     pub text: Option<String>,
     pub note: Option<String>,
-    /// omp role selected in the Plan Review overlay for Approve.
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub thinking: Option<String>,
     #[serde(default)]
     pub executor: Option<String>,
-    /// One per card question, multi-question ask cards only.
     #[serde(default)]
     pub answers: Vec<Answer>,
 }

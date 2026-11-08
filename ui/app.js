@@ -116,6 +116,9 @@ const S = {
     const i = (c.options || []).findIndex((o) => o.recommended);
     return i < 0 ? 0 : i;
   };
+  function optionMode(option) {
+    return option.label.trimStart().toLowerCase().startsWith('investigate') ? 'investigate' : 'act';
+  }
   const byPriority = (a, b) =>
     Number(a.priority || 5) - Number(b.priority || 5) ||
     Number(a.created_ms || 0) - Number(b.created_ms || 0) ||
@@ -145,6 +148,7 @@ const S = {
         open: false,
         dispatch: '',
         dispatchMode: 'investigate',
+        dispatchOption: null,
         step: 0,
         answers: [],
         executor: '',
@@ -1334,7 +1338,10 @@ const S = {
             key('x'),
           ),
         c.kind === 'info' &&
-          (recommended ? !paneOf(c) : paneOf(c)) &&
+          c.report_due &&
+          paneOf(c) &&
+          button(c, 'request', 'btn', { 'aria-keyshortcuts': 'r' }, () => requestReport(c), 'Request final report', key('r')),
+        (recommended ? !paneOf(c) : paneOf(c)) &&
           button(c, 'ack', 'btn', {}, () => acknowledge(c), 'Acknowledge'),
         button(c, 'skip', 'btn', { 'aria-keyshortcuts': 's' }, () => skip(c), 'Skip', key('s')),
         button(
@@ -1525,6 +1532,7 @@ const S = {
     if (verb === 'dispatch')
       return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
     if (verb === 'close') return `Closed pane · ${c.title}`;
+    if (verb === 'report') return `Requested report · ${c.title}`;
     if (c.kind === 'info') return `Acknowledged · ${c.title}`;
     if (body.answers)
       return `Sent ${body.answers
@@ -1584,6 +1592,7 @@ const S = {
     if (c.questions?.length && answerable(c)) return pickStep(c, i);
     const option = c.options?.[i];
     if (!option || !answerable(c) || c.kind === 'info') return;
+    if (c.kind === 'finding') return openDispatch(c, optionMode(option), true, i);
     const needsOther = c.kind === 'plan' && option.label === 'Refine',
       text = needsOther ? draft(c).other.trim() : null;
     if (needsOther && !text) {
@@ -1616,7 +1625,8 @@ const S = {
   }
   const acknowledge = (c) =>
       act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),
-    doRecommended = (c) => act(c, 'dispatch', { mode: 'act', note: noteValue(c) }, 'act'),
+    doRecommended = (c) => openDispatch(c, 'act', true),
+    requestReport = (c) => { if (c.kind === 'info' && c.report_due && paneOf(c)) act(c, 'report', {}, 'request'); },
     skip = (c) => act(c, 'skip', {}, 'skip'),
     closePane = (c) => paneOf(c) && act(c, 'close', { note: noteValue(c) }, 'close'),
     later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
@@ -2005,7 +2015,8 @@ const S = {
     'compose-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'compose-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
-    'dispatch-model': { title: 'Planner model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
+    'dispatch-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
+    'dispatch-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'dispatch-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
     'plan-executor': { title: 'Execution model', placeholder: 'Search roles', free: false, fallback: 'current Plan Review role', options: [] },
   };
@@ -2201,6 +2212,9 @@ const S = {
         refreshPicker(id);
       }
       refreshPicker('compose-thinking');
+      PICKERS['dispatch-thinking'].options = thinking.options;
+      PICKERS['dispatch-thinking'].fallback = thinking.fallback;
+      refreshPicker('dispatch-thinking');
     } catch {
       // The server falls back to its launch flags or omp's defaults.
     }
@@ -2273,11 +2287,13 @@ const S = {
     const d = S.drafts.get(S.dispatchId);
     if (d) d.dispatchMode = mode;
   }
-  function openDispatch(c, mode) {
+  function openDispatch(c, mode, fromCard = false, option = null) {
     if (!c || S.pending || Date.now() < S.remoteSwapUntil) return;
     const d = draft(c);
     S.dispatchId = c.id;
+    d.dispatchOption = option;
     d.dispatchMode = mode || d.dispatchMode || 'investigate';
+    if (fromCard) d.dispatch = d.note;
     if (!PICKERS['dispatch-model'].options.length) void loadModels();
     setDispatchMode(d.dispatchMode);
     $('#dispatch-note').value = d.dispatch;
@@ -2298,15 +2314,23 @@ const S = {
     }
     const d = draft(c),
       mode = d.dispatchMode,
-      body = { mode, note: d.dispatch.trim() || null };
-    if (mode === 'plan-into') {
-      body.model = $('#dispatch-model').value.trim() || null;
-      body.executor = $('#dispatch-executor').value.trim() || null;
-    }
+      note = $('#dispatch-note').value.trim() || null,
+      model = $('#dispatch-model').value.trim() || null,
+      thinking = $('#dispatch-thinking').value.trim() || null;
     d.dispatch = $('#dispatch-note').value;
     start.disabled = true;
     hint.textContent = 'Launching…';
-    const ok = await act(c, 'dispatch', body, 'dispatch');
+    const body = { mode, note, model, thinking };
+    if (mode === 'plan-into') body.executor = $('#dispatch-executor').value.trim() || null;
+    let ok;
+    if (d.dispatchOption != null) {
+      d.note = $('#dispatch-note').value;
+      const answer = { option: d.dispatchOption, text: null, note, mode, model, thinking };
+      if (mode === 'plan-into') answer.executor = body.executor;
+      ok = await act(c, 'answer', answer, `option-${d.dispatchOption}`);
+    } else {
+      ok = await act(c, 'dispatch', body, 'dispatch');
+    }
     start.disabled = false;
     if (ok || !S.cards.some((x) => x.id === c.id)) {
       hint.textContent = '';
@@ -2650,6 +2674,9 @@ const S = {
         break;
       case 'P':
         run(() => openDispatch(c, 'plan-into'));
+        break;
+      case 'r':
+        run(() => requestReport(c));
         break;
       case 't':
         run(() => openContext(c.id));

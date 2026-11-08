@@ -148,6 +148,7 @@ fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> 
         .route("/v1/cards/{id}/skip", axum::routing::post(skip))
         .route("/v1/cards/{id}/later", axum::routing::post(later))
         .route("/v1/cards/{id}/dispatch", axum::routing::post(dispatch))
+        .route("/v1/cards/{id}/report", axum::routing::post(request_report))
         .route("/v1/cards/{id}/close", axum::routing::post(close))
         .route("/v1/cards/{id}/reload", axum::routing::post(reload))
         .route("/v1/sessions", axum::routing::post(start_session))
@@ -341,15 +342,45 @@ async fn ingest(
     let notification_title = if notify { card.as_ref().map(|card| card.title.clone()) } else { None };
     let pushed = card.clone();
     let db = Arc::clone(&state);
-    let stored = tokio::task::spawn_blocking(move || db.db.insert_event(&event, card.as_ref())).await;
+    let stored = tokio::task::spawn_blocking(move || {
+        let fold_lock = db.db.answer_lock(&format!("fold:{}", event.source));
+        let _fold_guard = fold_lock.lock().unwrap();
+        let fold_target = card.as_ref().filter(|card| card.kind == crate::events::Kind::Finding)
+            .and_then(|card| db.db.queue(crate::events::now_ms()).ok()?.into_iter().find(|queued| {
+                queued.kind == crate::events::Kind::Finding
+                    && queued.id != card.id
+                    && queued.source.uri == card.source.uri
+                    && queued.title == card.title
+            }));
+        let stored = db.db.insert_event(&event, card.as_ref())?;
+        if stored {
+            if let Some(target) = &fold_target {
+                let card_id = card.as_ref().expect("fold target requires card").id.clone();
+                db.db.swipe(&crate::events::Swipe {
+                    card: card_id,
+                    action: "done".to_owned(),
+                    option: None,
+                    text: None,
+                    note: None,
+                    until_ms: None,
+                    reason: Some(format!("duplicate of {}", target.id)),
+                    at_ms: crate::events::now_ms(),
+                }).map_err(crate::db::InsertEventError::Database)?;
+            }
+        }
+        let queued = stored && card.is_some() && fold_target.is_none();
+        Ok::<_, crate::db::InsertEventError>((stored, queued))
+    }).await;
     match stored {
-        Ok(Ok(stored)) => {
+        Ok(Ok((stored, queued))) => {
             if stored {
                 broadcast(&state).await;
-                if let Some(title) = notification_title {
-                    notify_card(title);
+                if queued {
+                    if let Some(title) = notification_title {
+                        notify_card(title);
+                    }
+                    push_cards(&state, pushed.into_iter().collect());
                 }
-                push_cards(&state, pushed.into_iter().collect());
             }
             (axum::http::StatusCode::ACCEPTED, axum::Json(serde_json::json!({"ok": true, "stored": stored}))).into_response()
         }
@@ -366,8 +397,36 @@ async fn answer(
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::Json(request): axum::Json<crate::events::AnswerReq>,
 ) -> axum::response::Response {
-    let launch = state.launch.clone();
+    if request.mode.as_deref().is_some_and(|mode| crate::cards::DispatchMode::parse(mode).is_none()) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown mode");
+    }
+    if request.mode.as_deref() == Some("plan-into") {
+        if let Err(error) = crate::cards::model_selector(request.executor.as_deref()) {
+            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+        }
+    }
+    let mut launch = state.launch.clone();
+    if let Err(error) = apply_launch_choices(&mut launch, request.model.as_deref(), request.thinking.as_deref()) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
     card_action(state, id, move |db, card| crate::cards::answer(db, &card, &request, &launch)).await
+}
+fn apply_launch_choices(
+    launch: &mut crate::cards::Launch,
+    model: Option<&str>,
+    thinking: Option<&str>,
+) -> Result<(), String> {
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        crate::cards::model_selector(Some(model))?;
+        launch.model = Some(model.to_owned());
+    }
+    if let Some(thinking) = thinking.map(str::trim).filter(|thinking| !thinking.is_empty()) {
+        if !crate::cards::THINKING_LEVELS.contains(&thinking) {
+            return Err(format!("unknown thinking level {thinking}"));
+        }
+        launch.thinking = Some(thinking.to_owned());
+    }
+    Ok(())
 }
 
 async fn card_action<F>(state: Arc<AppState>, id: String, action: F) -> axum::response::Response
@@ -419,10 +478,11 @@ struct DispatchRequest {
     mode: Option<String>,
     #[serde(default)]
     note: Option<String>,
-    /// Planner of a plan-into dispatch.
     #[serde(default)]
     model: Option<String>,
-    /// Its execution model.
+    #[serde(default)]
+    thinking: Option<String>,
+    /// Execution model for a plan-into dispatch.
     #[serde(default)]
     executor: Option<String>,
 }
@@ -441,18 +501,18 @@ async fn dispatch(
         },
     };
     let plan_into = mode == crate::cards::DispatchMode::PlanInto;
-    if !plan_into && (request.model.is_some() || request.executor.is_some()) {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, "model and executor need mode plan-into");
+    if !plan_into && request.executor.is_some() {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, "executor needs mode plan-into");
     }
-    for selector in [request.model.as_deref(), request.executor.as_deref()] {
-        if let Err(error) = crate::cards::model_selector(selector) {
+    if plan_into {
+        if let Err(error) = crate::cards::model_selector(request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
     let mut launch = state.launch.clone();
-    if let Some(model) = request.model.filter(|model| !model.trim().is_empty()) {
-        launch.model = Some(model);
+    if let Err(error) = apply_launch_choices(&mut launch, request.model.as_deref(), request.thinking.as_deref()) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     let executor = request.executor;
     card_action(state, id, move |db, card| {
@@ -469,6 +529,13 @@ async fn close(
     let note = request.and_then(|request| request.0.note).filter(|note| !note.trim().is_empty());
     card_action(state, id, move |db, card| crate::cards::close(db, &card, note.as_deref())).await
 }
+async fn request_report(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    card_action(state, id, |db, card| crate::cards::request_report(db, &card)).await
+}
+
 /// Puts a fresh copy of a handled card back in the queue. The original and its swipes stay as they are.
 async fn reload(
     State(state): State<Arc<AppState>>,
@@ -1287,6 +1354,7 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
         refs,
         level,
         tool_call_id: None,
+        report_due: false,
     })
 }
 

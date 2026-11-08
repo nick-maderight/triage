@@ -46,8 +46,8 @@ function harness() {
       closePane: (card) => actions.push(['close', card]),
       acknowledge: (card) => actions.push(['ack', card]),
       doRecommended: (card) => actions.push(['act', card]),
+      requestReport: (card) => actions.push(['report', card]),
       openDispatch() {},
-      skip() {},
       toggleLater() {},
       later() {},
       paneButtons: () => node('div', 'pane-actions'),
@@ -144,4 +144,16 @@ test('cards answered through options keep Acknowledge & close secondary only', (
   assert.ok(close, 'the close action stays a secondary dock button');
   close.props.onClick();
   assert.equal(actions[0][0], 'close');
+});
+test('report-due card offers secondary Request final report without changing primary', () => {
+  const { context, actions } = harness(),
+    card = { id: 'info-report', kind: 'info', report_due: true, source: { pane: '%12' } },
+    dock = context.dock(card, true),
+    primary = primaryOf(dock),
+    request = findNodes(groupOf(dock), (item) => item.tag === 'button' && buttonText(item) === 'Request final report')[0];
+  assert.equal(buttonText(primary), 'Acknowledge & close');
+  assert.ok(request, 'the dock offers the report request');
+  request.props.onClick();
+  assert.equal(actions[0][0], 'report');
+  assert.equal(actions[0][1], card);
 });

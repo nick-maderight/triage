@@ -145,8 +145,10 @@ capture-pane)
         printf '╭─ Plan Review ─╮\n'
     elif [ -f "$HOME/tmux-plan-mode" ]; then
         printf '⬢ Example Model · ◉ high · 🗺 Plan\n'
-    elif [ -f "$HOME/tmux-idle-screen" ]; then
+        printf 'π > session\n'
         printf '───\n───\n'
+    elif [ -f "$HOME/tmux-idle-screen" ]; then
+        printf '──────\n  ←←  \n──────\n'
     elif [ "$capture_answered" = 1 ]; then
         printf 'complete\n'
     elif [ -f "$HOME/tmux-other-only" ]; then
@@ -299,6 +301,7 @@ fn ask_card(pane: &str, call_id: &str) -> Card {
         refs: Vec::new(),
         level: None,
         tool_call_id: Some(call_id.to_owned()),
+        report_due: false,
     }
 }
 
@@ -308,19 +311,10 @@ fn finding_card(root: &Path) -> Card {
         kind: Kind::Finding,
         priority: 1,
         created_ms: events::now_ms(),
-        source: Source {
-            cwd: root.display().to_string(),
-            ..Source::default()
-        },
+        source: Source { cwd: root.display().to_string(), ..Source::default() },
         title: "Finding".to_owned(),
         star: Star::default(),
-        options: ["Apply", "Defer"]
-            .into_iter()
-            .map(|label| CardOption {
-                label: label.to_owned(),
-                ..CardOption::default()
-            })
-            .collect(),
+        options: ["Apply", "Defer"].into_iter().map(|label| CardOption { label: label.to_owned(), ..CardOption::default() }).collect(),
         answerable: true,
         allow_other: false,
         questions: Vec::new(),
@@ -328,31 +322,7 @@ fn finding_card(root: &Path) -> Card {
         refs: Vec::new(),
         level: None,
         tool_call_id: None,
-    }
-}
-
-fn info_card(id: &str, pane: &str) -> Card {
-    Card {
-        id: id.to_owned(),
-        kind: Kind::Info,
-        priority: 1,
-        created_ms: events::now_ms(),
-        source: Source {
-            uri: format!("pane:{pane}"),
-            label: pane.to_owned(),
-            pane: Some(pane.to_owned()),
-            ..Source::default()
-        },
-        title: "Earlier result".to_owned(),
-        star: Star::default(),
-        options: Vec::new(),
-        answerable: true,
-        allow_other: false,
-        questions: Vec::new(),
-        body: Some("Earlier report".to_owned()),
-        refs: Vec::new(),
-        level: Some("info".to_owned()),
-        tool_call_id: None,
+        report_due: false,
     }
 }
 
@@ -366,15 +336,8 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         title: format!("Plan ready: proposal-{index}"),
         star: Star::default(),
         options: vec![
-            CardOption {
-                label: "Approve".to_owned(),
-                recommended: true,
-                ..CardOption::default()
-            },
-            CardOption {
-                label: "Refine".to_owned(),
-                ..CardOption::default()
-            },
+            CardOption { label: "Approve".to_owned(), recommended: true, ..CardOption::default() },
+            CardOption { label: "Refine".to_owned(), ..CardOption::default() },
         ],
         answerable: true,
         allow_other: true,
@@ -383,6 +346,7 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         refs: Vec::new(),
         level: None,
         tool_call_id: None,
+        report_due: false,
     }
 }
 
@@ -399,6 +363,27 @@ fn pane(root: &Path, id: &str, tty: &str, title: &str) -> tmux::Pane {
         width: 80,
         height: 24,
         pid: 0,
+    }
+}
+
+fn info_card(id: &str, pane: &str) -> Card {
+    Card {
+        id: id.to_owned(),
+        kind: Kind::Info,
+        priority: 1,
+        created_ms: events::now_ms(),
+        source: Source { uri: format!("pane:{pane}"), label: pane.to_owned(), pane: Some(pane.to_owned()), ..Source::default() },
+        title: "Earlier result".to_owned(),
+        star: Star::default(),
+        options: Vec::new(),
+        answerable: true,
+        allow_other: false,
+        questions: Vec::new(),
+        body: Some("Earlier report".to_owned()),
+        refs: Vec::new(),
+        level: Some("info".to_owned()),
+        tool_call_id: None,
+        report_due: false,
     }
 }
 
@@ -496,7 +481,7 @@ fn finding_brief_includes_agent_done_status_contract() {
         label: "Do as recommended".to_owned(),
         ..CardOption::default()
     };
-    let brief = finding_brief(&card, &option, None);
+    let brief = finding_brief(&card, &option, None, DispatchMode::Act);
     assert!(
         brief.contains("ENVOY_STATUS: complete")
             && brief.contains("ENVOY_STATUS: agent-done")
@@ -517,7 +502,7 @@ fn investigate_first_option_briefs_a_read_only_answer() {
         label: "Investigate first".to_owned(),
         ..CardOption::default()
     };
-    let brief = finding_brief(&card, &option, None);
+    let brief = finding_brief(&card, &option, None, DispatchMode::Investigate);
     assert!(brief.contains("## Proposed action, not approved\n"));
     assert!(!brief.contains("## Action\n"));
     assert!(brief.contains(INVESTIGATE_INSTRUCTION));
@@ -525,6 +510,62 @@ fn investigate_first_option_briefs_a_read_only_answer() {
     assert!(!brief.contains("ENVOY_STATUS: agent-done"));
     assert!(brief.contains("`Recommended action:`"));
     assert!(brief.contains(&format!("{INVESTIGATE_STATUS_CONTRACT}{REPORT_STEP}")));
+}
+#[test]
+fn finding_brief_plan_mode_includes_review_contract() {
+    let card = finding_card(Path::new("/tmp"));
+    let option = CardOption { label: "Do as recommended".to_owned(), ..CardOption::default() };
+    let brief = finding_brief(&card, &option, None, DispatchMode::Plan);
+    assert!(brief.contains("## Action\n"));
+    assert!(brief.contains(PLAN_INSTRUCTION));
+    assert!(brief.ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}\n{PLAN_REPORT_STEP}\n")));
+}
+#[cfg(unix)]
+#[test]
+fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
+    if let Some(root) = child_root("finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let card = finding_card(&root);
+        db.insert_card(&card).unwrap();
+        let result = answer(
+            &db,
+            &card,
+            &AnswerReq { option: Some(0), mode: Some("plan".to_owned()), ..AnswerReq::default() },
+            &in_session("session"),
+        );
+        let brief_path = fs::read_dir(root.join("briefs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("triage-brief-"))
+            .unwrap();
+        let overlay_path = fs::read_dir(root.join("briefs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("plan-mode-"))
+            .unwrap();
+        let brief = fs::read_to_string(&brief_path).unwrap();
+        let launch = fs::read_to_string(root.join("tmux.log"))
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with("new-window "))
+            .unwrap()
+            .to_owned();
+        assert!(result.is_ok());
+        assert!(brief.starts_with(&format!("# {}", card.title)));
+        assert!(brief.contains(PLAN_INSTRUCTION));
+        assert!(brief.contains(PLAN_REPORT_STEP));
+        assert!(launch.contains(&format!("--config '{}' @'{}'", overlay_path.display(), brief_path.display())));
+        assert_eq!(new_window_count(&root), 1);
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 // On 2026-10-31 a plan session approved with "Approve and execute" finished without a
@@ -576,8 +617,8 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
             label: "Apply".to_owned(),
             ..CardOption::default()
         };
-        let first = write_brief(&configured_db, finding_brief(&short_card, &option, None));
-        let second = write_brief(&configured_db, finding_brief(&short_card, &option, None));
+        let first = write_brief(&configured_db, finding_brief(&short_card, &option, None, DispatchMode::Act));
+        let second = write_brief(&configured_db, finding_brief(&short_card, &option, None, DispatchMode::Act));
         let expected_directory = configured.join("briefs");
         let first_path = first.as_ref().ok();
         let second_path = second.as_ref().ok();
@@ -602,7 +643,7 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
             id: format!("finding-{}", "x".repeat(300)),
             ..finding_card(&root)
         };
-        let long_brief = write_brief(&configured_db, finding_brief(&long_card, &option, None));
+        let long_brief = write_brief(&configured_db, finding_brief(&long_card, &option, None, DispatchMode::Act));
         let long_id_uses_bounded_path = long_brief
             .as_ref()
             .is_ok_and(|path| path.parent() == Some(expected_directory.as_path()));
@@ -611,7 +652,7 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
         fs::create_dir_all(&relative).unwrap();
         std::env::set_current_dir(&relative).unwrap();
         let relative_db = Db::open(Path::new("triage.db")).unwrap();
-        let relative_brief = write_brief(&relative_db, finding_brief(&short_card, &option, None));
+        let relative_brief = write_brief(&relative_db, finding_brief(&short_card, &option, None, DispatchMode::Act));
         let expected_relative_parent = fs::canonicalize(&relative).unwrap().join("briefs");
         let relative_db_path_is_canonical = relative_brief.as_ref().is_ok_and(|path| {
             path.is_absolute() && path.parent() == Some(expected_relative_parent.as_path())
@@ -1583,6 +1624,72 @@ fn agent_done_report_names_the_open_step() {
         Some(scratch.path()),
         Some(&bin),
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn launched_reply_without_status_line_offers_report_request() {
+    if let Some(root) = child_root("launched_reply_without_status_line_offers_report_request") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-keys.log"), b" ").unwrap();
+        fs::create_dir_all(root.join("tmux-screens")).unwrap();
+        fs::write(root.join("tmux-screens/0"), "──────\n  ←←  \n──────\n").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "All done. Listing live.")]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut finding = finding_card(&root);
+        finding.title = "The delivery team has an unexpected CI grant".to_owned();
+        db.insert_card(&finding).unwrap();
+        db.swipe(&Swipe { card: finding.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some("launched %12".to_owned()), at_ms: events::now_ms() }).unwrap();
+        Tracker::default().tick(&db);
+        let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
+        assert!(card.report_due && card.star.situation == finding.title, "card: {card:?}");
+        assert_eq!(request_report(&db, &card), Ok(()));
+        let swipe = db.card(&card.id).unwrap().unwrap().1.unwrap();
+        assert_eq!(swipe.text.as_deref(), Some("Request final report"));
+        assert_eq!(swipe.reason.as_deref(), Some("report requested %12"));
+        assert!(fs::read_to_string(root.join("tmux-keys.log")).unwrap().contains(REQUEST_REPORT_TEXT));
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("launched_reply_without_status_line_offers_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+#[cfg(unix)]
+#[test]
+fn unlaunched_reply_does_not_offer_report_request() {
+    if let Some(root) = child_root("unlaunched_reply_does_not_offer_report_request") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "A plain reply.")]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        Tracker::default().tick(&db);
+        let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
+        assert!(!card.report_due);
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("unlaunched_reply_does_not_offer_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+#[cfg(unix)]
+#[test]
+fn error_reply_does_not_offer_report_request() {
+    if let Some(root) = child_root("error_reply_does_not_offer_report_request") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_entry("assistant-error", "error", None, Some("provider failed"))]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let finding = finding_card(&root);
+        db.insert_card(&finding).unwrap();
+        db.swipe(&Swipe { card: finding.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some("launched %12".to_owned()), at_ms: events::now_ms() }).unwrap();
+        Tracker::default().tick(&db);
+        assert!(!db.card("done:%12:assistant-error").unwrap().unwrap().0.report_due);
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("error_reply_does_not_offer_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
 }
 
 #[cfg(unix)]
@@ -4627,6 +4734,17 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
             &answer_req(0, Some("changed")),
             &in_session("session"),
         );
+        let changed_mode = answer(
+            &db,
+            &card,
+            &AnswerReq {
+                option: Some(0),
+                note: Some("review".to_owned()),
+                mode: Some("investigate".to_owned()),
+                ..AnswerReq::default()
+            },
+            &in_session("session"),
+        );
         let launches_before_retry = new_window_count(&root);
         let retry_result = answer(&db, &card, &original, &in_session("session"));
         let completed = current_swipe(&db, &card.id);
@@ -4638,6 +4756,7 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
             && pending_reason.as_deref() == Some("launching %42")
             && different_choice(&changed_option)
             && different_choice(&changed_note)
+            && different_choice(&changed_mode)
             && launches_before_retry == 1
             && retry_result.is_ok()
             && completed.action == "done"
@@ -4731,6 +4850,39 @@ fn assistant_text_line(id: &str, text: &str) -> String {
 }
 
 #[cfg(unix)]
+#[test]
+fn interrupted_dispatched_pane_does_not_raise_unreported() {
+    if let Some(root) = child_root("interrupted_dispatched_pane_does_not_raise_unreported") {
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[user_brief_line(), assistant_entry("a1", "aborted", None, None)]);
+        fs::write(root.join("tmux-dead"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let written = Tracker::default().tick(&db).written;
+        assert_eq!(written, 0);
+        assert!(db.queue(events::now_ms()).unwrap().is_empty());
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("interrupted_dispatched_pane_does_not_raise_unreported", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+#[cfg(unix)]
+#[test]
+fn stopped_dispatched_pane_still_raises_unreported() {
+    if let Some(root) = child_root("stopped_dispatched_pane_still_raises_unreported") {
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[user_brief_line(), assistant_entry("a1", "stop", Some("Still incomplete."), None)]);
+        fs::write(root.join("tmux-dead"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        Tracker::default().tick(&db);
+        assert!(db.queue(events::now_ms()).unwrap().iter().any(|card| card.title == "Unreported: Still incomplete."));
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("stopped_dispatched_pane_still_raises_unreported", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
 #[test]
 fn dead_dispatched_pane_without_report_raises_one_warning_card() {
     if let Some(root) = child_root("dead_dispatched_pane_without_report_raises_one_warning_card") {

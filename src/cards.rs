@@ -730,6 +730,33 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>) -> Result<(), String> {
         Err("could not record swipe".to_owned())
     }
 }
+const REQUEST_REPORT_TEXT: &str = "Send the final report your brief requires now: first line `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`, then the four report lines your brief describes.";
+
+/// Type the request for the final report into the card's waiting pane and resolve the card.
+pub fn request_report(db: &Db, card: &Card) -> Result<(), String> {
+    let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
+    let pane_mutex = pane_lock(db, pane);
+    let _pane_guard = pane_mutex.lock().unwrap();
+    let answer_lock = db.answer_lock(&card.id);
+    let _answer_guard = answer_lock.lock().unwrap();
+    let swipe = db.card(&card.id).map_err(|error| error.to_string())?.and_then(|(_, swipe)| swipe);
+    if !card.report_due {
+        return Err("final report was not requested for this card".to_owned());
+    }
+    if !queued_for_answer(swipe.as_ref()) {
+        return Err("card is not queued".to_owned());
+    }
+    let panes = tmux::list_panes().map_err(|error| error.to_string())?;
+    if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
+        return Err("pane is not waiting".to_owned());
+    }
+    send(pane, REQUEST_REPORT_TEXT)?;
+    if record_swipe(db, &card.id, "done", None, Some("Request final report".to_owned()), None, Some(format!("report requested {pane}"))) {
+        Ok(())
+    } else {
+        Err("could not record swipe".to_owned())
+    }
+}
 
 /// Launch an omp session from free text. Returns the new pane id. The session's asks and final
 /// report reach the inbox through the tracker like any other pane. A plan launch starts in
@@ -918,6 +945,7 @@ fn add_ask_card(
         refs: Vec::new(),
         level: None,
         tool_call_id: Some(call.tool_call_id.clone()),
+        report_due: false,
     };
     match db.insert_card(&card) {
         Ok(inserted) => {
@@ -1067,6 +1095,7 @@ fn queue_turn_card(
             80,
         )
     };
+    let mut report_due = false;
     let (entry_id, title, body, level, action) = match end {
         omp::TurnEnd::Aborted | omp::TurnEnd::Running => return true,
         omp::TurnEnd::Error { entry_id, message } => {
@@ -1133,6 +1162,7 @@ fn queue_turn_card(
                 Some((omp::FinalStatus::Complete, _)) if !missing_report => "info",
                 Some(_) => "warn",
             };
+            report_due = reported.is_none() && !trail.situation.is_empty();
             (entry_id, title, Some(body), level, action)
         }
     };
@@ -1157,6 +1187,7 @@ fn queue_turn_card(
         refs: vec![path.display().to_string()],
         level: Some(level.to_owned()),
         tool_call_id: None,
+        report_due,
     };
     let succeeded = supersede_info_cards(db, &card.id, &card.refs[0], pane, written);
     match reply_has_card(db, panes, "done", &entry_id, &card.id, written) {
@@ -1298,6 +1329,9 @@ fn audit_ended_session(
         Err(error) => return error.kind() == std::io::ErrorKind::NotFound,
     };
     if audit.dispatched && !audit.reported {
+        if matches!(omp::turn_end(path), Ok(Some(omp::TurnEnd::Aborted))) {
+            return true;
+        }
         return queue_ended_card(db, pane, panes, path, "Unreported", audit.entry_id, audit.last_text, written);
     }
     if !seen_live {
@@ -1356,6 +1390,7 @@ fn queue_ended_card(
         refs: vec![path.display().to_string()],
         level: Some("warn".to_owned()),
         tool_call_id: None,
+        report_due: false,
     };
     if entry != "-" {
         match reply_has_card(db, panes, "exited", &entry, &card.id, written) {
@@ -1425,6 +1460,7 @@ fn add_plan_card(
         refs: Vec::new(),
         level: None,
         tool_call_id: None,
+        report_due: false,
     };
     match db.insert_card(&card) {
         Ok(inserted) => *written += usize::from(inserted),
@@ -2032,28 +2068,35 @@ fn answer_finding(
         .options
         .get(index)
         .ok_or_else(|| "finding option is out of range".to_owned())?;
-    let tagged_pane = tmux::finding_pane(&card.id, index, req.note.as_deref())
+    let chosen = req.mode.as_deref().and_then(DispatchMode::parse);
+    let mode = chosen.unwrap_or_else(|| option_mode(option));
+    let tagged_pane = tmux::finding_pane(&card.id, index, req.note.as_deref(), mode)
         .map_err(|error| error.to_string())?;
     let pending_pane = if tagged_pane.is_none() {
-        recover_pending_finding_pane(swipe.as_ref(), index, req.note.as_deref())?
+        recover_pending_finding_pane(swipe.as_ref(), index, req.note.as_deref(), mode)?
     } else {
         None
+    };
+    let start = match mode {
+        DispatchMode::Plan => Start::Plan,
+        DispatchMode::PlanInto => Start::PlanInto(req.executor.as_deref()),
+        DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
     let (pane, needs_tag) = if let Some(pane) = tagged_pane {
         (pane, false)
     } else if let Some(pane) = pending_pane {
         (pane, true)
     } else {
-        let path = write_brief(db, finding_brief(card, option, req.note.as_deref()))?;
-        let pane = launch_brief(card, launch, &path, Start::Goal)?;
-        let pending = record_pending_finding_pane(db, &card.id, index, req.note.as_deref(), &pane);
-        tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref())
+        let path = write_brief(db, finding_brief(card, option, req.note.as_deref(), mode))?;
+        let pane = launch_brief(card, launch, &path, start)?;
+        let pending = record_pending_finding_pane(db, &card.id, index, req.note.as_deref(), &pane, mode);
+        tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
             .map_err(|error| error.to_string())?;
         pending?;
         (pane, false)
     };
     if needs_tag {
-        tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref())
+        tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
             .map_err(|error| error.to_string())?;
     }
     if record_swipe(
@@ -2061,7 +2104,7 @@ fn answer_finding(
         &card.id,
         "done",
         Some(index),
-        None,
+        chosen.map(|mode| mode.swipe_text().to_owned()),
         req.note.clone(),
         Some(format!("launched {pane}")),
     ) {
@@ -2075,6 +2118,7 @@ fn recover_pending_finding_pane(
     swipe: Option<&Swipe>,
     option: usize,
     note: Option<&str>,
+    mode: DispatchMode,
 ) -> Result<Option<String>, String> {
     let Some(swipe) = swipe.filter(|swipe| swipe.action == "later") else {
         return Ok(None);
@@ -2090,7 +2134,10 @@ fn recover_pending_finding_pane(
     if !panes.iter().any(|candidate| candidate.id == pane) {
         return Ok(None);
     }
-    if swipe.option != Some(option) || swipe.note.as_deref() != note {
+    if swipe.option != Some(option)
+        || swipe.note.as_deref() != note
+        || swipe.text.as_deref() != Some(mode.swipe_text())
+    {
         return Err("finding pane was launched with a different answer".to_owned());
     }
     Ok(Some(pane.to_owned()))
@@ -2102,13 +2149,14 @@ fn record_pending_finding_pane(
     option: usize,
     note: Option<&str>,
     pane: &str,
+    mode: DispatchMode,
 ) -> Result<(), String> {
     let now = events::now_ms();
     db.swipe(&Swipe {
         card: card.to_owned(),
         action: "later".to_owned(),
         option: Some(option),
-        text: None,
+        text: Some(mode.swipe_text().to_owned()),
         note: note.map(|note| note.to_owned()),
         until_ms: Some(now),
         reason: Some(format!("launching {pane}")),
@@ -2212,8 +2260,7 @@ fn push_instructions(brief: &mut String, mode: DispatchMode) {
     });
 }
 
-fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>) -> String {
-    let mode = option_mode(option);
+fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: DispatchMode) -> String {
     let mut brief = format!(
         "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Chosen option\n{}\n\n## Direction\n{}\n\n## Direction from the user\n{}\n\n## References\n",
         card.title,
@@ -2229,6 +2276,9 @@ fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>) -> String
     push_refs(&mut brief, card);
     push_instructions(&mut brief, mode);
     brief.push_str(REPORT_STEP);
+    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
+        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
+    }
     brief
 }
 

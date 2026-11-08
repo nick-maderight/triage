@@ -138,9 +138,13 @@ try {
 <button type="button" role="radio" class="seg" id="dispatch-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="Shift+P" data-od-id="dispatch-mode-plan-into">Plan into</button>
 </div>
 <p class="mode-help" id="dispatch-mode-help" data-od-id="dispatch-mode-help"></p>
-<div class="compose-grid" id="dispatch-models" hidden data-od-id="dispatch-models">
-<div class="pair"><label id="dispatch-model-label" for="dispatch-model">Planner model</label>
+<div class="compose-grid" id="dispatch-launch" data-od-id="dispatch-launch">
+<div class="pair"><label id="dispatch-model-label" for="dispatch-model">Model</label>
 <button type="button" class="field picker-field" id="dispatch-model" value="" aria-labelledby="dispatch-model-label dispatch-model" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-model"></button></div>
+<div class="pair"><label id="dispatch-thinking-label" for="dispatch-thinking">Thinking</label>
+<button type="button" class="field picker-field" id="dispatch-thinking" value="" aria-labelledby="dispatch-thinking-label dispatch-thinking" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-thinking"></button></div>
+</div>
+<div class="compose-grid" id="dispatch-models" hidden data-od-id="dispatch-models">
 <div class="pair"><label id="dispatch-executor-label" for="dispatch-executor">Execution model</label>
 <button type="button" class="field picker-field" id="dispatch-executor" value="" aria-labelledby="dispatch-executor-label dispatch-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-executor"></button></div>
 </div>
@@ -180,8 +184,7 @@ try {
 <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Pick an option</dd>
 <dt><kbd>a</kbd> <kbd>Enter</kbd></dt><dd>Recommended option / Acknowledge &amp; close</dd>
 <dt><kbd>o</kbd></dt><dd>Other answer</dd>
-<dt><kbd>n</kbd></dt><dd>Note sent with your choice</dd>
-<dt><kbd>i</kbd></dt><dd>Dispatch with Investigate preselected</dd>
+<dt><kbd>r</kbd></dt><dd>Request the final report from a session whose reply missed it</dd>
 <dt><kbd>A</kbd></dt><dd>Dispatch with Act preselected</dd>
 <dt><kbd>p</kbd></dt><dd>Dispatch with Plan preselected</dd>
 <dt><kbd>P</kbd></dt><dd>Dispatch with Plan into preselected</dd>
