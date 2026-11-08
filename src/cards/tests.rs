@@ -1460,6 +1460,10 @@ fn investigation_report_card_carries_its_recommended_action() {
         let (_pty, tty) = new_pty();
         fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
         fs::write(root.join("tmux-waiting"), b"").unwrap();
+        // The user's draft sits in omp's editor, so triage leaves the pane alone and the
+        // step stays on the card.
+        fs::create_dir_all(root.join("tmux-screens")).unwrap();
+        fs::write(root.join("tmux-screens/0"), "──────\n  hold on  \n──────\n").unwrap();
         let transcript = root.join("transcript.jsonl");
         write_transcript(
             &root,
@@ -1499,6 +1503,7 @@ fn investigation_report_card_carries_its_recommended_action() {
                             == Some("Both users lack the grant.\n\nTime used: 9 seconds.")
                 })
         );
+        assert!(!root.join("tmux-keys.log").exists(), "the pane got keys");
         return;
     }
 
@@ -1506,6 +1511,130 @@ fn investigation_report_card_carries_its_recommended_action() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "investigation_report_card_carries_its_recommended_action",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+// On 2026-11-08 the %304 investigation's step sat on its card and the user typed "do it" in
+// the pane to move it, which dropped the brief's status contract. A final report whose pane
+// still waits with an empty editor must get its step back there as a plan brief.
+#[cfg(unix)]
+#[test]
+fn investigation_step_becomes_a_plan_in_its_waiting_pane() {
+    if let Some(root) = child_root("investigation_step_becomes_a_plan_in_its_waiting_pane") {
+        let (_pty, tty) = new_pty();
+        fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-idle-screen"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(
+            &root,
+            &tty,
+            &transcript,
+            &[assistant_text_line(
+                "assistant-report",
+                "ENVOY_STATUS: complete\n\nBoth users lack the grant.\n\n**Recommended action:** Add both as read collaborators.\n\nTime used: 9 seconds.",
+            )],
+        );
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let finding = finding_card(&root);
+        db.insert_card(&finding).unwrap();
+        db.swipe(&Swipe {
+            card: finding.id.clone(),
+            action: "done".to_owned(),
+            option: None,
+            text: Some("Investigate".to_owned()),
+            note: None,
+            until_ms: None,
+            reason: Some("launched %12".to_owned()),
+            at_ms: events::now_ms(),
+        })
+        .unwrap();
+        Tracker::default().tick(&db);
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        let typed: Vec<&str> = keys
+            .lines()
+            .filter_map(|line| line.split_once("-l -- Read the brief at ").map(|(_, rest)| rest))
+            .collect();
+        assert_eq!(keys.lines().filter(|line| line.contains(" M-P")).count(), 1, "{keys}");
+        assert_eq!(typed.len(), 1, "{keys}");
+        let report = current_swipe(&db, "done:%12:assistant-report");
+        assert_eq!(
+            (report.text.as_deref(), report.reason.as_deref()),
+            (Some("Plan"), Some("launched %12"))
+        );
+        let brief =
+            fs::read_to_string(typed[0].strip_suffix(" and carry it out.").unwrap()).unwrap();
+        assert!(brief.starts_with("# Plan: Done: Both users lack the grant.\n"), "{brief}");
+        assert!(brief.contains("## Action\nAdd both as read collaborators.\n"), "{brief}");
+        assert!(brief.contains(PLAN_INSTRUCTION), "{brief}");
+        assert!(brief.ends_with(&format!("\n{PLAN_REPORT_STEP}\n")), "{brief}");
+        assert_eq!(new_window_count(&root), 0);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "investigation_step_becomes_a_plan_in_its_waiting_pane",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+// omp refuses plan mode while a goal is active or paused, and in vibe mode. The step must
+// then stay on its card for Plan recommended step, with no brief typed and no window opened.
+#[cfg(unix)]
+#[test]
+fn investigation_step_stays_on_its_card_when_plan_mode_refuses() {
+    if let Some(root) = child_root("investigation_step_stays_on_its_card_when_plan_mode_refuses") {
+        let (_pty, tty) = new_pty();
+        fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-idle-screen"), b"").unwrap();
+        fs::write(root.join("tmux-plan-toggle-fails"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(
+            &root,
+            &tty,
+            &transcript,
+            &[assistant_text_line(
+                "assistant-report",
+                "ENVOY_STATUS: complete\n\nBoth users lack the grant.\n\n**Recommended action:** Add both as read collaborators.\n\nTime used: 9 seconds.",
+            )],
+        );
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let finding = finding_card(&root);
+        db.insert_card(&finding).unwrap();
+        db.swipe(&Swipe {
+            card: finding.id.clone(),
+            action: "done".to_owned(),
+            option: None,
+            text: Some("Investigate".to_owned()),
+            note: None,
+            until_ms: None,
+            reason: Some("launched %12".to_owned()),
+            at_ms: events::now_ms(),
+        })
+        .unwrap();
+        Tracker::default().tick(&db);
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        assert_eq!(keys.lines().filter(|line| line.contains(" M-P")).count(), 1, "{keys}");
+        assert!(!keys.contains("-l --"), "{keys}");
+        let (card, swipe) = db.card("done:%12:assistant-report").unwrap().unwrap();
+        assert!(swipe.is_none());
+        assert_eq!(card.star.action, "Add both as read collaborators.");
+        assert_eq!(new_window_count(&root), 0);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "investigation_step_stays_on_its_card_when_plan_mode_refuses",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),

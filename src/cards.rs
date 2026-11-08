@@ -260,6 +260,8 @@ impl Tracker {
     ///   status line is titled with its first non-empty line and has the reply as body.
     ///   A pane first seen Waiting gets the same check, so a short run whose Working
     ///   window fell between polls still reports; the card id makes the check idempotent.
+    ///   A new final report from an investigation whose step moved under Action goes back to
+    ///   its waiting pane as a plan brief when the pane can take one (`plan_recommended_step`).
     ///   A reply keeps one card across pane ids: when tmux restarts and omp resumes under
     ///   a new pane id, an already-handled reply stays handled. A card closed because its
     ///   pane exited may return. A pane's omp breadcrumb counts only when it was written
@@ -515,10 +517,8 @@ impl Tracker {
 }
 
 
-/// Card actions aimed at one pane run one at a time, so an answer, dispatch or close that
-/// arrives while another is still typing waits instead of interleaving keys. Lock order is
-/// pane, then card. The tracker takes card locks, and takes a pane lock before any card
-/// lock only to audit a pane that disappeared.
+/// Card actions for a pane run one at a time. Lock order is pane, then card. The tracker takes
+/// a pane lock before any card lock only to audit a gone pane or type an investigation's plan brief.
 fn pane_lock(db: &Db, pane: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     db.answer_lock(&format!("pane:{pane}"))
 }
@@ -813,11 +813,7 @@ fn launch_brief(
                 candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting
             });
         if waiting {
-            if start == Start::Plan {
-                ensure_plan_mode(pane)?;
-            }
-            let text = format!("Read the brief at {} and carry it out.", brief.display());
-            tmux::send_text(pane, &text).map_err(|error| error.to_string())?;
+            type_brief(pane, brief, start)?;
             return Ok(pane.to_owned());
         }
     }
@@ -826,17 +822,34 @@ fn launch_brief(
     tmux::new_window(session, &card.source.cwd, &command).map_err(|error| error.to_string())
 }
 
+/// Type a brief into a waiting omp pane, turning plan mode on first for a plan brief.
+fn type_brief(pane: &str, brief: &Path, start: Start) -> Result<(), String> {
+    if start == Start::Plan {
+        ensure_plan_mode(pane)?;
+    }
+    let text = format!("Read the brief at {} and carry it out.", brief.display());
+    tmux::send_text(pane, &text).map_err(|error| error.to_string())
+}
+
 fn ensure_plan_mode(pane: &str) -> Result<(), String> {
-    let screen = tmux::screen(pane).map_err(|error| format!("plan mode screen capture failed: {error}"))?;
-    if omp::plan_mode_on(&screen) {
+    let plan_mode_on = || {
+        tmux::screen(pane)
+            .map(|screen| omp::plan_mode_on(&screen))
+            .map_err(|error| format!("plan mode screen capture failed: {error}"))
+    };
+    if plan_mode_on()? {
         return Ok(());
     }
     tmux::send_keys(pane, &["M-P"]).map_err(|error| format!("plan mode toggle failed: {error}"))?;
-    let screen = tmux::screen(pane).map_err(|error| format!("plan mode screen capture failed: {error}"))?;
-    if !omp::plan_mode_on(&screen) {
-        return Err("plan mode did not turn on".to_owned());
+    // omp draws the Plan row only after it resolves the plan file and the plan model, so a
+    // capture right after the toggle can miss it; poll for up to two seconds.
+    for _ in 0..20 {
+        if plan_mode_on()? {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+    Err("plan mode did not turn on".to_owned())
 }
 
 pub(crate) fn queued_for_answer(swipe: Option<&Swipe>) -> bool {
@@ -1064,7 +1077,7 @@ fn add_info_card(
     }
     let succeeded = match end {
         None => true,
-        Some(end) => queue_turn_card(db, pane, panes, &path, end, written),
+        Some(end) => queue_turn_card(db, pane, panes, &path, end, true, written),
     };
     if succeeded {
         stalled.insert(pane.id.clone(), (path, length));
@@ -1074,13 +1087,15 @@ fn add_info_card(
 
 /// Queue the card a live pane gets when its run ends as `end`: a reply card, a
 /// `Stopped with error` card, or nothing for an interrupt or a run still going.
-/// The same build serves the exit audit, so both produce identical cards, except that a pane already gone carries no trail.
+/// `live` is false for the exit audit, which may run under the pane lock and has no omp
+/// left to type into; only a live pane gets an investigation's step back as a plan brief.
 fn queue_turn_card(
     db: &Db,
     pane: &tmux::Pane,
     panes: &[tmux::Pane],
     path: &Path,
     end: omp::TurnEnd,
+    live: bool,
     written: &mut usize,
 ) -> bool {
     let (trail, investigation) = pane_trail(db, pane);
@@ -1142,7 +1157,7 @@ fn queue_turn_card(
                 Some((_, report)) => report.to_owned(),
             };
             // Only an investigation's report owes a next step, so only it may move its
-            // `Recommended action:` line onto the card as the dispatchable action; every
+            // `Recommended action:` line onto the card as the step to plan; every
             // other launch carried the work out, and its leftover line is advice that
             // stays in the body.
             let (mut body, action) = if investigation {
@@ -1196,10 +1211,52 @@ fn queue_turn_card(
         Some(false) => {}
     }
     match db.insert_card(&card) {
-        Ok(inserted) => *written += usize::from(inserted),
+        Ok(inserted) => {
+            *written += usize::from(inserted);
+            // Only a final report hands its step back as a plan; a reply without a status
+            // line (`report_due`), such as an answer to text the user typed in the pane,
+            // keeps its step on the card.
+            if inserted && live && !card.report_due && !card.star.action.is_empty() {
+                *written += usize::from(plan_recommended_step(db, &card, &pane.id, path));
+            }
+        }
         Err(_) => return false,
     }
     succeeded
+}
+
+/// Hand an investigation's recommended step back to the pane it came from as a plan, so the
+/// step reaches the inbox as a plan card to approve. The pane must still wait with an empty
+/// editor and no active goal: omp refuses plan mode during a goal, and a draft in the editor
+/// is the user's. It turns plan mode on, types a Plan brief built from the report, and
+/// resolves the report as a Plan launch. It never opens a window; any skip or failure leaves
+/// the report queued with its step for Plan recommended step. The caller must not hold the
+/// pane lock. Returns whether it resolved the report.
+fn plan_recommended_step(db: &Db, card: &Card, pane: &str, transcript: &Path) -> bool {
+    if !matches!(omp::goal_active(transcript), Ok(false)) {
+        return false;
+    }
+    let pane_mutex = pane_lock(db, pane);
+    let _pane_guard = pane_mutex.lock().unwrap();
+    let answer_lock = db.answer_lock(&card.id);
+    let _answer_guard = answer_lock.lock().unwrap();
+    let queued = matches!(db.card(&card.id), Ok(Some((_, swipe))) if queued_for_answer(swipe.as_ref()));
+    if !queued || !tmux::screen(pane).is_ok_and(|screen| omp::editor_empty(&screen)) {
+        return false;
+    }
+    let Ok(brief) = write_brief(db, dispatch_brief(card, DispatchMode::Plan, None)) else {
+        return false;
+    };
+    type_brief(pane, &brief, Start::Plan).is_ok()
+        && record_swipe(
+            db,
+            &card.id,
+            "done",
+            None,
+            Some(DispatchMode::Plan.swipe_text().to_owned()),
+            None,
+            Some(format!("launched {pane}")),
+        )
 }
 
 /// Where a launched session's work came from. The situation is the title of the card whose
@@ -1343,7 +1400,7 @@ fn audit_ended_session(
         Ok(Some(omp::TurnEnd::Running)) => {
             queue_ended_card(db, pane, panes, path, "Ended mid-turn", audit.entry_id, audit.last_text, written)
         }
-        Ok(Some(end)) => queue_turn_card(db, pane, panes, path, end, written),
+        Ok(Some(end)) => queue_turn_card(db, pane, panes, path, end, false, written),
     }
 }
 
@@ -2286,11 +2343,10 @@ const ENVOY_STATUS_CONTRACT: &str = "When finished, end with a final reply whose
 
 const INVESTIGATE_STATUS_CONTRACT: &str = "When finished, end with a final reply whose first line is `ENVOY_STATUS: complete` or `ENVOY_STATUS: incomplete`. `complete` means the answer is reported with its evidence and nothing changed beyond what the direction from the user asked for. `incomplete` means the question could not be answered, and the reply names what blocked it.";
 
-/// How every brief's final reply reads after its status line. The first line becomes the
-/// card title, so it names the outcome, and the last names the next step, which the card
-/// may offer as its Do as recommended button. Without a shape and a limit, sessions
-/// narrate every check they ran.
-const REPORT_STEP: &str = " Then report in caveman style, four short lines at most: the answer or outcome first, then the evidence that settles it, then what changed or `Changed nothing`, and last a line that starts `Recommended action:` and names the one next step an agent session could start and finish now, complete enough to carry out as written. Advice for future work, standing rules, and steps already finished are no step; write `Recommended action: none`. Leave out how you checked.\n";
+/// How every brief's final reply reads after its status line. Each session finishes its
+/// allowed work before reporting. The first line gives the outcome for the card title; the
+/// last names only the change the user must approve. Without this shape, sessions list checks.
+const REPORT_STEP: &str = " Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow. Then report in caveman style, four short lines at most: the answer or outcome first, then the evidence that settles it, then what changed or `Changed nothing`, and last a line that starts `Recommended action:` and names the one change your instructions did not allow and the user must approve, complete enough to plan from as written. Work waiting on a later event, steps only the user can take, advice for future work, standing rules, and steps already finished are no step; write `Recommended action: none` and name any step only the user can take in the evidence line. Leave out how you checked.\n";
 
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";

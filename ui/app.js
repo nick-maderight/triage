@@ -1288,11 +1288,11 @@ const S = {
         (recommended
           ? button(
               c,
-              'act',
+              'plan',
               'btn primary',
               { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter' },
-              () => doRecommended(c),
-              'Do as recommended',
+              () => planRecommended(c),
+              'Plan recommended step',
               key('a'),
             )
           : paneOf(c)
@@ -1625,14 +1625,14 @@ const S = {
   }
   const acknowledge = (c) =>
       act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),
-    doRecommended = (c) => openDispatch(c, 'act', true),
+    planRecommended = (c) => openDispatch(c, 'plan', true),
     requestReport = (c) => { if (c.kind === 'info' && c.report_due && paneOf(c)) act(c, 'report', {}, 'request'); },
     skip = (c) => act(c, 'skip', {}, 'skip'),
     closePane = (c) => paneOf(c) && act(c, 'close', { note: noteValue(c) }, 'close'),
     later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
   function primary(c) {
     if (Date.now() < S.remoteSwapUntil) return;
-    if (c.kind === 'info' && c.star?.action) doRecommended(c);
+    if (c.kind === 'info' && c.star?.action) planRecommended(c);
     else if (c.kind === 'info' && paneOf(c)) closePane(c);
     else if (c.kind === 'info') acknowledge(c);
     else if (c.questions?.length && answerable(c)) primaryStep(c);
