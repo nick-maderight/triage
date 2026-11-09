@@ -41,7 +41,7 @@ enum Commands {
         #[arg(long)]
         thinking: Option<String>,
         /// dsh workspace every new dsh session joins, so the dsh web UI groups triage's
-        /// sessions; empty keeps each session in its own directory [default: triage]
+        /// sessions; empty keeps each session in its own directory
         #[arg(long, default_value = "triage")]
         dsh_workspace: String,
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
