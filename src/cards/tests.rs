@@ -1652,13 +1652,18 @@ fn investigation_step_stays_on_its_card_when_plan_mode_refuses() {
     );
 }
 
-// An Act launch can still leave a step the session was not allowed to take. Keep that step
-// in the card's Action field so the user can plan it instead of reading it as report prose.
 #[cfg(unix)]
 #[test]
-fn act_report_card_carries_its_recommended_action() {
-    if let Some(root) = child_root("act_report_card_carries_its_recommended_action") {
+fn act_complete_report_keeps_its_recommended_line_in_the_body() {
+    if let Some(root) = child_root("act_complete_report_keeps_its_recommended_line_in_the_body") {
         let (_pty, tty) = new_pty();
+        let investigated = reply_turn(
+            "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Run the investigation follow-up.".to_owned(),
+            None,
+            true,
+            true,
+        );
+        assert_eq!(investigated.action, "Run the investigation follow-up.");
         fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
         fs::write(root.join("tmux-waiting"), b"").unwrap();
         fs::create_dir_all(root.join("tmux-screens")).unwrap();
@@ -1696,19 +1701,27 @@ fn act_report_card_carries_its_recommended_action() {
         assert!(
             written == 1
                 && card.is_some_and(|card| {
-                    card.star.action == "next cold-email task, read the field data first."
-                        && card.body.as_deref() == Some("Skill updated.")
-                        && !card.body.as_deref().unwrap_or_default().contains("Recommended action")
+                    card.star.action.is_empty()
+                        && card.body.as_deref()
+                            == Some("Skill updated.\n\nRecommended action: next cold-email task, read the field data first.")
                 })
         );
         assert!(!root.join("tmux-keys.log").exists(), "the pane got keys");
+        let none = reply_turn(
+            "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: none.".to_owned(),
+            None,
+            true,
+            false,
+        );
+        assert_eq!(none.body.as_deref(), Some("Shipped."));
+        assert!(none.action.is_empty());
         return;
     }
 
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child(
-        "act_report_card_carries_its_recommended_action",
+        "act_complete_report_keeps_its_recommended_line_in_the_body",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -1726,7 +1739,7 @@ fn agent_done_report_names_the_open_step() {
                 "message": {
                     "role": "assistant",
                     "stopReason": "stop",
-                    "content": [{"type": "text", "text": "ENVOY_STATUS: agent-done\n\nPush still open, suite red."}]
+                    "content": [{"type": "text", "text": "ENVOY_STATUS: agent-done\n\nPush still open, suite red.\n\nRecommended action: Push the release and rerun the suite."}]
                 }
             })
             .to_string();
@@ -1743,6 +1756,8 @@ fn agent_done_report_names_the_open_step() {
                 && card.is_some_and(|card| {
                     card.title == "Agent done: Push still open, suite red."
                         && card.level.as_deref() == Some("warn")
+                        && card.star.action == "Push the release and rerun the suite."
+                        && card.body.as_deref() == Some("Push still open, suite red.")
                 }),
             "queue: {queue:?}"
         );
@@ -2531,8 +2546,9 @@ fn report_survives_background_wake() {
                 && queue.len() == 1
                 && queue[0].id == "done:%12:a2"
                 && queue[0].title == "Done: Shipped."
-                && queue[0].body.as_deref() == Some("Shipped.\n\n---\n\nBackground job finished.")
-                && queue[0].star.action == "Publish the release.\n\nRestart the worker."
+                && queue[0].body.as_deref()
+                    == Some("Shipped.\n\nRecommended action: Publish the release.\n\n---\n\nBackground job finished.\n\nRecommended action: Restart the worker.")
+                && queue[0].star.action.is_empty()
                 && queue[0].level.as_deref() == Some("info"),
             "queue: {queue:?}"
         );
@@ -6022,7 +6038,7 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
             SID.to_owned(),
             vec![
                 reply_event(2, "Writing the file."),
-                reply_event(3, "ENVOY_STATUS: complete\nGoal ok"),
+                reply_event(3, "ENVOY_STATUS: complete\nGoal ok\n\nRecommended action: Run the autorules sweep."),
                 turn_end(4, "completed"),
             ],
         );
@@ -6035,6 +6051,8 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
     assert_eq!(card.source.uri, format!("dsh://session/{SID}"));
     assert_eq!(card.source.label, "dsh Gate fix");
     assert!(card.title.starts_with("Done:"), "{card:?}");
+    assert!(card.star.action.is_empty());
+    assert_eq!(card.body.as_deref(), Some("Goal ok\n\nRecommended action: Run the autorules sweep."));
     assert!(card.body.as_deref().is_some_and(|body| body.contains("Goal ok")), "{card:?}");
     assert_eq!(bridge.reads("/v1/events"), 1);
     let requests = bridge.requests();

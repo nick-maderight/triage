@@ -1511,7 +1511,7 @@ fn queue_turn_card(
             (entry_id, Turn { title, body, level: "error", action: String::new(), report_due: false })
         }
         omp::TurnEnd::Reply { entry_id, text, report } => {
-            (entry_id, reply_turn(text, report, !trail.situation.is_empty()))
+            (entry_id, reply_turn(text, report, !trail.situation.is_empty(), investigation))
         }
     };
     let card = turn_card(
@@ -1589,7 +1589,7 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
 
 /// The card parts for a reply. `report` is the latest status-line report earlier in the run,
 /// which a closing reply follows.
-fn reply_turn(text: String, report: Option<String>, has_trail: bool) -> Turn {
+fn reply_turn(text: String, report: Option<String>, has_trail: bool, investigation: bool) -> Turn {
     let text = omp::redact_credentials(&text);
     let report = report.map(|report| omp::redact_credentials(&report));
     // A status-line report written before a background wait still names the
@@ -1597,6 +1597,7 @@ fn reply_turn(text: String, report: Option<String>, has_trail: bool) -> Turn {
     let carried = report.filter(|_| omp::final_report(&text).is_none());
     let source = carried.as_deref().unwrap_or(&text);
     let reported = omp::final_report(source);
+    let withhold_action = !investigation && matches!(reported, Some((omp::FinalStatus::Complete, _)));
     let missing_report = reported.as_ref().is_some_and(|(_, report)| report.is_empty());
     // A reply without a status line still ends a turn that waits for the user,
     // so it earns the same card titled with its first non-empty line.
@@ -1617,12 +1618,14 @@ fn reply_turn(text: String, report: Option<String>, has_trail: bool) -> Turn {
         Some((_, _)) if missing_report => "Status received without a final report.".to_owned(),
         Some((_, report)) => report.to_owned(),
     };
-    let (mut body, mut action) = match omp::recommended_action(&body) {
+    let (mut body, mut action) = match omp::recommended_action(&body)
+        .filter(|(_, step)| !withhold_action || step.is_empty())
+    {
         Some((rest, step)) => (rest, step),
         None => (body, String::new()),
     };
     if carried.is_some() {
-        match omp::recommended_action(&text) {
+        match omp::recommended_action(&text).filter(|(_, step)| !withhold_action || step.is_empty()) {
             Some((closing, closing_action)) => {
                 body.push_str("\n\n---\n\n");
                 body.push_str(&closing);

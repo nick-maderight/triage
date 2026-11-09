@@ -439,8 +439,8 @@ fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh
     } else {
         parts.join("\n\n")
     };
-    let (star, _) = trail(db, &format!("dsh:{sid}"), 0);
-    let mut turn = reply_turn(text, None, !star.situation.is_empty());
+    let (star, investigation) = trail(db, &format!("dsh:{sid}"), 0);
+    let mut turn = reply_turn(text, None, !star.situation.is_empty(), investigation);
     if reason == "error" {
         turn.report_due = false;
         turn.action.clear();
