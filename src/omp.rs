@@ -814,12 +814,11 @@ pub fn final_report(text: &str) -> Option<(FinalStatus, &str)> {
     Some((status, text[start..].trim()))
 }
 
-/// Splits the step a report recommends from the rest of the report. The last line whose
-/// label reads `Recommended action` with a colon, or alone as a heading or bold line, opens
-/// the step. List, quote, heading and emphasis marks before the label still count. The step
-/// is the text after the colon and the lines under it up to the next blank line. A bare label
-/// takes the next paragraph. Returns the report without the step, then the step. Returns
-/// `None` without such a line or when the step reads `none`.
+/// Splits the last labelled `Recommended action` paragraph from a report. List, quote,
+/// heading and emphasis marks before the label still count. A bare label takes the next
+/// paragraph. Returns the report without the label and paragraph, then the step; an empty
+/// step means the label had no content or said `none`. Returns `None` when no valid label
+/// exists.
 pub fn recommended_action(report: &str) -> Option<(String, String)> {
     const LABEL: &str = "recommended action";
     let lead = |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '#' | '>' | '-');
@@ -838,7 +837,7 @@ pub fn recommended_action(report: &str) -> Option<(String, String)> {
         }
     })?;
     let first = if inline.is_empty() {
-        (start + 1..lines.len()).find(|&index| !lines[index].trim().is_empty())?
+        (start + 1..lines.len()).find(|&index| !lines[index].trim().is_empty()).unwrap_or(lines.len())
     } else {
         start + 1
     };
@@ -855,9 +854,11 @@ pub fn recommended_action(report: &str) -> Option<(String, String)> {
         .chars()
         .take_while(|c| c.is_alphanumeric())
         .collect();
-    if step.trim().is_empty() || word.eq_ignore_ascii_case("none") {
-        return None;
-    }
+    let step = if step.trim().is_empty() || word.eq_ignore_ascii_case("none") {
+        String::new()
+    } else {
+        step.trim().to_owned()
+    };
     let before = lines[..start].join("\n");
     let after = lines[end..].join("\n");
     let rest = match (before.trim(), after.trim()) {
@@ -865,7 +866,7 @@ pub fn recommended_action(report: &str) -> Option<(String, String)> {
         ("", after) => after.to_owned(),
         (before, after) => format!("{before}\n\n{after}"),
     };
-    Some((rest, step.trim().to_owned()))
+    Some((rest, step))
 }
 
 /// One-pass audit of a transcript whose omp process is gone: was the session
@@ -1358,7 +1359,14 @@ mod tests {
             ),
             Some(("Found it.".to_owned(), "Rotate the key\nthen restart the unit.".to_owned()))
         );
-        assert_eq!(recommended_action("Nothing is wrong.\n\nRecommended action: none."), None);
+        assert_eq!(
+            recommended_action("Nothing is wrong.\n\nRecommended action: none."),
+            Some(("Nothing is wrong.".to_owned(), String::new()))
+        );
+        assert_eq!(
+            recommended_action("Found it.\n\nRecommended action:"),
+            Some(("Found it.".to_owned(), String::new()))
+        );
         assert_eq!(recommended_action("Recommended actions differ by host."), None);
         assert_eq!(recommended_action("No step named."), None);
     }

@@ -1681,17 +1681,17 @@ fn investigation_step_stays_on_its_card_when_plan_mode_refuses() {
     );
 }
 
-// Regression: on 2026-11-01 an act dispatch reported "complete" but left a
-// standing rule as its `Recommended action:` line, and the card offered
-// "Do as recommended" for advice no session could carry out. A launch that
-// carried the work out owes no next step, so its line stays in the body.
+// An Act launch can still leave a step the session was not allowed to take. Keep that step
+// in the card's Action field so the user can plan it instead of reading it as report prose.
 #[cfg(unix)]
 #[test]
-fn act_report_keeps_its_recommended_line_in_the_body() {
-    if let Some(root) = child_root("act_report_keeps_its_recommended_line_in_the_body") {
+fn act_report_card_carries_its_recommended_action() {
+    if let Some(root) = child_root("act_report_card_carries_its_recommended_action") {
         let (_pty, tty) = new_pty();
         fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
         fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::create_dir_all(root.join("tmux-screens")).unwrap();
+        fs::write(root.join("tmux-screens/0"), "──────\n  hold on  \n──────\n").unwrap();
         let transcript = root.join("transcript.jsonl");
         write_transcript(
             &root,
@@ -1716,35 +1716,28 @@ fn act_report_keeps_its_recommended_line_in_the_body() {
             at_ms: events::now_ms(),
         })
         .unwrap();
-        let mut tracker = Tracker::default();
-        let written = tracker.tick(&db).written;
+        let written = Tracker::default().tick(&db).written;
         let card = db
             .queue(events::now_ms())
             .unwrap()
             .into_iter()
             .find(|card| card.id == "done:%12:assistant-report");
-        let card = card.as_ref().and_then(|card| {
-            card.body
-                .as_deref()
-                .map(|body| (card.star.action.is_empty(), body))
-        });
         assert!(
             written == 1
-                && card.is_some_and(|(no_action, body)| {
-                    no_action
-                        && body.contains(
-                            "Recommended action: next cold-email task, read the field data first.",
-                        )
-                }),
-            "card: {card:?}"
+                && card.is_some_and(|card| {
+                    card.star.action == "next cold-email task, read the field data first."
+                        && card.body.as_deref() == Some("Skill updated.")
+                        && !card.body.as_deref().unwrap_or_default().contains("Recommended action")
+                })
         );
+        assert!(!root.join("tmux-keys.log").exists(), "the pane got keys");
         return;
     }
 
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child(
-        "act_report_keeps_its_recommended_line_in_the_body",
+        "act_report_card_carries_its_recommended_action",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -2260,7 +2253,7 @@ fn vanished_pane_that_died_mid_turn_raises_one_warning_card() {
             &transcript,
             &[
                 user_line("u1", "Dump the rows."),
-                assistant_entry("t1", "toolUse", Some("Dumping rows now."), None),
+                assistant_entry("t1", "toolUse", Some("Dumping rows now.\n\nRecommended action: Restore the session."), None),
             ],
         );
         fs::write(root.join("tmux-working"), b"").unwrap();
@@ -2278,6 +2271,7 @@ fn vanished_pane_that_died_mid_turn_raises_one_warning_card() {
                 && queue[0].title == "Ended mid-turn: Dumping rows now."
                 && queue[0].level.as_deref() == Some("warn")
                 && queue[0].body.as_deref() == Some("Dumping rows now.")
+                && queue[0].star.action == "Restore the session."
                 && queue[0].refs == [transcript.display().to_string()],
             "queue: {queue:?}"
         );
@@ -2652,11 +2646,16 @@ fn report_survives_background_wake() {
                 assistant_entry(
                     "a1",
                     "stop",
-                    Some("ENVOY_STATUS: complete\n\nShipped."),
+                    Some("ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Publish the release."),
                     None,
                 ),
                 wake,
-                assistant_entry("a2", "stop", Some("Background job finished."), None),
+                assistant_entry(
+                    "a2",
+                    "stop",
+                    Some("Background job finished.\n\nRecommended action: Restart the worker."),
+                    None,
+                ),
             ],
         );
         let db = Db::open(&root.join("triage.db")).unwrap();
@@ -2669,6 +2668,7 @@ fn report_survives_background_wake() {
                 && queue[0].id == "done:%12:a2"
                 && queue[0].title == "Done: Shipped."
                 && queue[0].body.as_deref() == Some("Shipped.\n\n---\n\nBackground job finished.")
+                && queue[0].star.action == "Publish the release.\n\nRestart the worker."
                 && queue[0].level.as_deref() == Some("info"),
             "queue: {queue:?}"
         );

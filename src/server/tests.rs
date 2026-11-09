@@ -753,6 +753,22 @@ fn finding_event_becomes_recommended_finding_card() {
 }
 
 #[test]
+fn info_event_moves_recommended_action_out_of_body() {
+    let card = card_from_event(&event(
+        "triage.info",
+        "urn:test:report-action",
+        serde_json::json!({
+            "title": "Report complete",
+            "body": "Report complete.\n\nRecommended action: Publish the release."
+        }),
+    ))
+    .unwrap();
+    assert_eq!(card.body.as_deref(), Some("Report complete."));
+    assert_eq!(card.star.action, "Publish the release.");
+    assert!(!card.body.as_deref().unwrap().contains("Recommended action"));
+}
+
+#[test]
 fn unknown_event_makes_no_card() {
     let data = serde_json::json!({"detail": "unexpected"});
     assert!(card_from_event(&event("custom.notice", "tool://watcher", data)).is_none());

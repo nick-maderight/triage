@@ -1364,15 +1364,25 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
                 None,
             )
         } else if ev.r#type == crate::events::T_INFO {
+            let body = data.get("body").map(|value| {
+                value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())
+            });
+            let (body, action) = match body {
+                Some(body) => match crate::omp::recommended_action(&body) {
+                    Some((rest, action)) => (Some(rest), action),
+                    None => (Some(body), String::new()),
+                },
+                None => (None, String::new()),
+            };
             (
                 Kind::Info,
                 ev.priority.unwrap_or(3),
                 string_field(data, "title").unwrap_or_else(|| source.label.clone()),
-                Star::default(),
+                Star { action, ..Star::default() },
                 vec![CardOption { label: "Acknowledge".into(), recommended: true, ..CardOption::default() }],
                 true,
                 false,
-                data.get("body").map(|value| value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string())),
+                body,
                 Vec::new(),
                 string_field(data, "level"),
             )

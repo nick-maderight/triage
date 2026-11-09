@@ -1281,7 +1281,7 @@ fn add_info_card(
 /// Queue the card a live pane gets when its run ends as `end`: a reply card, a
 /// `Stopped with error` card, or nothing for an interrupt or a run still going.
 /// `live` is false for the exit audit, which may run under the pane lock and has no omp
-/// left to type into; only a live pane gets an investigation's step back as a plan brief.
+/// left to type into; only a live investigation gets its step back as a plan brief.
 fn queue_turn_card(
     db: &Db,
     pane: &tmux::Pane,
@@ -1349,21 +1349,27 @@ fn queue_turn_card(
                 }
                 Some((_, report)) => report.to_owned(),
             };
-            // Only an investigation's report owes a next step, so only it may move its
-            // `Recommended action:` line onto the card as the step to plan; every
-            // other launch carried the work out, and its leftover line is advice that
-            // stays in the body.
-            let (mut body, action) = if investigation {
-                match omp::recommended_action(&body) {
-                    Some((rest, step)) => (rest, step),
-                    None => (body, String::new()),
-                }
-            } else {
-                (body, String::new())
+            let (mut body, mut action) = match omp::recommended_action(&body) {
+                Some((rest, step)) => (rest, step),
+                None => (body, String::new()),
             };
             if carried.is_some() {
-                body.push_str("\n\n---\n\n");
-                body.push_str(&text);
+                match omp::recommended_action(&text) {
+                    Some((closing, closing_action)) => {
+                        body.push_str("\n\n---\n\n");
+                        body.push_str(&closing);
+                        if !closing_action.is_empty() {
+                            if !action.is_empty() {
+                                action.push_str("\n\n");
+                            }
+                            action.push_str(&closing_action);
+                        }
+                    }
+                    None => {
+                        body.push_str("\n\n---\n\n");
+                        body.push_str(&text);
+                    }
+                }
             }
             let level = match reported {
                 None => "info",
@@ -1407,10 +1413,9 @@ fn queue_turn_card(
     match db.insert_card(&card) {
         Ok(inserted) => {
             *written += usize::from(inserted);
-            // Only a final report hands its step back as a plan; a reply without a status
-            // line (`report_due`), such as an answer to text the user typed in the pane,
-            // keeps its step on the card.
-            if inserted && live && !card.report_due && !card.star.action.is_empty() {
+            // Investigations alone get the automatic plan handoff; other reports keep
+            // any unapproved step in Action when the pane cannot take the plan.
+            if inserted && live && investigation && !card.report_due && !card.star.action.is_empty() {
                 *written += usize::from(plan_recommended_step(db, &card, &pane.id, path));
             }
         }
@@ -1419,13 +1424,11 @@ fn queue_turn_card(
     succeeded
 }
 
-/// Hand an investigation's recommended step back to the pane it came from as a plan, so the
-/// step reaches the inbox as a plan card to approve. The pane must still wait with an empty
-/// editor and no active goal: omp refuses plan mode during a goal, and a draft in the editor
-/// is the user's. It turns plan mode on, types a Plan brief built from the report, and
-/// resolves the report as a Plan launch. It never opens a window; any skip or failure leaves
-/// the report queued with its step for Plan recommended step. The caller must not hold the
-/// pane lock. Returns whether it resolved the report.
+/// Hand an investigation's recommended step back to its pane as a plan. The pane must still
+/// wait with an empty editor and no active goal: omp refuses plan mode during a goal, and a
+/// draft in the editor belongs to the user. Triage enables Plan mode, types a brief built from
+/// the report, then resolves the report as a Plan launch. Any failure leaves the step on the
+/// card. The caller must not hold the pane lock.
 fn plan_recommended_step(db: &Db, card: &Card, pane: &str, transcript: &Path) -> bool {
     if !matches!(omp::goal_active(transcript), Ok(false)) {
         return false;
@@ -1689,9 +1692,9 @@ fn audit_jcode_session(db: &Db, entry: &JcodePane, panes: &[tmux::Pane], written
 }
 
 /// One warning card for an ended session: id `exited:<pane>:<entry or ->`, title
-/// `<prefix>: <first non-blank line of text, cut to 80>` or `<prefix>: no reply recorded`,
-/// the text as body and the transcript as ref. It supersedes the reply card that holds
-/// the same text.
+/// `<prefix>: <first non-blank report line, cut to 80>` or `<prefix>: no reply recorded`,
+/// the stripped report as body, and the transcript as ref. It supersedes the reply card
+/// that holds the same text.
 #[allow(clippy::too_many_arguments)]
 fn queue_ended_card(
     db: &Db,
@@ -1704,12 +1707,19 @@ fn queue_ended_card(
     written: &mut usize,
 ) -> bool {
     let entry = entry.unwrap_or_else(|| "-".to_owned());
-    let text = text.map(|text| omp::redact_credentials(&text));
+    let (text, action) = match text.map(|text| omp::redact_credentials(&text)) {
+        Some(text) => match omp::recommended_action(&text) {
+            Some((body, action)) => (Some(body), action),
+            None => (Some(text), String::new()),
+        },
+        None => (None, String::new()),
+    };
     let headline = text
         .as_deref()
         .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
         .map(|line| truncate_chars(line.to_owned(), 80))
         .unwrap_or_else(|| "no reply recorded".to_owned());
+    let body = text.unwrap_or_else(|| "The session ended without an assistant reply.".to_owned());
     let card = Card {
         id: format!("exited:{}:{entry}", pane.id),
         kind: Kind::Info,
@@ -1717,7 +1727,7 @@ fn queue_ended_card(
         created_ms: events::now_ms(),
         source: pane_source(pane),
         title: format!("{prefix}: {headline}"),
-        star: Star::default(),
+        star: Star { action, ..Star::default() },
         options: vec![CardOption {
             label: "Acknowledge".to_owned(),
             description: None,
@@ -1727,7 +1737,7 @@ fn queue_ended_card(
         answerable: true,
         allow_other: false,
         questions: Vec::new(),
-        body: Some(text.unwrap_or_else(|| "The session ended without an assistant reply.".to_owned())),
+        body: Some(body),
         refs: vec![path.display().to_string()],
         level: Some("warn".to_owned()),
         tool_call_id: None,
