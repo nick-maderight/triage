@@ -6557,3 +6557,176 @@ fn dsh_tick_without_a_host_file_reads_nothing() {
     assert_eq!(bridge.requests(), 0);
     assert!(db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().is_none());
 }
+
+#[test]
+fn startup_delay_grows_with_each_attempt_within_its_jitter() {
+    let command = "omp --model=@kimi --goal 'Reply DONE'";
+    for (tries, base) in [(0u8, 1000u64), (1, 2000), (2, 4000), (3, 8000), (4, 8000)] {
+        let delay = startup_delay(command, tries).as_millis() as u64;
+        assert!((base..base + STARTUP_JITTER_MS + 1).contains(&delay), "attempt {tries}: {delay} ms");
+    }
+    assert_ne!(
+        startup_delay(command, 0),
+        startup_delay("omp --model=@sol --goal 'Reply DONE'", 0),
+        "the jitter spreads launches"
+    );
+}
+
+/// A watched launch: the pane `%12` runs `command` and has not written a session.
+fn watched_launch(root: &Path, command: &str, tries: u8, seen: Instant) -> (Tracker, Db) {
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let mut tracker = Tracker::default();
+    tracker.startup.insert(
+        command.to_owned(),
+        Startup {
+            command: command.to_owned(),
+            cwd: root.display().to_string(),
+            session: "session".to_owned(),
+            tries,
+            seen,
+            pane: Some(pane(root, "%12", "/dev/pts/12", "host: tmp")),
+            pending: None,
+            due: None,
+        },
+    );
+    tracker.startup_panes.insert("%12".to_owned(), command.to_owned());
+    (tracker, db)
+}
+
+/// omp's log for the watched pane's pid, holding the crash that makes a relaunch safe.
+fn write_busy_log(root: &Path, body: &str) {
+    fs::create_dir_all(root.join(".omp/logs")).unwrap();
+    fs::write(root.join(".omp/logs/omp.2026-11-09.0.log"), body).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_death_relaunches_after_its_backoff() {
+    if let Some(root) = child_root("startup_death_relaunches_after_its_backoff") {
+        let command = "omp --model=@kimi --goal 'Reply DONE'";
+        fs::write(root.join("tmux-pane-12-gone"), b"").unwrap();
+        write_busy_log(
+            &root,
+            r#"{"level":"error","message":"Fatal error","err":{"message":"database is locked","code":"SQLITE_BUSY"}}"#,
+        );
+        let (mut tracker, db) = watched_launch(&root, command, 0, Instant::now());
+
+        let first = tracker.tick(&db).written;
+        let scheduled = tracker
+            .startup
+            .get(command)
+            .is_some_and(|entry| entry.due.is_some() && entry.tries == 1);
+        assert_eq!(first, 0);
+        assert!(scheduled, "the startup death waits out its backoff");
+        assert!(!root.join("tmux-new-window-count").exists(), "no window before the backoff");
+
+        thread::sleep(Duration::from_millis(1600));
+        tracker.tick(&db);
+        let windows = fs::read_to_string(root.join("tmux-new-window-count")).unwrap_or_default();
+        assert_eq!(windows.trim(), "1", "one relaunch after the backoff");
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap();
+        assert!(log.contains("new-window") && log.contains(command), "{log}");
+        let relaunched = tracker.startup.get(command);
+        assert!(relaunched.is_some_and(|entry| entry.pending.as_deref() == Some("%42")));
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "startup_death_relaunches_after_its_backoff",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_death_without_a_busy_log_is_forgotten() {
+    if let Some(root) = child_root("startup_death_without_a_busy_log_is_forgotten") {
+        let command = "omp --model=@kimi --goal 'Reply DONE'";
+        fs::write(root.join("tmux-pane-12-gone"), b"").unwrap();
+        write_busy_log(&root, r#"{"level":"error","err":{"message":"No model selected."}}"#);
+        let (mut tracker, db) = watched_launch(&root, command, 0, Instant::now());
+
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(tracker.startup.get(command).is_none(), "another crash is not repeated");
+        assert!(!root.join("tmux-new-window-count").exists());
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "startup_death_without_a_busy_log_is_forgotten",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_retries_stop_with_a_card() {
+    if let Some(root) = child_root("startup_retries_stop_with_a_card") {
+        let command = "omp --model=@kimi --goal 'Reply DONE'";
+        fs::write(root.join("tmux-pane-12-gone"), b"").unwrap();
+        write_busy_log(
+            &root,
+            r#"{"level":"error","message":"Fatal error","err":{"message":"database is locked","code":"SQLITE_BUSY"}}"#,
+        );
+        let (mut tracker, db) = watched_launch(&root, command, 4, Instant::now());
+
+        let written = tracker.tick(&db).written;
+        let queue = db.queue(events::now_ms()).unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(queue.len(), 1);
+        assert!(queue[0].id.starts_with("startup:%12:"), "{}", queue[0].id);
+        assert_eq!(queue[0].level.as_deref(), Some("error"));
+        assert!(queue[0].body.as_deref().is_some_and(|body| body.contains(command)));
+        assert!(tracker.startup.get(command).is_none(), "no fifth attempt");
+        assert!(!root.join("tmux-new-window-count").exists());
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "startup_retries_stop_with_a_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_launch_that_wrote_a_session_is_not_repeated() {
+    if let Some(root) = child_root("startup_launch_that_wrote_a_session_is_not_repeated") {
+        let command = "omp --model=@kimi --goal 'Reply DONE'";
+        fs::write(root.join("tmux-pane-12-gone"), b"").unwrap();
+        write_busy_log(
+            &root,
+            r#"{"level":"error","message":"Fatal error","err":{"message":"database is locked","code":"SQLITE_BUSY"}}"#,
+        );
+        let transcript = root.join("transcript.jsonl");
+        map_transcript(&root, "/dev/pts/12", &transcript);
+        fs::write(&transcript, "").unwrap();
+        let (mut tracker, db) = watched_launch(&root, command, 0, Instant::now());
+
+        assert_eq!(tracker.tick(&db).written, 0);
+        assert!(tracker.startup.get(command).is_none(), "a session owns the exit");
+        assert!(!root.join("tmux-new-window-count").exists());
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "startup_launch_that_wrote_a_session_is_not_repeated",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}

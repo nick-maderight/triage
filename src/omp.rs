@@ -656,6 +656,36 @@ pub fn no_model(screen: &str) -> bool {
         && screen.lines().any(|line| line.contains("⬢ no-model"))
 }
 
+/// Whether omp's own log for `pid` records the `SQLITE_BUSY` startup crash. omp writes each
+/// run to `~/.omp/logs/omp.<date>.<pid>.log`, so the pane's pid names the file without the
+/// date. A crash there reads `"code":"SQLITE_BUSY"` with `database is locked` as its message.
+pub fn startup_busy(pid: u32) -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return false;
+    };
+    busy_log(&PathBuf::from(home).join(".omp/logs"), pid)
+}
+
+/// `startup_busy` over an explicit log directory.
+pub fn busy_log(dir: &Path, pid: u32) -> bool {
+    let suffix = format!(".{pid}.log");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        if !name.starts_with("omp.") || !name.ends_with(&suffix) {
+            return false;
+        }
+        fs::read_to_string(entry.path()).is_ok_and(|log| {
+            log.contains("SQLITE_BUSY") || log.contains("database is locked")
+        })
+    })
+}
+
 /// Line indexes of the last two lines containing `───`, the rules around omp's editor.
 fn editor_rules(screen: &str) -> Option<(usize, usize)> {
     let mut previous = None;
@@ -973,6 +1003,22 @@ mod tests {
 
     fn transcript() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcript_ask.jsonl")
+    }
+
+    #[test]
+    fn busy_log_names_the_pid_and_the_crash() {
+        let dir = std::env::temp_dir().join(format!("triage-omp-logs-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let crash = r#"{"level":"error","pid":4242,"message":"Fatal error","err":{"name":"SQLiteError","message":"Database \"/home/user/.omp/agent/agent.db\": database is locked","code":"SQLITE_BUSY"}}"#;
+        fs::write(dir.join("omp.2026-11-09.4242.log"), crash).unwrap();
+        fs::write(dir.join("omp.2026-11-09.7.log"), r#"{"level":"warn"}"#).unwrap();
+        fs::write(dir.join("other.4242.log"), crash).unwrap();
+
+        assert!(busy_log(&dir, 4242));
+        assert!(!busy_log(&dir, 7), "a log without the crash is not a startup death");
+        assert!(!busy_log(&dir, 8), "another pid's log says nothing about this run");
+        assert!(!busy_log(&dir.join("missing"), 4242));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -42,6 +42,12 @@ pub struct Tracker {
     /// Launch commands already relaunched once after a no-model start. A repeat start of the same
     /// command raises a card instead (see `recover_no_model_launch`).
     relaunched: HashSet<String>,
+    /// Launches seen running omp with no session yet, keyed by their shell command (see
+    /// `watch_startup`). A window that dies inside `STARTUP_WINDOW` with omp's SQLITE_BUSY
+    /// startup crash is relaunched after a backoff (see `recover_dead_startup`).
+    startup: HashMap<String, Startup>,
+    /// Pane id -> the launch command its window runs, so a watched pane is claimed once.
+    startup_panes: HashMap<String, String>,
     /// The host pid, retry time and per-session change marks of the dsh bridge poll.
     dsh: dsh_track::Memo,
     #[cfg(test)]
@@ -68,6 +74,32 @@ struct CachedExit {
     path: PathBuf,
     length: u64,
 }
+
+/// A launch seen running omp before its session existed. `command` is the shell command a
+/// relaunch repeats, `pane` the window running the current attempt (its snapshot keeps the pid
+/// whose omp log names the crash), and `pending` the window a relaunch just opened, which the
+/// next poll claims. `seen` is when the current attempt's window first appeared.
+struct Startup {
+    command: String,
+    cwd: String,
+    session: String,
+    tries: u8,
+    seen: Instant,
+    pane: Option<tmux::Pane>,
+    pending: Option<String>,
+    due: Option<Instant>,
+}
+
+/// How long after a launch window first appears its disappearance still counts as a startup
+/// death. Load can stretch omp's SQLite busy timeouts into tens of seconds before it gives up.
+const STARTUP_WINDOW: Duration = Duration::from_secs(60);
+
+/// Delays before each relaunch of a launch that died at startup. A launch that dies again after
+/// the last one raises a card instead of retrying forever.
+const STARTUP_BACKOFF: [u64; 4] = [1, 2, 4, 8];
+
+/// Spread added to each delay so launches retrying together do not open windows in lockstep.
+const STARTUP_JITTER_MS: u64 = 400;
 
 /// A finished reply whose card waits because omp starts the session's next turn itself.
 /// It keeps the transcript version the reply was read from, and whether the goal was
@@ -101,6 +133,8 @@ impl Tracker {
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
             relaunched: HashSet::new(),
+            startup: HashMap::new(),
+            startup_panes: HashMap::new(),
             dsh: dsh_track::Memo::default(),
             #[cfg(test)]
             pending_ask_reads: 0,
@@ -308,6 +342,9 @@ impl Tracker {
         let mut failed_restored_panes = HashSet::new();
         let mut exited: Vec<(&tmux::Pane, Option<PathBuf>, bool)> = Vec::new();
         let mut live_transcripts = HashSet::new();
+        self.watch_startup(&panes);
+        self.recover_dead_startup(&present, db, &mut written);
+        self.fire_startup_retries();
         for pane in &panes {
             let state = omp::classify(&pane.title);
             let previous = self.states.get(&pane.id).copied();
@@ -533,6 +570,157 @@ impl Tracker {
     }
 }
 
+
+/// Startup launches: omp can die before it writes a session, which used to leave nothing behind.
+impl Tracker {
+    /// Remember every pane that runs omp with no session yet. A triage launch is `omp` with flags,
+    /// so a bare `omp` stays the operator's own launch. A window a relaunch opened is claimed here,
+    /// which is where its pid arrives for the log check in `recover_dead_startup`.
+    fn watch_startup(&mut self, panes: &[tmux::Pane]) {
+        let now = Instant::now();
+        for pane in panes {
+            if pane.command != "omp" {
+                continue;
+            }
+            if omp::transcript_path(pane).is_some_and(|path| path.exists()) {
+                if let Some(command) = self.startup_panes.remove(&pane.id) {
+                    self.startup.remove(&command);
+                }
+                continue;
+            }
+            if let Some(command) = self
+                .startup
+                .iter()
+                .find(|(_, entry)| entry.pending.as_deref() == Some(pane.id.as_str()))
+                .map(|(command, _)| command.clone())
+            {
+                let entry = self.startup.get_mut(&command).expect("found just above");
+                entry.pane = Some(pane.clone());
+                entry.pending = None;
+                entry.seen = now;
+                self.startup_panes.insert(pane.id.clone(), command);
+                continue;
+            }
+            if self.startup_panes.contains_key(&pane.id) {
+                continue;
+            }
+            let Some(command) = launch_command(pane) else {
+                continue;
+            };
+            self.startup.insert(
+                command.clone(),
+                Startup {
+                    command: command.clone(),
+                    cwd: pane.cwd.clone(),
+                    session: pane.session.clone(),
+                    tries: 0,
+                    seen: now,
+                    pane: Some(pane.clone()),
+                    pending: None,
+                    due: None,
+                },
+            );
+            self.startup_panes.insert(pane.id.clone(), command);
+        }
+    }
+
+    /// Settle watched launches whose window vanished before a session existed. Only omp's own
+    /// SQLITE_BUSY log entry makes a launch safe to repeat, so a launch that failed for another
+    /// reason keeps the old silent behaviour. Relaunches follow `STARTUP_BACKOFF`; one that dies
+    /// again after the last backoff raises a card.
+    fn recover_dead_startup(&mut self, present: &HashSet<&str>, db: &Db, written: &mut usize) {
+        let now = Instant::now();
+        let settled: Vec<String> = self
+            .startup
+            .iter()
+            .filter(|(_, entry)| match (&entry.pane, &entry.pending) {
+                (Some(pane), _) => !present.contains(pane.id.as_str()),
+                (None, Some(pending)) => !present.contains(pending.as_str()),
+                (None, None) => false,
+            })
+            .map(|(command, _)| command.clone())
+            .collect();
+        for command in settled {
+            let Some(mut entry) = self.startup.remove(&command) else {
+                continue;
+            };
+            if let Some(pending) = entry.pending.take() {
+                eprintln!(
+                    "triage: relaunched window {pending} for {} never appeared",
+                    truncate_chars(command, 80)
+                );
+                continue;
+            }
+            let Some(pane) = entry.pane.take() else {
+                continue;
+            };
+            self.startup_panes.remove(&pane.id);
+            if omp::transcript_path(&pane).is_some_and(|path| path.exists()) {
+                continue;
+            }
+            let young = now.saturating_duration_since(entry.seen) < STARTUP_WINDOW;
+            if !young || self.relaunched.contains(&command) || !omp::startup_busy(pane.pid) {
+                continue;
+            }
+            if usize::from(entry.tries) >= STARTUP_BACKOFF.len() {
+                eprintln!(
+                    "triage: {} died at startup {} times; raising a card",
+                    pane.id, entry.tries
+                );
+                queue_startup_card(db, &pane, &entry, written);
+                continue;
+            }
+            let delay = startup_delay(&command, entry.tries);
+            entry.tries += 1;
+            entry.seen = now;
+            entry.due = Some(now + delay);
+            eprintln!(
+                "triage: {} died at startup with SQLITE_BUSY; relaunching in {} ms",
+                pane.id,
+                delay.as_millis()
+            );
+            self.startup.insert(command, entry);
+        }
+        self.startup.retain(|_, entry| {
+            if entry.due.is_some() {
+                return true;
+            }
+            let window = now.saturating_duration_since(entry.seen) < STARTUP_WINDOW;
+            match (&entry.pane, &entry.pending) {
+                (Some(pane), _) => window && present.contains(pane.id.as_str()),
+                (None, Some(pending)) => window && present.contains(pending.as_str()),
+                (None, None) => false,
+            }
+        });
+    }
+
+    /// Open the replacement window for every relaunch whose backoff has elapsed. The new pane is
+    /// claimed by `watch_startup` on the next poll, which reads the pid its omp log is named by.
+    fn fire_startup_retries(&mut self) {
+        let now = Instant::now();
+        let due: Vec<String> = self
+            .startup
+            .iter()
+            .filter(|(_, entry)| entry.due.is_some_and(|due| due <= now))
+            .map(|(command, _)| command.clone())
+            .collect();
+        for command in due {
+            let Some(mut entry) = self.startup.remove(&command) else {
+                continue;
+            };
+            entry.due = None;
+            entry.seen = now;
+            match tmux::new_window(&entry.session, &entry.cwd, &entry.command) {
+                Ok(pane) => {
+                    eprintln!("triage: relaunched {} as {pane}", truncate_chars(command.clone(), 80));
+                    entry.pending = Some(pane);
+                    self.startup.insert(command, entry);
+                }
+                Err(error) => eprintln!("triage: relaunch of {command} failed: {error}"),
+            }
+        }
+    }
+}
 
 /// Card actions for a pane run one at a time. Lock order is pane, then card. The tracker takes
 /// a pane lock before any card lock only to audit a gone pane or type an investigation's plan brief.
@@ -1167,6 +1355,68 @@ fn add_info_card(
     succeeded
 }
 
+/// The shell command behind a pane running a triage-style omp launch: the pane's foreground argv,
+/// quoted, when it is `omp` with at least one flag. `None` for a bare `omp`, which is the
+/// operator's own launch, and for an argv that cannot be read.
+fn launch_command(pane: &tmux::Pane) -> Option<String> {
+    let argv = pane.foreground_argv()?;
+    if argv.first().map(String::as_str) != Some("omp") || argv.len() < 2 {
+        return None;
+    }
+    Some(argv.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" "))
+}
+
+/// The wait before relaunch number `tries` (zero-based) of `command`: that attempt's fixed step
+/// plus jitter spread by the command, so several launches retrying together do not open their
+/// windows in lockstep.
+fn startup_delay(command: &str, tries: u8) -> Duration {
+    use std::hash::{Hash, Hasher};
+    let base = STARTUP_BACKOFF.get(usize::from(tries)).copied().unwrap_or(8);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    command.hash(&mut hasher);
+    tries.hash(&mut hasher);
+    Duration::from_millis(base * 1000 + hasher.finish() % (STARTUP_JITTER_MS + 1))
+}
+
+/// One error card for a launch that kept dying at startup: id `startup:<pane>:<ms>`, the command
+/// in the body so it can be started by hand, and level error.
+fn queue_startup_card(db: &Db, pane: &tmux::Pane, entry: &Startup, written: &mut usize) -> bool {
+    let card = Card {
+        id: format!("startup:{}:{}", pane.id, events::now_ms()),
+        kind: Kind::Info,
+        priority: 2,
+        created_ms: events::now_ms(),
+        source: pane_source(pane),
+        title: "Launch kept dying at startup: database is locked".to_owned(),
+        star: Star::default(),
+        options: vec![CardOption {
+            label: "Acknowledge".to_owned(),
+            description: None,
+            direction: None,
+            recommended: false,
+        }],
+        answerable: true,
+        allow_other: false,
+        questions: Vec::new(),
+        body: Some(format!(
+            "omp exited before it wrote a session {} times in a row, each time with SQLITE_BUSY on ~/.omp/agent/agent.db. The host was too busy to serve the database. Start the command by hand when the load drops:\n\n{}",
+            usize::from(entry.tries) + 1, entry.command
+        )),
+        refs: Vec::new(),
+        level: Some("error".to_owned()),
+        tool_call_id: None,
+        report_due: false,
+        engine: None,
+    };
+    match db.insert_card(&card) {
+        Ok(inserted) => {
+            *written += usize::from(inserted);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// A triage-launched omp that came up without a model (see `omp::no_model`) wrote no session, so
 /// it has nothing to lose. Relaunch its argv once in the same session and cwd, then kill the dead
 /// pane. A second no-model start of the same command raises an error card and leaves its pane
@@ -1181,14 +1431,9 @@ fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<
     if !omp::no_model(&screen) {
         return false;
     }
-    let Some(argv) = pane.foreground_argv() else {
+    let Some(command) = launch_command(pane) else {
         return false;
     };
-    // A bare `omp` is the operator's own launch, not one triage made.
-    if argv.first().map(String::as_str) != Some("omp") || argv.len() < 2 {
-        return false;
-    }
-    let command = argv.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
     if relaunched.insert(command.clone()) {
         return match tmux::new_window(&pane.session, &pane.cwd, &command) {
             Ok(new_pane) => {
