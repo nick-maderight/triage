@@ -786,21 +786,29 @@ pub enum Start<'a> {
     /// Read-only plan mode through a per-run config overlay; the plan comes back as a card.
     Plan,
     /// `--plan-yolo`. omp approves the plan itself and hands it to this execution model,
-    /// or to its `smol` role when unset.
-    PlanInto(Option<&'a str>),
+    /// or to its `smol` role when unset. The effort names the execution model's own level:
+    /// omp appends it to the selector, and dsh applies it at approval.
+    PlanInto(Option<&'a str>, Option<&'a str>),
 }
 
 impl<'a> Start<'a> {
-    /// Read a `/v1/sessions` mode. Only `plan-into` takes an execution model.
-    pub fn parse(mode: Option<&str>, executor: Option<&'a str>) -> Result<Self, String> {
+    /// Read a `/v1/sessions` mode. Only `plan-into` takes an execution model and its effort.
+    pub fn parse(
+        mode: Option<&str>,
+        executor: Option<&'a str>,
+        executor_thinking: Option<&'a str>,
+    ) -> Result<Self, String> {
         let start = match mode.unwrap_or("goal") {
             "goal" => Self::Goal,
             "plan" => Self::Plan,
-            "plan-into" => return Ok(Self::PlanInto(executor)),
+            "plan-into" => return Ok(Self::PlanInto(executor, executor_thinking)),
             _ => return Err("unknown mode".to_owned()),
         };
         if executor.is_some() {
             return Err("executor needs mode plan-into".to_owned());
+        }
+        if executor_thinking.is_some() {
+            return Err("executor thinking needs mode plan-into".to_owned());
         }
         Ok(start)
     }
@@ -843,7 +851,8 @@ impl DispatchMode {
 /// while its dialog remains open. Findings and info cards finish with reason `launched %N`.
 /// The session's final report comes back as an info card through the tracker. `executor` is the
 /// execution model a plan-into dispatch hands its approved plan to, omp's `smol` role when
-/// unset; the server refuses it with any other mode.
+/// unset, and `executor_thinking` is the effort it takes; the server refuses both with any
+/// other mode.
 pub fn dispatch(
     db: &Db,
     card: &Card,
@@ -851,6 +860,7 @@ pub fn dispatch(
     note: Option<&str>,
     launch: &Launch,
     executor: Option<&str>,
+    executor_thinking: Option<&str>,
 ) -> Result<(), String> {
     let target_mutex = target_lock(db, card);
     let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
@@ -866,7 +876,7 @@ pub fn dispatch(
     let path = write_brief(db, dispatch_brief(card, mode, note, workspace_workdir(launch, &card_workdir(card))))?;
     let start = match mode {
         DispatchMode::Plan => Start::Plan,
-        DispatchMode::PlanInto => Start::PlanInto(executor),
+        DispatchMode::PlanInto => Start::PlanInto(executor, executor_thinking),
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
     let pane = launch_brief(card, launch, &path, start)?;
@@ -1035,8 +1045,8 @@ pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: S
     }
     if launch.engine == Engine::Dsh {
         engine_flags(Engine::Dsh, launch.model.as_deref(), launch.thinking.as_deref())?;
-        if let Start::PlanInto(executor) = start {
-            dsh_selector(executor)?;
+        if let Start::PlanInto(executor, effort) = start {
+            plan_into_choices(Engine::Dsh, executor, effort)?;
         }
         let path = write_brief(db, session_brief(prompt, start != Start::Goal, workspace_workdir(launch, cwd)))?;
         let title = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
@@ -1044,8 +1054,8 @@ pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: S
     }
     // Validate before writing the brief so a bad choice leaves nothing behind.
     launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
-    if let Start::PlanInto(executor) = start {
-        model_selector(executor)?;
+    if let Start::PlanInto(executor, effort) = start {
+        plan_into_choices(Engine::Omp, executor, effort)?;
     }
     let path = write_brief(db, session_brief(prompt, start != Start::Goal, None))?;
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
@@ -1071,7 +1081,7 @@ fn launch_brief(
         return dsh_track::launch_brief(card, launch, brief, start);
     }
     // Only launch flags turn plan-yolo on, so a Plan into dispatch never reuses a running pane.
-    let source = card.source.pane.as_deref().filter(|_| !matches!(start, Start::PlanInto(_)));
+    let source = card.source.pane.as_deref().filter(|_| !matches!(start, Start::PlanInto(..)));
     if let Some(pane) = source {
         let waiting = tmux::list_panes()
             .map_err(|error| error.to_string())?
@@ -2461,10 +2471,21 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
     if !card.answerable {
         return Err("plan card is not answerable".to_owned());
     }
-    let executor = match dsh::session_id(card) {
-        Some(_) => dsh_selector(req.executor.as_deref())?,
-        None => model_selector(req.executor.as_deref())?,
+    let dsh_card = dsh::session_id(card).is_some();
+    let engine = if dsh_card { Engine::Dsh } else { Engine::Omp };
+    // omp's Plan Review slider lists roles only, so its execution model keeps the role's level.
+    if !dsh_card && req.executor_thinking.is_some() {
+        return Err("an omp plan review keeps the role's own thinking level".to_owned());
+    }
+    let executor = match engine {
+        Engine::Dsh => dsh_selector(req.executor.as_deref())?,
+        Engine::Omp => model_selector(req.executor.as_deref())?,
     };
+    // An effort belongs to the executor model, which must be named with it.
+    let executor_effort = executor_effort(engine, req.executor_thinking.as_deref())?;
+    if executor_effort.is_some() && executor.is_none() {
+        return Err("execution effort needs an execution model".to_owned());
+    }
     let refinement = req
         .text
         .as_deref()
@@ -2480,8 +2501,10 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
         None => return Err("execution model requires Approve".to_owned()),
         Some(_) => return Err("unknown plan option".to_owned()),
     };
-    if dsh::session_id(card).is_some() {
-        return dsh_track::answer_plan(db, card, req, option, refinement, executor, launch);
+    if dsh_card {
+        return dsh_track::answer_plan(
+            db, card, req, option, refinement, executor, executor_effort, launch,
+        );
     }
     let pane = card
         .source
@@ -2584,7 +2607,9 @@ fn answer_finding(
     };
     let start = match mode {
         DispatchMode::Plan => Start::Plan,
-        DispatchMode::PlanInto => Start::PlanInto(req.executor.as_deref()),
+        DispatchMode::PlanInto => {
+            Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
+        }
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
     let (pane, needs_tag) = if let Some(pane) = tagged_pane {
@@ -3047,6 +3072,51 @@ pub fn engine_selector(engine: Engine, model: Option<&str>) -> Result<Option<&st
     }
 }
 
+/// Trim the execution model's effort. dsh takes one of its effort levels, which it applies to
+/// the executor model at approval. omp takes one of its thinking levels, which the launch
+/// appends to the execution model selector.
+pub fn executor_effort(engine: Engine, effort: Option<&str>) -> Result<Option<&str>, String> {
+    let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) else {
+        return Ok(None);
+    };
+    match engine {
+        Engine::Dsh if dsh::THINKING.contains(&effort) => Ok(Some(effort)),
+        Engine::Dsh => Err(format!("unknown execution effort {effort}")),
+        Engine::Omp if THINKING_LEVELS.contains(&effort) => Ok(Some(effort)),
+        Engine::Omp => Err(format!("unknown execution thinking level {effort}")),
+    }
+}
+
+/// Check a plan-into launch's execution model and effort, which needs the model it modifies.
+fn plan_into_choices(
+    engine: Engine,
+    executor: Option<&str>,
+    effort: Option<&str>,
+) -> Result<(), String> {
+    engine_selector(engine, executor)?;
+    if executor_effort(engine, effort)?.is_some() && executor.is_none() {
+        return Err("execution effort needs an execution model".to_owned());
+    }
+    Ok(())
+}
+
+/// omp's execution model selector with `effort` as its thinking level. A selector that names
+/// its own level keeps it, because omp takes the last `:<level>` suffix.
+fn omp_execution_model(executor: Option<&str>, effort: Option<&str>) -> Result<Option<String>, String> {
+    let Some(executor) = model_selector(executor)? else {
+        return Ok(None);
+    };
+    let named = executor
+        .rsplit_once(':')
+        .is_some_and(|(_, level)| THINKING_LEVELS.contains(&level));
+    let selector = match effort {
+        Some(effort) if !named => format!("{executor}:{effort}"),
+        _ => executor.to_owned(),
+    };
+    model_selector(Some(&selector))?;
+    Ok(Some(selector))
+}
+
 /// Check the launch model and thinking level for `engine` without rendering omp flags.
 pub fn engine_flags(engine: Engine, model: Option<&str>, thinking: Option<&str>) -> Result<(), String> {
     match engine {
@@ -3088,8 +3158,8 @@ fn omp_command(
                 shell_quote(&brief.to_string_lossy())
             ))
         }
-        Start::PlanInto(executor) => {
-            let into = model_selector(executor)?
+        Start::PlanInto(executor, effort) => {
+            let into = omp_execution_model(executor, executor_effort(Engine::Omp, effort)?)?
                 .map(|executor| format!("--plan-yolo-into={executor} "))
                 .unwrap_or_default();
             Ok(format!("omp {flags}--plan-yolo {into}@{}", shell_quote(&brief.to_string_lossy())))

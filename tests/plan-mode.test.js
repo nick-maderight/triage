@@ -227,6 +227,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
       '#dispatch-engine': { value: 'dsh' },
       '#dispatch-thinking': { value: 'high' },
       '#dispatch-executor': { value: '' },
+      '#dispatch-executor-effort': { value: '' },
       '#dispatch': dialog,
     },
     context = vm.createContext({
@@ -262,6 +263,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
   card.id = 'plan-into-card';
   state.dispatchId = 'plan-into-card';
   context.S.cards = [card];
+  elements['#dispatch-executor-effort'].value = 'max';
   await context.submitDispatch({ preventDefault() {} });
   assert.equal(requests.length, 1);
   assert.deepEqual(JSON.parse(requests[0].init.body), {
@@ -271,6 +273,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
     model: 'provider/planner',
     thinking: 'high',
     executor: null,
+    executor_thinking: 'max',
   });
 });
 
@@ -385,6 +388,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
       '#compose-model': { value: '' },
       '#compose-thinking': { value: '' },
       '#compose-executor': { value: 'provider/executor' },
+      '#compose-executor-effort': { value: '' },
       '#compose': { close() {} },
     },
     context = vm.createContext({
@@ -407,6 +411,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
   await context.submitCompose({ preventDefault() {} });
   context.S.composeMode = 'plan-into';
   prompt.value = 'Start in plan into mode';
+  elements['#compose-executor-effort'].value = 'max';
   await context.submitCompose({ preventDefault() {} });
 
   const bodies = requests.map(({ init }) => JSON.parse(init.body));
@@ -419,7 +424,9 @@ test('compose posts its mode and the execution model only for Plan into', async 
   assert.equal(bodies[1].mode, 'plan');
   assert.equal(bodies[2].mode, 'plan-into');
   assert.equal(bodies[2].executor, 'provider/executor');
+  assert.equal(bodies[2].executor_thinking, 'max');
   assert.ok(!('executor' in bodies[0]) && !('executor' in bodies[1]));
+  assert.ok(!('executor_thinking' in bodies[0]) && !('executor_thinking' in bodies[1]));
 });
 
 test('plan picker loads cycle roles without replacing the general model catalog', async () => {
@@ -428,11 +435,14 @@ test('plan picker loads cycle roles without replacing the general model catalog'
       'compose-model': { options: [], fallback: 'Daemon default' },
       'compose-thinking': { options: [], fallback: 'Daemon default' },
       'compose-executor': { options: [], fallback: 'omp smol role' },
+      'compose-executor-effort': { options: [], fallback: 'Planner effort' },
       'dispatch-engine': { options: [], fallback: 'Daemon default' },
       'dispatch-model': { options: [], fallback: 'Daemon default' },
       'dispatch-thinking': { options: [], fallback: 'Daemon default' },
       'dispatch-executor': { options: [], fallback: 'omp smol role' },
+      'dispatch-executor-effort': { options: [], fallback: 'Planner effort' },
       'plan-executor': { options: [], fallback: 'current Plan Review role' },
+      'plan-executor-effort': { options: [], fallback: 'Planner effort' },
     },
     data = {
       models: [{ selector: 'provider/model', name: 'Concrete model' }, { selector: '@smol', name: 'smol role' }],
@@ -456,13 +466,21 @@ test('plan picker loads cycle roles without replacing the general model catalog'
   await context.loadModels();
   assert.deepEqual(pickers['plan-executor'].options.map((option) => option.value), ['@default', '@smol']);
   assert.deepEqual(pickers['compose-executor'].options.map((option) => option.value), ['provider/model', '@smol']);
+  assert.deepEqual(pickers['compose-executor-effort'].options.map((option) => option.value), ['low', 'high']);
+  assert.deepEqual(pickers['plan-executor-effort'].options.map((option) => option.value), ['low', 'high']);
 });
 
 test('each sheet lists the models of the engine its Engine field picks', async () => {
   const pickers = Object.fromEntries(
       ['compose', 'dispatch'].flatMap((sheet) =>
-        ['engine', 'model', 'thinking', 'executor'].map((id) => [`${sheet}-${id}`, { options: [], fallback: '' }]),
-      ).concat([['plan-executor', { options: [], fallback: '' }]]),
+        ['engine', 'model', 'thinking', 'executor', 'executor-effort'].map((id) => [
+          `${sheet}-${id}`,
+          { options: [], fallback: '' },
+        ]),
+      ).concat([
+        ['plan-executor', { options: [], fallback: '' }],
+        ['plan-executor-effort', { options: [], fallback: '' }],
+      ]),
     ),
     catalogs = {
       omp: { engine: 'omp', models: [{ selector: '@kimi', name: '@kimi' }], execution_models: [], default: '@kimi', thinking: ['high'] },
@@ -500,7 +518,7 @@ test('plan approval sends chosen role while Default and Refine keep their reques
     refine = { id: 'plan-refine', kind: 'plan', options: [{ label: 'Approve' }, { label: 'Refine' }] },
     ask = { id: 'ask', kind: 'ask', options: [{ label: 'Yes' }] },
     drafts = new Map([
-      [approve.id, { executor: '@slow', other: '' }],
+      [approve.id, { executor: '@slow', executorThinking: 'max', other: '' }],
       [defaultApprove.id, { executor: '', other: '' }],
       [refine.id, { executor: '@smol', other: 'Add a rollback step' }],
       [ask.id, { executor: '@smol', other: '' }],
@@ -524,8 +542,8 @@ test('plan approval sends chosen role while Default and Refine keep their reques
   context.pick(refine, 1);
   context.pick(ask, 0);
   assert.deepEqual(JSON.parse(JSON.stringify(actions.map(([, , body]) => body))), [
-    { option: 0, text: null, note: null, executor: '@slow' },
-    { option: 0, text: null, note: null, executor: null },
+    { option: 0, text: null, note: null, executor: '@slow', executor_thinking: 'max' },
+    { option: 0, text: null, note: null, executor: null, executor_thinking: null },
     { option: 1, text: 'Add a rollback step', note: null },
     { option: 0, text: null, note: null },
   ]);

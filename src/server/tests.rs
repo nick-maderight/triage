@@ -287,6 +287,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         thinking: None,
         mode: None,
         executor: None,
+        executor_thinking: None,
         engine: None,
     };
     let response = super::start_session(
@@ -306,6 +307,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         thinking: Some("high".to_owned()),
         mode: None,
         executor: None,
+        executor_thinking: None,
         engine: None,
     };
     let response =
@@ -330,6 +332,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         thinking: None,
         mode: None,
         executor: None,
+        executor_thinking: None,
         engine: None,
     };
     let response = super::start_session(axum::extract::State(bare), axum::Json(request)).await;
@@ -362,6 +365,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
         thinking: None,
         mode: Some("plan".to_owned()),
         executor: None,
+        executor_thinking: None,
         engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
@@ -436,6 +440,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
         thinking: None,
         mode: Some("plan".to_owned()),
         executor: None,
+        executor_thinking: None,
         engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
@@ -484,6 +489,7 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
         thinking: None,
         mode: Some("plan-into".to_owned()),
         executor: Some("provider/executor".to_owned()),
+        executor_thinking: Some("high".to_owned()),
         engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
@@ -497,11 +503,45 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
         .unwrap()
         .to_owned();
     assert!(
-            launch.contains(" --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=provider/executor @'"),
+            launch.contains(" --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=provider/executor:high @'"),
             "{launch}"
         );
     assert!(!launch.contains("--config"), "{launch}");
     assert!(!launch.contains("--goal"), "{launch}");
+}
+
+#[tokio::test]
+async fn new_session_rejects_plan_into_effort_the_engine_cannot_take() {
+    let directory = TestDir::new("triage-session-effort-validation");
+    let state = state_with(
+        Db::open(&directory.0.join("triage.sqlite")).unwrap(),
+        crate::cards::Launch::default(),
+    );
+    let request = |engine: &str, executor: Option<&str>, effort: Option<&str>| {
+        axum::Json(super::SessionRequest {
+            prompt: "Prepare a plan.".to_owned(),
+            cwd: Some("/tmp".to_owned()),
+            session: None,
+            engine: Some(engine.to_owned()),
+            model: None,
+            thinking: None,
+            mode: Some("plan-into".to_owned()),
+            executor: executor.map(str::to_owned),
+            executor_thinking: effort.map(str::to_owned),
+        })
+    };
+    for (engine, executor, effort) in [
+        ("dsh", Some("deepseek-flash"), Some("medium")),
+        ("dsh", None, Some("low")),
+        ("omp", Some("provider/executor"), Some("sideways")),
+    ] {
+        let response = super::start_session(
+            axum::extract::State(state.clone()),
+            request(engine, executor, effort),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{engine} {effort:?}");
+    }
 }
 
 struct HttpResponse {
@@ -1632,7 +1672,7 @@ esac
         address,
         "POST",
         &format!("/v1/cards/{}/dispatch", card.id),
-        r#"{"mode":"plan-into","model":"provider/chosen","executor":"provider/executor"}"#,
+        r#"{"mode":"plan-into","model":"provider/chosen","executor":"provider/executor","executor_thinking":"high"}"#,
     )
     .await;
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
@@ -1649,7 +1689,7 @@ esac
         "{launch}"
     );
     assert!(
-        launch.contains("--plan-yolo --plan-yolo-into=provider/executor @'"),
+        launch.contains("--plan-yolo --plan-yolo-into=provider/executor:high @'"),
         "{launch}"
     );
     assert!(!launch.contains("provider/daemon-model"), "{launch}");
@@ -1679,6 +1719,28 @@ async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     let thinking = http_request(address, "POST", &path, r#"{"mode":"act","thinking":"sideways"}"#).await;
     assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
     assert_eq!(thinking.body["error"], "unknown thinking level sideways");
+    let effort_outside =
+        http_request(address, "POST", &path, r#"{"mode":"act","executor_thinking":"low"}"#).await;
+    assert_eq!(effort_outside.status, StatusCode::BAD_REQUEST);
+    assert_eq!(effort_outside.body["error"], "executor thinking needs mode plan-into");
+    let effort_alone = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"mode":"plan-into","executor_thinking":"low"}"#,
+    )
+    .await;
+    assert_eq!(effort_alone.status, StatusCode::BAD_REQUEST);
+    assert_eq!(effort_alone.body["error"], "execution effort needs an execution model");
+    let bad_effort = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"mode":"plan-into","executor":"provider/executor","executor_thinking":"sideways"}"#,
+    )
+    .await;
+    assert_eq!(bad_effort.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad_effort.body["error"], "unknown execution thinking level sideways");
     assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
     server.abort();
 }

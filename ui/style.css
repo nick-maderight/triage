@@ -691,8 +691,14 @@ main {
 }
 .plan-executor {
   display: grid;
-  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 16px;
   margin-bottom: 14px;
+}
+.plan-executor .pair {
+  display: grid;
+  align-content: start;
+  gap: 6px;
 }
 .plan-executor label {
   font-size: 13px;

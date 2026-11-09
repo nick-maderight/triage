@@ -710,11 +710,22 @@
         keydown(document.querySelector('#picker-search'), 'Enter');
         await closed(executor, 'execution picker close');
         assert(executor.value === 'fixture/beta-2', 'executor holds the chosen selector');
+        const effort = document.querySelector('#compose-executor-effort');
+        assert(visible(effort), 'Plan into shows the execution effort field');
+        effort.click();
+        await waitFor(() => picker.open, 'execution effort picker open');
+        assert(text('#picker-title') === 'Execution effort', 'picker title reads Execution effort');
+        setQuery('high');
+        await waitFor(() => rows().length === 1, 'high narrows to one effort row');
+        keydown(document.querySelector('#picker-search'), 'Enter');
+        await closed(effort, 'execution effort picker close');
+        assert(effort.value === 'high', 'execution effort holds high');
         document.querySelector('#compose-prompt').value = 'fixture prompt';
         compose.querySelector('#compose-form').requestSubmit();
         await waitFor(() => posted, 'plan-into session body posted');
         assert(posted.mode === 'plan-into', 'posted mode is plan-into');
         assert(posted.executor === 'fixture/beta-2', 'posted executor is the chosen selector');
+        assert(posted.executor_thinking === 'high', 'posted execution effort is the chosen level');
 
         posted = null;
         document.querySelector('#btn-compose').click();
@@ -737,6 +748,7 @@
         const mode = (name) => document.querySelector(`#dispatch-mode-${name}`);
         assert(mode('plan-into').getAttribute('aria-checked') === 'true', 'P preselects Plan into');
         assert(!dispatch.querySelector('#dispatch-models').hidden, 'Plan into shows the execution model field');
+        assert(visible(document.querySelector('#dispatch-executor-effort')), 'dispatch shows the execution effort field');
         assert(segmentRow(dispatch.querySelector('#dispatch-mode')), 'the four dispatch segments share one row');
         assert(text('#dispatch-model').includes('Alpha One'), 'the Model Default names the daemon model');
         assert(text('#dispatch-thinking').includes('max'), 'the Thinking Default names the daemon level');

@@ -456,9 +456,28 @@ async fn answer(
         if let Err(error) = crate::cards::engine_selector(launch.engine, request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
+        if let Err(error) = execution_effort(
+            launch.engine,
+            request.executor.as_deref(),
+            request.executor_thinking.as_deref(),
+        ) {
+            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+        }
     }
     card_action(state, id, move |db, card| crate::cards::answer(db, &card, &request, &launch)).await
 }
+/// Check an execution effort, which needs the execution model it belongs to.
+fn execution_effort(
+    engine: crate::cards::Engine,
+    executor: Option<&str>,
+    effort: Option<&str>,
+) -> Result<(), String> {
+    if crate::cards::executor_effort(engine, effort)?.is_some() && executor.is_none() {
+        return Err("execution effort needs an execution model".to_owned());
+    }
+    Ok(())
+}
+
 /// A new engine drops the daemon's model and thinking level, which belong to the old engine.
 fn apply_launch_choices(
     launch: &mut crate::cards::Launch,
@@ -541,9 +560,11 @@ struct DispatchRequest {
     thinking: Option<String>,
     #[serde(default)]
     engine: Option<String>,
-    /// Execution model for a plan-into dispatch.
+    /// Execution model for a plan-into dispatch, and the effort it takes.
     #[serde(default)]
     executor: Option<String>,
+    #[serde(default)]
+    executor_thinking: Option<String>,
 }
 
 async fn dispatch(
@@ -563,6 +584,12 @@ async fn dispatch(
     if !plan_into && request.executor.is_some() {
         return error_response(axum::http::StatusCode::BAD_REQUEST, "executor needs mode plan-into");
     }
+    if !plan_into && request.executor_thinking.is_some() {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "executor thinking needs mode plan-into",
+        );
+    }
     let mut launch = state.launch.clone();
     if let Err(error) = apply_launch_choices(
         &mut launch,
@@ -576,11 +603,27 @@ async fn dispatch(
         if let Err(error) = crate::cards::engine_selector(launch.engine, request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
+        if let Err(error) = execution_effort(
+            launch.engine,
+            request.executor.as_deref(),
+            request.executor_thinking.as_deref(),
+        ) {
+            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+        }
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
     let executor = request.executor;
+    let executor_thinking = request.executor_thinking;
     card_action(state, id, move |db, card| {
-        crate::cards::dispatch(db, &card, mode, note.as_deref(), &launch, executor.as_deref())
+        crate::cards::dispatch(
+            db,
+            &card,
+            mode,
+            note.as_deref(),
+            &launch,
+            executor.as_deref(),
+            executor_thinking.as_deref(),
+        )
     })
     .await
 }
@@ -671,6 +714,9 @@ struct SessionRequest {
     mode: Option<String>,
     #[serde(default)]
     executor: Option<String>,
+    /// Effort the Plan into execution model takes, which only a dsh plan can name.
+    #[serde(default)]
+    executor_thinking: Option<String>,
 }
 
 /// A model entry for the shared pickers, named by its omp selector.
@@ -964,7 +1010,11 @@ async fn start_session(
     }
     let action_state = Arc::clone(&state);
     match tokio::task::spawn_blocking(move || {
-        let start = crate::cards::Start::parse(request.mode.as_deref(), request.executor.as_deref())?;
+        let start = crate::cards::Start::parse(
+            request.mode.as_deref(),
+            request.executor.as_deref(),
+            request.executor_thinking.as_deref(),
+        )?;
         crate::cards::start_session(&action_state.db, &request.prompt, &cwd, &launch, start)
     })
     .await

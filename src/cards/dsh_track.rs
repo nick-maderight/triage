@@ -569,7 +569,7 @@ pub(super) fn answer_ask(
         .zip(&answers)
         .map(|(question, answer)| answer_entry(question, answer))
         .collect::<Result<Vec<Value>, String>>()?;
-    client.answer(&item.event_id, &json!({"answers": entries}), None)?;
+    client.answer(&item.event_id, &json!({"answers": entries}), None, None)?;
     let (option, text) = match answers.as_slice() {
         [only] => (only.option, only.text.clone()),
         _ => (None, None),
@@ -597,6 +597,7 @@ pub(super) fn answer_plan(
     option: Option<usize>,
     refinement: Option<&str>,
     executor: Option<&str>,
+    executor_effort: Option<&str>,
     launch: &Launch,
 ) -> Result<(), String> {
     let sid = dsh::session_id(card).ok_or_else(|| "card is not a dsh session".to_owned())?;
@@ -627,7 +628,7 @@ pub(super) fn answer_plan(
             Some(refinement),
         )
     };
-    client.answer(&item.event_id, &value, model)?;
+    client.answer(&item.event_id, &value, model, executor_effort)?;
     if record_swipe(
         db,
         &card.id,
@@ -710,7 +711,7 @@ pub(super) fn launch_brief(
     brief: &Path,
     start: Start,
 ) -> Result<String, String> {
-    if let Some(sid) = dsh::session_id(card).filter(|_| !matches!(start, Start::PlanInto(_))) {
+    if let Some(sid) = dsh::session_id(card).filter(|_| !matches!(start, Start::PlanInto(..))) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
         if client
             .state(sid)
@@ -749,10 +750,10 @@ pub(super) fn launch_new(
     start: Start,
 ) -> Result<String, String> {
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
-    let (mode, executor) = match start {
-        Start::Goal => ("goal", None),
-        Start::Plan => ("plan", None),
-        Start::PlanInto(executor) => ("plan-into", executor),
+    let (mode, executor, executor_effort) = match start {
+        Start::Goal => ("goal", None, None),
+        Start::Plan => ("plan", None, None),
+        Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
     };
     let mut body = json!({
         "prompt": brief_prompt(brief),
@@ -761,6 +762,7 @@ pub(super) fn launch_new(
         "effort": launch.thinking,
         "mode": mode,
         "executor": executor,
+        "executorEffort": executor_effort,
     });
     if let Some(workspace) = launch.dsh_workspace.as_deref() {
         body["workspace"] = json!(workspace);

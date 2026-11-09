@@ -3347,6 +3347,7 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             Some("check the journal"),
             &in_session("session"),
             None,
+            None,
         );
         let info_swipe = current_swipe(&db, &info.id);
         let repeat = dispatch(
@@ -3356,6 +3357,7 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             None,
             &in_session("session"),
             None,
+            None,
         );
         let ask_result = dispatch(
             &db,
@@ -3363,6 +3365,7 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             DispatchMode::Investigate,
             None,
             &in_session("session"),
+            None,
             None,
         );
         let ask_swipe = current_swipe(&db, &ask.id);
@@ -3421,6 +3424,7 @@ fn dispatch_reuses_waiting_source_pane_instead_of_new_window() {
             DispatchMode::Investigate,
             None,
             &in_session("session"),
+            None,
             None,
         );
         let swipe = current_swipe(&db, &info.id);
@@ -3509,6 +3513,7 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
             None,
             &Launch::default(),
             None,
+            None,
         );
         let configured = info_card("done:%12:set", "%12");
         db.insert_card(&configured).unwrap();
@@ -3523,6 +3528,7 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
                 thinking: Some("high".to_owned()),
                 ..Launch::default()
             },
+            None,
             None,
         );
         let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
@@ -3572,6 +3578,7 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             Some("ship it"),
             &in_session("session"),
             None,
+            None,
         );
         let look = dispatch(
             &db,
@@ -3579,6 +3586,7 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             DispatchMode::Investigate,
             None,
             &in_session("session"),
+            None,
             None,
         );
         let swipe = current_swipe(&db, &act_card.id);
@@ -3654,6 +3662,7 @@ fn dispatch_plan_mode_writes_reviewable_brief_and_config_overlay() {
             Some("plan it"),
             &in_session("session"),
             None,
+            None,
         );
         let mut brief_path = None;
         let mut overlay_path = None;
@@ -3728,6 +3737,7 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
             Some("plan it"),
             &launch,
             Some("provider/executor"),
+            None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
         let brief = fs::read_dir(root.join("briefs"))
@@ -3811,6 +3821,7 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             None,
             &in_session("session"),
             None,
+            None,
         );
 
         let on = info_card("done:%12:on", "%12");
@@ -3821,6 +3832,7 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             DispatchMode::Plan,
             None,
             &in_session("session"),
+            None,
             None,
         );
         let toggles_after_on = fs::read_to_string(root.join("tmux-keys.log"))
@@ -3839,6 +3851,7 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             DispatchMode::Plan,
             None,
             &in_session("session"),
+            None,
             None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
@@ -4009,11 +4022,12 @@ fn plan_approval_selects_execution_model_before_enter() {
         }
         let selected = plan_card(&pane, 0);
         let blank = plan_card(&pane, 4);
+        let effort = plan_card(&pane, 5);
         let unavailable = plan_card(&pane, 1);
         let default = plan_card(&pane, 2);
         let mismatch = plan_card(&pane, 3);
         db.insert_card(&blank).unwrap();
-        for card in [&selected, &unavailable, &default, &mismatch] {
+        for card in [&selected, &unavailable, &default, &mismatch, &effort] {
             db.insert_card(card).unwrap();
         }
 
@@ -4047,6 +4061,17 @@ fn plan_approval_selects_execution_model_before_enter() {
             &AnswerReq { option: Some(0), ..AnswerReq::default() },
             &Launch::default(),
         );
+        let effort_result = answer(
+            &db,
+            &effort,
+            &AnswerReq {
+                option: Some(0),
+                executor: Some("@slow".to_owned()),
+                executor_thinking: Some("low".to_owned()),
+                ..AnswerReq::default()
+            },
+            &Launch::default(),
+        );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let keys: Vec<_> = keys.lines().collect();
 
@@ -4058,6 +4083,10 @@ fn plan_approval_selects_execution_model_before_enter() {
         assert_eq!(
             mismatch_result.as_ref().err().map(String::as_str),
             Some("plan execution model is not @slow")
+        );
+        assert_eq!(
+            effort_result.as_ref().err().map(String::as_str),
+            Some("an omp plan review keeps the role's own thinking level")
         );
         assert_eq!(keys, [
             "send-keys -t %12 Right",
@@ -4211,6 +4240,7 @@ fn pane_actions_wait_for_the_action_in_flight() {
                         DispatchMode::Investigate,
                         None,
                         &launch,
+                        None,
                         None,
                     )
                 }),
@@ -4403,16 +4433,48 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
         brief,
         Some("provider/planner"),
         Some("high"),
-        Start::PlanInto(Some("provider/executor")),
+        Start::PlanInto(Some("provider/executor"), None),
     )
     .unwrap();
     assert_eq!(
         chosen,
         "omp --model=provider/planner --plan=provider/planner --thinking=high --plan-yolo --plan-yolo-into=provider/executor @'/tmp/b.md'"
     );
-    let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "))).unwrap();
+    let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "), None)).unwrap();
     assert_eq!(blank, "omp --plan-yolo @'/tmp/b.md'");
-    assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"))).is_err());
+    assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None)).is_err());
+    let leveled = omp_command(brief, None, None, Start::PlanInto(Some("@smol"), Some("low"))).unwrap();
+    assert_eq!(leveled, "omp --plan-yolo --plan-yolo-into=@smol:low @'/tmp/b.md'");
+    let named = omp_command(brief, None, None, Start::PlanInto(Some("provider/executor:max"), Some("low"))).unwrap();
+    assert_eq!(named, "omp --plan-yolo --plan-yolo-into=provider/executor:max @'/tmp/b.md'");
+}
+
+#[test]
+fn execution_effort_belongs_to_each_engine() {
+    assert_eq!(executor_effort(Engine::Dsh, Some(" max ")), Ok(Some("max")));
+    assert_eq!(
+        executor_effort(Engine::Dsh, Some("medium")),
+        Err("unknown execution effort medium".to_owned())
+    );
+    assert_eq!(executor_effort(Engine::Omp, Some("medium")), Ok(Some("medium")));
+    assert_eq!(
+        executor_effort(Engine::Omp, Some("turbo")),
+        Err("unknown execution thinking level turbo".to_owned())
+    );
+    assert_eq!(executor_effort(Engine::Omp, None), Ok(None));
+    assert_eq!(executor_effort(Engine::Dsh, Some("  ")), Ok(None));
+}
+
+#[test]
+fn start_parse_refuses_an_execution_effort_outside_plan_into() {
+    assert_eq!(
+        Start::parse(Some("plan"), None, Some("low")),
+        Err("executor thinking needs mode plan-into".to_owned())
+    );
+    assert!(matches!(
+        Start::parse(Some("plan-into"), Some("deepseek-flash"), Some("low")),
+        Ok(Start::PlanInto(Some("deepseek-flash"), Some("low")))
+    ));
 }
 
 #[test]
@@ -6276,8 +6338,8 @@ fn dsh_answer_ask_posts_the_picked_label_or_typed_text() {
     assert_eq!(
         bridge.posts("/v1/answer"),
         vec![
-            json!({"eventId": "ev-1", "value": {"answers": [{"id": "q1", "selected": ["Blue"]}]}, "executor": null}),
-            json!({"eventId": "ev-2", "value": {"answers": [{"id": "q1", "selected": [], "custom": "Green"}]}, "executor": null}),
+            json!({"eventId": "ev-1", "value": {"answers": [{"id": "q1", "selected": ["Blue"]}]}, "executor": null, "effort": null}),
+            json!({"eventId": "ev-2", "value": {"answers": [{"id": "q1", "selected": [], "custom": "Green"}]}, "executor": null, "effort": null}),
         ]
     );
     assert_eq!(swipe_reason(&db, &picked.id).as_deref(), Some("sent to dsh"));
@@ -6308,13 +6370,18 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
     answer(
         &db,
         &first,
-        &AnswerReq { option: Some(0), executor: Some("deepseek-v4-pro".to_owned()), ..AnswerReq::default() },
+        &AnswerReq {
+            option: Some(0),
+            executor: Some("deepseek-v4-pro".to_owned()),
+            executor_thinking: Some("off".to_owned()),
+            ..AnswerReq::default()
+        },
         &launch,
     )
     .unwrap();
     assert_eq!(
         bridge.posts("/v1/answer"),
-        vec![json!({"eventId": "ev-p1", "value": {"answers": [{"id": "plan-review", "selected": ["Approve"]}]}, "executor": "deepseek-v4-pro"})]
+        vec![json!({"eventId": "ev-p1", "value": {"answers": [{"id": "plan-review", "selected": ["Approve"]}]}, "executor": "deepseek-v4-pro", "effort": "off"})]
     );
     bridge.edit(|data| data.pending = vec![plan_review("ev-p2", "call-p2", "# Ship the importer v2")]);
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 1);
@@ -6328,7 +6395,7 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
     .unwrap();
     assert_eq!(
         bridge.posts("/v1/answer")[1],
-        json!({"eventId": "ev-p2", "value": {"answers": [{"id": "plan-review", "selected": ["Keep planning"], "custom": "Add a rollback step."}]}, "executor": null})
+        json!({"eventId": "ev-p2", "value": {"answers": [{"id": "plan-review", "selected": ["Keep planning"], "custom": "Add a rollback step."}]}, "executor": null, "effort": null})
     );
 }
 
@@ -6347,7 +6414,7 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
         "Write the report\nwith detail",
         "/work/project",
         &launch,
-        Start::PlanInto(Some("deepseek-flash")),
+        Start::PlanInto(Some("deepseek-flash"), Some("max")),
     );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
@@ -6359,6 +6426,7 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
     assert_eq!(body["effort"], "high");
     assert_eq!(body["mode"], "plan-into");
     assert_eq!(body["executor"], "deepseek-flash");
+    assert_eq!(body["executorEffort"], "max");
     assert!(body.get("sessionId").is_none(), "{body}");
     assert!(
         body["prompt"].as_str().is_some_and(|prompt| prompt.starts_with("Read the brief at ") && prompt.ends_with(" and carry it out.")),
@@ -6399,7 +6467,7 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -6415,7 +6483,7 @@ fn dsh_plan_on_an_idle_session_relaunches_it_in_plan_mode() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None).unwrap();
+    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -6431,7 +6499,7 @@ fn dsh_plan_into_dispatch_starts_a_new_session() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash")).unwrap();
+    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -6450,7 +6518,7 @@ fn dsh_dispatch_to_a_running_session_starts_a_new_goal_session() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -6806,7 +6874,7 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     let bridge = FakeBridge::start(scratch.path());
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &launch, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &launch, None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["workspace"], "triage");

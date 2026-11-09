@@ -223,14 +223,16 @@ impl Client {
         Ok(())
     }
 
-    /// Send the answer value for a pending item. `executor` rides with an Approve.
+    /// Send the answer value for a pending item. `executor` rides with an Approve, and
+    /// `effort` is the execution model's effort, which empty leaves at the launch effort.
     pub fn answer(
         &self,
         event_id: &str,
         value: &Value,
         executor: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<(), String> {
-        let body = json!({"eventId": event_id, "value": value, "executor": executor});
+        let body = json!({"eventId": event_id, "value": value, "executor": executor, "effort": effort});
         self.post::<IgnoredAny>("/v1/answer", &body)?;
         Ok(())
     }

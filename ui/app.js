@@ -155,6 +155,7 @@ const S = {
         step: 0,
         answers: [],
         executor: '',
+        executorThinking: '',
       });
     return S.drafts.get(c.id);
   }
@@ -952,26 +953,30 @@ const S = {
     }
   }
   function planExecutorView(c) {
-    const id = 'plan-executor',
-      field = h('button', {
-        type: 'button',
-        class: 'field picker-field',
-        id,
-        value: draft(c).executor,
-        'aria-labelledby': 'plan-executor-label plan-executor',
-        'aria-haspopup': 'dialog',
-        'aria-expanded': 'false',
-        'aria-controls': 'picker',
-        'data-od-id': ident(id, c),
-      });
-    planExecutorLabels(c.engine || 'omp');
-    setPickerValue(id, draft(c).executor, field);
-    bindPicker(id, field);
+    const engine = c.engine || 'omp',
+      pair = (id, label, value) => {
+        const field = h('button', {
+          type: 'button',
+          class: 'field picker-field',
+          id,
+          value,
+          'aria-labelledby': `${id}-label ${id}`,
+          'aria-haspopup': 'dialog',
+          'aria-expanded': 'false',
+          'aria-controls': 'picker',
+          'data-od-id': ident(id, c),
+        });
+        setPickerValue(id, value, field);
+        bindPicker(id, field);
+        return el('div', 'pair', h('label', { id: `${id}-label`, for: id }, label), field);
+      };
+    planExecutorLabels(engine);
+    // An omp Plan Review slider lists roles only, so its role keeps its own thinking level.
     return el(
       'div',
       'plan-executor',
-      h('label', { id: 'plan-executor-label', for: id }, 'Execution model'),
-      field,
+      pair('plan-executor', 'Execution model', draft(c).executor),
+      engine === 'dsh' && pair('plan-executor-effort', 'Execution effort', draft(c).executorThinking),
     );
   }
   // Roles loaded for another harness's plan card are dropped until loadModels refills the list.
@@ -1629,7 +1634,10 @@ const S = {
       return;
     }
     const body = { option: i, text, note: noteValue(c) };
-    if (c.kind === 'plan' && option.label === 'Approve') body.executor = draft(c).executor || null;
+    if (c.kind === 'plan' && option.label === 'Approve') {
+      body.executor = draft(c).executor || null;
+      body.executor_thinking = draft(c).executorThinking || null;
+    }
     act(c, 'answer', body, `option-${i}`);
   }
   function toggleOther(c) {
@@ -2046,13 +2054,25 @@ const S = {
     'compose-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'compose-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
+    'compose-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
     'dispatch-engine': { title: 'Engine', placeholder: 'Search engines', free: false, fallback: 'Daemon default', options: [pickerOption('omp'), pickerOption('dsh')] },
     'dispatch-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'dispatch-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'dispatch-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
+    'dispatch-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
     'plan-executor': { title: 'Execution model', placeholder: 'Search roles', free: false, fallback: 'current Plan Review role', options: [] },
+    'plan-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
   };
-  const MODEL_PICKERS = ['compose-model', 'compose-executor', 'dispatch-model', 'dispatch-executor', 'plan-executor'];
+  const MODEL_PICKERS = [
+    'compose-model',
+    'compose-executor',
+    'compose-executor-effort',
+    'dispatch-model',
+    'dispatch-executor',
+    'dispatch-executor-effort',
+    'plan-executor',
+    'plan-executor-effort',
+  ];
   function pickerOption(value, label = value, hint = null) {
     return { value, label, hint, search: `${label} ${value}`.toLowerCase() };
   }
@@ -2182,6 +2202,7 @@ const S = {
     const changed = p.id.endsWith('-engine') && $(`#${p.id}`).value !== row.value;
     setPickerValue(p.id, row.value);
     if (p.id === 'plan-executor' && current()?.kind === 'plan') draft(current()).executor = row.value;
+    if (p.id === 'plan-executor-effort' && current()?.kind === 'plan') draft(current()).executorThinking = row.value;
     $('#picker').close();
     if (changed) clearModels(p.id.replace(/-engine$/, ''));
   }
@@ -2189,6 +2210,7 @@ const S = {
   function clearModels(sheet) {
     setPickerValue(`${sheet}-model`, '');
     setPickerValue(`${sheet}-executor`, '');
+    setPickerValue(`${sheet}-executor-effort`, '');
     void loadModels();
   }
   // Phones fill the visual viewport, so the on-screen keyboard never hides rows. Wider screens
@@ -2243,7 +2265,8 @@ const S = {
           data = await load(engine),
           model = PICKERS[`${sheet}-model`],
           thinking = PICKERS[`${sheet}-thinking`],
-          executor = PICKERS[`${sheet}-executor`];
+          executor = PICKERS[`${sheet}-executor`],
+          executorEffort = PICKERS[`${sheet}-executor-effort`];
         PICKERS[`${sheet}-engine`].fallback = daemon;
         model.options = executor.options = options(data.models);
         model.fallback = data.default
@@ -2252,15 +2275,23 @@ const S = {
         thinking.options = data.thinking.map((level) => pickerOption(level));
         thinking.fallback = data.default_thinking ?? `${engine} default`;
         executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
+        executorEffort.options = data.thinking.map((level) => pickerOption(level));
+        executorEffort.fallback = engine === 'dsh' ? 'Planner effort' : 'Selector level';
         if (sheet === 'compose') $('#compose-session-pair').hidden = engine === 'dsh';
-        for (const id of ['engine', 'model', 'thinking', 'executor']) refreshPicker(`${sheet}-${id}`);
+        for (const id of ['engine', 'model', 'thinking', 'executor', 'executor-effort'])
+          refreshPicker(`${sheet}-${id}`);
       }
       // A plan card from the other harness offers that harness's execution models.
       const plan = current(),
         planEngine = plan?.kind === 'plan' ? plan.engine || 'omp' : daemon;
       planExecutorLabels(planEngine);
-      PICKERS['plan-executor'].options = options((await load(planEngine)).execution_models);
+      const planModels = await load(planEngine);
+      PICKERS['plan-executor'].options = options(planModels.execution_models);
+      PICKERS['plan-executor-effort'].options = planModels.thinking.map((level) => pickerOption(level));
+      PICKERS['plan-executor-effort'].fallback =
+        planEngine === 'dsh' ? 'Planner effort' : 'Role level';
       refreshPicker('plan-executor');
+      refreshPicker('plan-executor-effort');
     } catch {
       // The server falls back to its launch flags or the engine's defaults.
     }
@@ -2284,7 +2315,10 @@ const S = {
         thinking: $('#compose-thinking').value.trim() || null,
         mode: S.composeMode,
       };
-      if (S.composeMode === 'plan-into') body.executor = $('#compose-executor').value.trim() || null;
+      if (S.composeMode === 'plan-into') {
+        body.executor = $('#compose-executor').value.trim() || null;
+        body.executor_thinking = $('#compose-executor-effort').value.trim() || null;
+      }
       const data = await api('/v1/sessions', body);
       $('#compose-prompt').value = '';
       $('#compose').close();
@@ -2319,7 +2353,8 @@ const S = {
     $('#compose-mode-help').textContent = {
       goal: 'The session works toward the prompt as a goal until it reports done.',
       plan: 'Read-only planning. The plan arrives here for review before anything runs.',
-      'plan-into': 'The Model above drafts a plan read-only, the harness approves it without review, and the execution model carries it out.',
+      'plan-into':
+        'The Model above drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
     }[mode];
     $('#compose-models').hidden = mode !== 'plan-into';
   }
@@ -2329,7 +2364,8 @@ const S = {
       investigate: 'Read-only. The session looks into it and reports back.',
       act: 'The session carries out the action end to end.',
       plan: 'The session prepares a plan for review before acting.',
-      'plan-into': 'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out in a new session.',
+      'plan-into':
+        'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out in a new session at the execution effort chosen below.',
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
     const d = S.drafts.get(S.dispatchId);
@@ -2373,7 +2409,10 @@ const S = {
     start.disabled = true;
     hint.textContent = 'Launching…';
     const body = { mode, note, engine, model, thinking };
-    if (mode === 'plan-into') body.executor = $('#dispatch-executor').value.trim() || null;
+    if (mode === 'plan-into') {
+      body.executor = $('#dispatch-executor').value.trim() || null;
+      body.executor_thinking = $('#dispatch-executor-effort').value.trim() || null;
+    }
     let ok;
     if (d.dispatchOption != null) {
       d.note = $('#dispatch-note').value;

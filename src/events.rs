@@ -168,6 +168,10 @@ pub struct AnswerReq {
     pub thinking: Option<String>,
     #[serde(default)]
     pub executor: Option<String>,
+    /// Effort the execution model takes in a Plan into launch or approval. Empty keeps the
+    /// planner's level, which is the session's launch effort for dsh.
+    #[serde(default)]
+    pub executor_thinking: Option<String>,
     #[serde(default)]
     pub engine: Option<String>,
     #[serde(default)]
