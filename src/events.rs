@@ -111,6 +111,9 @@ pub struct Card {
     /// Info replies from launched panes without a status line can request a final report.
     #[serde(default)]
     pub report_due: bool,
+    /// `jcode` on plan cards from jcode panes. OMP and older cards carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
 }
 
 /// One question of a multi-question ask card.

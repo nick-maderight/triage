@@ -5,6 +5,7 @@ mod cards;
 mod client;
 mod db;
 mod events;
+mod jcode;
 mod omp;
 mod push;
 mod server;
@@ -36,6 +37,9 @@ enum Commands {
         /// omp thinking level for launched sessions [default: omp's own]
         #[arg(long)]
         thinking: Option<String>,
+        /// Agent engine for launched sessions, `omp` or `jcode`.
+        #[arg(long, value_enum, default_value_t = cards::Engine::Omp)]
+        engine: cards::Engine,
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
         #[arg(long = "allow-host", value_name = "HOST")]
         allow_hosts: Vec<String>,
@@ -84,9 +88,12 @@ fn main() {
 #[tokio::main]
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Commands::Serve { listen, db, session, model, thinking, allow_hosts, no_notify } => {
+        Commands::Serve { listen, db, session, model, thinking, engine, allow_hosts, no_notify } => {
             // Validate before opening the DB so a bad flag exits 1 before anything is created.
             cards::launch_flags(model.as_deref(), thinking.as_deref())?;
+            if engine == cards::Engine::Jcode {
+                cards::jcode_selector(model.as_deref())?;
+            }
             let path = match db {
                 Some(path) => path,
                 None => default_db_path()?,
@@ -102,7 +109,7 @@ async fn run() -> Result<(), String> {
                 db,
                 bus,
                 tracker: std::sync::Mutex::new(tracker),
-                launch: cards::Launch { session, model, thinking },
+                launch: cards::Launch { session, model, thinking, engine },
                 push,
                 allowed_hosts: allow_hosts,
             });

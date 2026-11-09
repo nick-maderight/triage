@@ -48,7 +48,8 @@ fn run_child(name: &str, root: &Path, home: Option<&Path>, path: Option<&Path>) 
         .env_remove("XDG_DATA_HOME")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_CACHE_HOME")
-        .env_remove("XDG_STATE_HOME");
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("JCODE_HOME");
     if let Some(home) = home {
         command
             .env("HOME", home)
@@ -101,6 +102,10 @@ list-panes)
     if [ -f "$HOME/tmux-dead" ]; then
         title='host: tmp'
         command='zsh'
+    fi
+    if [ -f "$HOME/tmux-jcode" ]; then
+        command='jcode'
+        title='🦞 jcode/brook Lobster · last 3s'
     fi
     if [ -f "$HOME/tmux-tty" ]; then
         IFS= read -r tty < "$HOME/tmux-tty"
@@ -190,6 +195,37 @@ esac
     permissions.set_mode(0o700);
     fs::set_permissions(&executable, permissions).unwrap();
     directory
+}
+
+#[cfg(unix)]
+fn fake_jcode(directory: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let executable = directory.join("jcode");
+    fs::write(
+        &executable,
+        r##"#!/bin/sh
+printf '%s %s\n' "$5" "$(/bin/cat)" >> "$HOME/jcode.log"
+"##,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&executable, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn jcode_session(root: &Path, messages: &[serde_json::Value]) {
+    let home = root.join(".jcode");
+    fs::create_dir_all(home.join("client_sessions")).unwrap();
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("client_sessions/0"), "s1").unwrap();
+    fs::write(home.join("sessions/s1.json"), serde_json::json!({"messages": messages}).to_string()).unwrap();
+}
+
+#[cfg(unix)]
+fn jcode_text(id: &str, role: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({"id": id, "role": role, "content": [{"type": "text", "text": text}]})
 }
 
 fn ask_call(call_id: &str, labels: &[&str]) -> String {
@@ -302,6 +338,7 @@ fn ask_card(pane: &str, call_id: &str) -> Card {
         level: None,
         tool_call_id: Some(call_id.to_owned()),
         report_due: false,
+        engine: None,
     }
 }
 
@@ -323,6 +360,7 @@ fn finding_card(root: &Path) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     }
 }
 
@@ -347,6 +385,7 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     }
 }
 
@@ -384,6 +423,7 @@ fn info_card(id: &str, pane: &str) -> Card {
         level: Some("info".to_owned()),
         tool_call_id: None,
         report_due: false,
+        engine: None,
     }
 }
 
@@ -1800,6 +1840,113 @@ fn unlaunched_reply_does_not_offer_report_request() {
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child("unlaunched_reply_does_not_offer_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
+#[cfg(unix)]
+#[test]
+fn jcode_plan_reply_raises_plan_card_after_the_grace() {
+    if let Some(root) = child_root("jcode_plan_reply_raises_plan_card_after_the_grace") {
+        fs::write(root.join("tmux-jcode"), b"").unwrap();
+        jcode_session(
+            &root,
+            &[
+                jcode_text("m1", "user", "[transcription] Read the brief at /x/triage/briefs/b.md and carry it out."),
+                jcode_text("m2", "assistant", "Plan below.\n```plan\n# Ship it\n\n1. Edit.\n```"),
+            ],
+        );
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        tracker.tick(&db);
+        assert!(db.card("plan:%12:m2").unwrap().is_none());
+        tracker.jcode.get_mut("%12").unwrap().since -= GOAL_CONTINUATION_GRACE + Duration::from_secs(1);
+        tracker.tick(&db);
+        let card = db.card("plan:%12:m2").unwrap().unwrap().0;
+        assert_eq!(card.kind, Kind::Plan);
+        assert_eq!(card.engine.as_deref(), Some("jcode"));
+        assert_eq!(card.title, "Plan ready: Ship it");
+        assert!(card.body.as_deref().is_some_and(|body| body.contains("1. Edit.")));
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    fake_jcode(&bin);
+    run_child("jcode_plan_reply_raises_plan_card_after_the_grace", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+#[cfg(unix)]
+#[test]
+fn jcode_plan_answers_reach_the_session_as_messages() {
+    if let Some(root) = child_root("jcode_plan_answers_reach_the_session_as_messages") {
+        fs::write(root.join("tmux-jcode"), b"").unwrap();
+        jcode_session(&root, &[jcode_text("m2", "assistant", "```plan\n# Ship it\n```")]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let pane = pane(&root, "%12", "/dev/pts/12", "🦞 jcode/brook Lobster · last 3s");
+        let approve = Card { engine: Some("jcode".to_owned()), ..plan_card(&pane, 0) };
+        let refine = Card { engine: Some("jcode".to_owned()), ..plan_card(&pane, 1) };
+        db.insert_card(&approve).unwrap();
+        db.insert_card(&refine).unwrap();
+        let approved = AnswerReq {
+            option: Some(0),
+            executor: Some("bedrock-claude/global.anthropic.claude-haiku-5-5".to_owned()),
+            ..AnswerReq::default()
+        };
+        assert_eq!(answer(&db, &approve, &approved, &Launch::default()), Ok(()));
+        let refined = AnswerReq {
+            option: Some(1),
+            text: Some("Add a rollback step".to_owned()),
+            ..AnswerReq::default()
+        };
+        assert_eq!(answer(&db, &refine, &refined, &Launch::default()), Ok(()));
+        assert_eq!(
+            fs::read_to_string(root.join("jcode.log")).unwrap(),
+            format!(
+                "s1 /model bedrock-claude:global.anthropic.claude-haiku-5-5\ns1 {}\ns1 Add a rollback step\n",
+                jcode::PLAN_APPROVAL
+            )
+        );
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    fake_jcode(&bin);
+    run_child("jcode_plan_answers_reach_the_session_as_messages", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+#[cfg(unix)]
+#[test]
+fn jcode_reply_without_status_line_offers_report_request() {
+    if let Some(root) = child_root("jcode_reply_without_status_line_offers_report_request") {
+        fs::write(root.join("tmux-jcode"), b"").unwrap();
+        jcode_session(&root, &[jcode_text("m2", "assistant", "All done. Listing live.")]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut finding = finding_card(&root);
+        finding.title = "The delivery team has an unexpected CI grant".to_owned();
+        db.insert_card(&finding).unwrap();
+        db.swipe(&Swipe {
+            card: finding.id.clone(),
+            action: "done".to_owned(),
+            option: Some(0),
+            text: None,
+            note: None,
+            until_ms: None,
+            reason: Some("launched %12".to_owned()),
+            at_ms: events::now_ms(),
+        })
+        .unwrap();
+        let mut tracker = Tracker::default();
+        tracker.tick(&db);
+        tracker.jcode.get_mut("%12").unwrap().since -= GOAL_CONTINUATION_GRACE + Duration::from_secs(1);
+        tracker.tick(&db);
+        let card = db.card("done:%12:m2").unwrap().unwrap().0;
+        assert!(card.report_due, "card: {card:?}");
+        assert_eq!(request_report(&db, &card), Ok(()));
+        let swipe = db.card(&card.id).unwrap().unwrap().1.unwrap();
+        assert_eq!(swipe.reason.as_deref(), Some("report requested %12"));
+        assert!(fs::read_to_string(root.join("jcode.log")).unwrap().contains(REQUEST_REPORT_TEXT));
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    fake_jcode(&bin);
+    run_child("jcode_reply_without_status_line_offers_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
 }
 #[cfg(unix)]
 #[test]
@@ -3494,6 +3641,7 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
                 session: Some("work".to_owned()),
                 model: Some("provider/example-model".to_owned()),
                 thinking: Some("high".to_owned()),
+                engine: Engine::Omp,
             },
             None,
         );
@@ -4262,6 +4410,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             None,
             None,
             Start::Goal,
+            Engine::Omp,
         );
         let launched = start_session(
             &db,
@@ -4271,6 +4420,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             None,
             None,
             Start::Goal,
+            Engine::Omp,
         );
         let brief = fs::read_dir(root.join("briefs"))
             .unwrap()
@@ -4313,6 +4463,7 @@ fn start_session_plan_mode_uses_overlay_config_before_the_prompt_brief() {
             None,
             None,
             Start::Plan,
+            Engine::Omp,
         );
         let mut brief_path = None;
         let mut overlay_path = None;
@@ -4391,6 +4542,43 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
     let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "))).unwrap();
     assert_eq!(blank, "omp --plan-yolo @'/tmp/b.md'");
     assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"))).is_err());
+}
+
+#[test]
+fn jcode_command_maps_each_start_to_its_launch_flags() {
+    let brief = Path::new("/tmp/b.md");
+    let model = Some("bedrock-claude/global.anthropic.claude-haiku-5-5");
+    assert_eq!(
+        jcode_command(brief, model, Some("low"), Start::Goal).unwrap(),
+        "jcode-launch --model=bedrock-claude/global.anthropic.claude-haiku-5-5 --thinking=low @'/tmp/b.md'"
+    );
+    assert_eq!(
+        jcode_command(brief, model, Some("low"), Start::Plan).unwrap(),
+        "jcode-launch --model=bedrock-claude/global.anthropic.claude-haiku-5-5 --thinking=low --plan-mode @'/tmp/b.md'"
+    );
+    assert_eq!(
+        jcode_command(brief, model, None, Start::PlanInto(Some("deepseek-api/deepseek-v4-pro"))).unwrap(),
+        "jcode-launch --model=bedrock-claude/global.anthropic.claude-haiku-5-5 --plan-yolo --plan-yolo-into=deepseek-api/deepseek-v4-pro @'/tmp/b.md'"
+    );
+    assert_eq!(
+        jcode_command(brief, None, None, Start::PlanInto(None)).unwrap(),
+        "jcode-launch --plan-yolo @'/tmp/b.md'"
+    );
+    assert!(jcode_command(brief, None, None, Start::PlanInto(Some("@smol"))).is_err());
+}
+
+#[test]
+fn jcode_selector_takes_profile_slash_id_only() {
+    assert_eq!(jcode_selector(None), Ok(None));
+    assert_eq!(
+        jcode_selector(Some("bedrock-openai/global.moonshotai.kimi-k3.1")),
+        Ok(Some("bedrock-openai/global.moonshotai.kimi-k3.1"))
+    );
+    for bad in ["@kimi", "@role/x", "bedrock-claude", "a/b/c"] {
+        assert!(jcode_selector(Some(bad)).is_err(), "{bad}");
+    }
+    assert!(engine_selector(Engine::Jcode, Some("@kimi")).is_err());
+    assert!(engine_selector(Engine::Omp, Some("@kimi")).is_ok());
 }
 
 #[test]

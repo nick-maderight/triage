@@ -438,6 +438,7 @@ test('plan picker loads cycle roles without replacing the general model catalog'
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async () => data,
       refreshPicker() {},
+      current: () => null,
     });
   vm.runInContext(`${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`, context);
   await context.loadModels();

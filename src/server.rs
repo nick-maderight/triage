@@ -281,6 +281,12 @@ struct PushQuery {
     endpoint: Option<String>,
 }
 
+/// Which engine's model lists to answer with. Absent means the daemon's own engine.
+#[derive(serde::Deserialize)]
+struct ModelsQuery {
+    engine: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 struct PushKeys {
     p256dh: String,
@@ -402,7 +408,7 @@ async fn answer(
         return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown mode");
     }
     if request.mode.as_deref() == Some("plan-into") {
-        if let Err(error) = crate::cards::model_selector(request.executor.as_deref()) {
+        if let Err(error) = crate::cards::engine_selector(state.launch.engine, request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
     }
@@ -418,7 +424,7 @@ fn apply_launch_choices(
     thinking: Option<&str>,
 ) -> Result<(), String> {
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
-        crate::cards::model_selector(Some(model))?;
+        crate::cards::engine_selector(launch.engine, Some(model))?;
         launch.model = Some(model.to_owned());
     }
     if let Some(thinking) = thinking.map(str::trim).filter(|thinking| !thinking.is_empty()) {
@@ -506,7 +512,7 @@ async fn dispatch(
         return error_response(axum::http::StatusCode::BAD_REQUEST, "executor needs mode plan-into");
     }
     if plan_into {
-        if let Err(error) = crate::cards::model_selector(request.executor.as_deref()) {
+        if let Err(error) = crate::cards::engine_selector(state.launch.engine, request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
     }
@@ -788,15 +794,41 @@ fn load_models() -> Vec<Model> {
     roles.into_iter().chain(catalog).collect()
 }
 
-async fn models(State(state): State<Arc<AppState>>) -> axum::response::Response {
-    // Never waits for the load. Before the first snapshot, both lists are empty.
-    let catalog = MODELS.try_read().map(|slot| slot.clone()).unwrap_or_default();
+async fn models(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ModelsQuery>,
+) -> axum::response::Response {
+    let engine = match query.engine.as_deref() {
+        None => state.launch.engine,
+        Some("omp") => crate::cards::Engine::Omp,
+        Some("jcode") => crate::cards::Engine::Jcode,
+        Some(other) => {
+            let message = format!("unknown engine {other}");
+            return error_response(axum::http::StatusCode::BAD_REQUEST, &message);
+        }
+    };
+    let (name, models, execution_models) = match engine {
+        crate::cards::Engine::Omp => {
+            // Never waits for the load. Before the first snapshot, both lists are empty.
+            let catalog = MODELS.try_read().map(|slot| slot.clone()).unwrap_or_default();
+            ("omp", catalog.models, catalog.execution_models)
+        }
+        crate::cards::Engine::Jcode => {
+            let list: Vec<Model> = crate::jcode::MODELS
+                .iter()
+                .map(|selector| Model { selector: selector.to_string(), name: selector.to_string() })
+                .collect();
+            ("jcode", list.clone(), list)
+        }
+    };
+    let own = engine == state.launch.engine;
     axum::Json(serde_json::json!({
-        "models": catalog.models,
-        "execution_models": catalog.execution_models,
-        "default": state.launch.model,
+        "engine": name,
+        "models": models,
+        "execution_models": execution_models,
+        "default": if own { state.launch.model.clone() } else { None },
         "thinking": crate::cards::THINKING_LEVELS,
-        "default_thinking": state.launch.thinking,
+        "default_thinking": if own { state.launch.thinking.clone() } else { None },
     }))
     .into_response()
 }
@@ -868,6 +900,7 @@ async fn start_session(
             model.as_deref(),
             thinking.as_deref(),
             start,
+            action_state.launch.engine,
         )
     })
     .await
@@ -1364,6 +1397,7 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
         level,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     })
 }
 

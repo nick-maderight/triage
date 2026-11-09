@@ -158,6 +158,7 @@ fn test_plan_card(pane: &str) -> crate::events::Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     }
 }
 
@@ -270,6 +271,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
             session: Some("daemon-default".to_owned()),
             model: Some("provider/daemon-model".to_owned()),
             thinking: Some("low".to_owned()),
+            engine: crate::cards::Engine::Omp,
         },
     );
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
@@ -424,6 +426,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
             session: Some("daemon-default".to_owned()),
             model: Some("provider/daemon-model".to_owned()),
             thinking: Some("max".to_owned()),
+            engine: crate::cards::Engine::Omp,
         },
     );
     // The New session sheet leaves model and thinking blank, so the daemon defaults apply.
@@ -471,6 +474,7 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
             session: Some("daemon-default".to_owned()),
             model: Some("provider/daemon-model".to_owned()),
             thinking: Some("low".to_owned()),
+            engine: crate::cards::Engine::Omp,
         },
     );
     let request = super::SessionRequest {
@@ -1604,6 +1608,7 @@ esac
             session: None,
             model: Some("provider/daemon-model".to_owned()),
             thinking: None,
+            engine: crate::cards::Engine::Omp,
         },
     );
     let (address, server) = start_http_server(state).await;
@@ -1688,7 +1693,7 @@ case "$1" in list-panes) printf '' ;; esac
         serde_json::json!({"title": "Finding launch choices", "options": [{"label": "Do as recommended"}]}),
     )).unwrap();
     db.insert_card(&card).unwrap();
-    let state = state_with(db, crate::cards::Launch { session: Some("triage".to_owned()), model: None, thinking: None });
+    let state = state_with(db, crate::cards::Launch { session: Some("triage".to_owned()), model: None, thinking: None, engine: crate::cards::Engine::Omp });
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{}/answer", card.id);
     let response = http_request(address, "POST", &path,
@@ -2317,10 +2322,10 @@ async fn models_answers_immediately_while_the_first_load_runs() {
     let _load_in_flight = super::MODELS.write().unwrap();
     let response = tokio::time::timeout(
         Duration::from_secs(1),
-        super::models(axum::extract::State(state(
-            Db::open(Path::new(":memory:")).unwrap(),
-            None,
-        ))),
+        super::models(
+            axum::extract::State(state(Db::open(Path::new(":memory:")).unwrap(), None)),
+            axum::extract::Query(super::ModelsQuery { engine: None }),
+        ),
     )
     .await
     .expect("models endpoint must answer while the catalog load runs");
@@ -2330,6 +2335,38 @@ async fn models_answers_immediately_while_the_first_load_runs() {
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["models"], serde_json::json!([]));
     assert_eq!(parsed["execution_models"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn models_answers_the_jcode_list_for_the_jcode_engine() {
+    let response = super::models(
+        axum::extract::State(state(Db::open(Path::new(":memory:")).unwrap(), None)),
+        axum::extract::Query(super::ModelsQuery { engine: Some("jcode".to_owned()) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let selectors: Vec<&str> = parsed["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["selector"].as_str().unwrap())
+        .collect();
+    assert_eq!(parsed["engine"], "jcode");
+    assert_eq!(selectors, crate::jcode::MODELS);
+    assert_eq!(parsed["execution_models"], parsed["models"]);
+    assert_eq!(parsed["default"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn models_refuses_an_unknown_engine() {
+    let response = super::models(
+        axum::extract::State(state(Db::open(Path::new(":memory:")).unwrap(), None)),
+        axum::extract::Query(super::ModelsQuery { engine: Some("x".to_owned()) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[cfg(unix)]

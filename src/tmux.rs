@@ -42,11 +42,16 @@ impl Pane {
         }
     }
 
-    /// The argv of the pane's foreground process, or `None` when it cannot be
-    /// read. The kernel reports the foreground process group through the pty.
-    pub fn foreground_argv(&self) -> Option<Vec<String>> {
+    /// The pid of the pane's foreground process group, or `None` when it cannot be read.
+    /// The kernel reports the group through the pty.
+    pub fn foreground_pid(&self) -> Option<u32> {
         let stat = fs::read_to_string(format!("/proc/{}/stat", self.pid)).ok()?;
-        let group = foreground_group(&stat)?;
+        foreground_group(&stat)
+    }
+
+    /// The argv of the pane's foreground process, or `None` when it cannot be read.
+    pub fn foreground_argv(&self) -> Option<Vec<String>> {
+        let group = self.foreground_pid()?;
         let cmdline = fs::read_to_string(format!("/proc/{group}/cmdline")).ok()?;
         Some(
             cmdline

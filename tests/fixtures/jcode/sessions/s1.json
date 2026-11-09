@@ -1,0 +1,9 @@
+{
+  "id": "s1",
+  "model": "global.anthropic.claude-haiku-5-5",
+  "messages": [
+    {"id": "m1", "role": "user", "content": [{"type": "text", "text": "[transcription] Read the brief at /home/user/triage/briefs/card.md and carry it out."}]},
+    {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Working on the brief."}]},
+    {"id": "m3", "role": "assistant", "content": [{"type": "text", "text": "Stale reply, replaced by the journal."}]}
+  ]
+}

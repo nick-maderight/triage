@@ -1,0 +1,3 @@
+{"meta": {"seq": 1}, "append_messages": [{"id": "m3", "role": "assistant", "content": [{"type": "text", "text": "```plan\n# Ship the fix\n\n1. Edit the file.\n2. Run the tests.\n```"}]}]}
+{"meta": {"seq": 2}, "append_messages": [{"id": "m4", "role": "assistant", "content": [{"type": "text", "text": "ENVOY_STATUS: complete\nThe fix is in."}]}]}
+{"meta": {"seq": 3}, "append_messages": [{"id": "m5", "role": "assi
