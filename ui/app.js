@@ -110,7 +110,9 @@ const S = {
     return hit ? { label: hit[1], tone: hit[2], title: heading(c.body) || title.slice(hit[0].length) } : null;
   };
   const answerable = (c) => (c.kind !== 'ask' && c.kind !== 'plan') || c.answerable !== false,
-    paneOf = (c) => c.source?.pane || null,
+    dshOf = (c) => (c.engine === 'dsh' && c.source?.uri?.startsWith('dsh://session/') ? c.source.uri.slice(14) : null),
+    paneOf = (c) => c.source?.pane || (dshOf(c) ? `dsh:${dshOf(c)}` : null),
+    paneApi = (pane) => (pane.startsWith('dsh:') ? `/v1/dsh/${enc(pane.slice(4))}` : `/v1/panes/${enc(pane)}`),
     restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id);
   const current = () => S.cards[S.idx] || null;
   const recIndex = (c) => {
@@ -928,16 +930,26 @@ const S = {
         'Peek',
         h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'v'),
       ),
-      button(
-        c,
-        'jump',
-        'btn',
-        { id: 'jump-btn', 'aria-keyshortcuts': 'Shift+J' },
-        () => jump(c),
-        'Jump',
-        h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'J'),
-      ),
+      dshOf(c)
+        ? button(c, 'open', 'btn', { id: 'open-btn' }, openDsh, 'Open')
+        : button(
+            c,
+            'jump',
+            'btn',
+            { id: 'jump-btn', 'aria-keyshortcuts': 'Shift+J' },
+            () => jump(c),
+            'Jump',
+            h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'J'),
+          ),
     );
+  }
+  async function openDsh() {
+    try {
+      await api('/v1/dsh/open', {});
+      toast('Opened dsh on the desktop.');
+    } catch (e) {
+      toast(`Open failed: ${e.message}`, true);
+    }
   }
   function planExecutorView(c) {
     const id = 'plan-executor',
@@ -952,6 +964,7 @@ const S = {
         'aria-controls': 'picker',
         'data-od-id': ident(id, c),
       });
+    planExecutorLabels(c.engine || 'omp');
     setPickerValue(id, draft(c).executor, field);
     bindPicker(id, field);
     return el(
@@ -960,6 +973,14 @@ const S = {
       h('label', { id: 'plan-executor-label', for: id }, 'Execution model'),
       field,
     );
+  }
+  // Roles loaded for another harness's plan card are dropped until loadModels refills the list.
+  function planExecutorLabels(engine) {
+    const cfg = PICKERS['plan-executor'];
+    if (cfg.engine !== engine) cfg.options = [];
+    cfg.engine = engine;
+    cfg.placeholder = engine === 'dsh' ? 'Search models' : 'Search roles';
+    cfg.fallback = engine === 'dsh' ? 'current model' : 'current Plan Review role';
   }
 
   function optionsView(c) {
@@ -1020,7 +1041,7 @@ const S = {
           el(
             'p',
             null,
-            el('strong', null, 'Answer in the pane. '),
+            el('strong', null, c.engine === 'dsh' ? 'Answer in the dsh web UI. ' : 'Answer in the pane. '),
             'This prompt is read only here.',
           ),
           paneOf(c) && paneButtons(c, true),
@@ -1662,6 +1683,10 @@ const S = {
       toast('This card has no tmux pane.', true);
       return;
     }
+    if (pane.startsWith('dsh:')) {
+      toast('dsh sessions open in the dsh web UI.', true);
+      return;
+    }
     if (S.pending) return;
     const v = begin(c, 'jump');
     try {
@@ -1946,7 +1971,7 @@ const S = {
     const token = ++S.peekToken,
       d = $('#peek'),
       pre = $('#peek-text');
-    $('#peek-target').textContent = c.source?.target || pane;
+    $('#peek-target').textContent = c.source?.target || (dshOf(c) ? c.source.label : pane);
     pre.textContent = 'Loading…';
     pre.style.fontSize = S.peekMode === 'readable' ? '12px' : '';
     $('#peek-fit-hint').hidden = true;
@@ -1965,7 +1990,7 @@ const S = {
     S.peekFetching = token;
     const pre = $('#peek-text');
     try {
-      const data = await api(`/v1/panes/${enc(pane)}/peek`);
+      const data = await api(`${paneApi(pane)}/peek`);
       if (token !== S.peekToken || pane !== S.peekPane || !d.open) return;
       const bottom = (!S.peekLoaded && !S.peekUserScrolled) || S.peekFollowBottom,
         scrollTop = pre.scrollTop,
@@ -2017,9 +2042,11 @@ const S = {
   const PICKERS = {
     'compose-cwd': { title: 'Working directory', placeholder: 'Search or type a path', free: true, fallback: 'Home directory', options: [] },
     'compose-session': { title: 'tmux session', placeholder: 'Search sessions', free: false, fallback: 'Daemon default', options: [] },
+    'compose-engine': { title: 'Engine', placeholder: 'Search engines', free: false, fallback: 'Daemon default', options: [pickerOption('omp'), pickerOption('dsh')] },
     'compose-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'compose-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
+    'dispatch-engine': { title: 'Engine', placeholder: 'Search engines', free: false, fallback: 'Daemon default', options: [pickerOption('omp'), pickerOption('dsh')] },
     'dispatch-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'dispatch-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'dispatch-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
@@ -2152,9 +2179,17 @@ const S = {
     const p = S.picker,
       row = p?.rows[i];
     if (!row) return;
+    const changed = p.id.endsWith('-engine') && $(`#${p.id}`).value !== row.value;
     setPickerValue(p.id, row.value);
     if (p.id === 'plan-executor' && current()?.kind === 'plan') draft(current()).executor = row.value;
     $('#picker').close();
+    if (changed) clearModels(p.id.replace(/-engine$/, ''));
+  }
+  // Model selectors belong to one engine. A new engine clears its sheet's model and executor.
+  function clearModels(sheet) {
+    setPickerValue(`${sheet}-model`, '');
+    setPickerValue(`${sheet}-executor`, '');
+    void loadModels();
   }
   // Phones fill the visual viewport, so the on-screen keyboard never hides rows. Wider screens
   // hang the list under its field, or above it when the room below is short.
@@ -2194,34 +2229,40 @@ const S = {
       // The server falls back to its default session.
     }
   }
+  // Each sheet lists the models of the engine its Engine field picks, or the daemon's when Default.
   async function loadModels() {
-    const model = PICKERS['compose-model'],
-      thinking = PICKERS['compose-thinking'];
     try {
-      const data = await api('/v1/models');
-      const execution = (data.execution_models || []).map(({ selector, name }) =>
-        pickerOption(selector, name, name === selector ? null : selector),
-      );
-      model.options = data.models.map(({ selector, name }) =>
-        pickerOption(selector, name, name === selector ? null : selector),
-      );
-      model.fallback = data.default
-        ? model.options.find((option) => option.value === data.default)?.label || data.default
-        : 'omp default';
-      thinking.options = data.thinking.map((level) => pickerOption(level));
-      thinking.fallback = data.default_thinking ?? 'omp default';
-      for (const id of MODEL_PICKERS) {
-        const cfg = PICKERS[id];
-        cfg.options = id === 'plan-executor' ? execution : model.options;
-        if (id === 'compose-model' || id === 'dispatch-model') cfg.fallback = model.fallback;
-        refreshPicker(id);
+      const base = await api('/v1/models'),
+        daemon = base.engine || 'omp',
+        lists = { [daemon]: base },
+        load = async (engine) => (lists[engine] ??= await api(`/v1/models?engine=${engine}`)),
+        options = (list) =>
+          (list || []).map(({ selector, name }) => pickerOption(selector, name, name === selector ? null : selector));
+      for (const sheet of ['compose', 'dispatch']) {
+        const engine = $(`#${sheet}-engine`)?.value || daemon,
+          data = await load(engine),
+          model = PICKERS[`${sheet}-model`],
+          thinking = PICKERS[`${sheet}-thinking`],
+          executor = PICKERS[`${sheet}-executor`];
+        PICKERS[`${sheet}-engine`].fallback = daemon;
+        model.options = executor.options = options(data.models);
+        model.fallback = data.default
+          ? model.options.find((option) => option.value === data.default)?.label || data.default
+          : `${engine} default`;
+        thinking.options = data.thinking.map((level) => pickerOption(level));
+        thinking.fallback = data.default_thinking ?? `${engine} default`;
+        executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
+        if (sheet === 'compose') $('#compose-session-pair').hidden = engine === 'dsh';
+        for (const id of ['engine', 'model', 'thinking', 'executor']) refreshPicker(`${sheet}-${id}`);
       }
-      refreshPicker('compose-thinking');
-      PICKERS['dispatch-thinking'].options = thinking.options;
-      PICKERS['dispatch-thinking'].fallback = thinking.fallback;
-      refreshPicker('dispatch-thinking');
+      // A plan card from the other harness offers that harness's execution models.
+      const plan = current(),
+        planEngine = plan?.kind === 'plan' ? plan.engine || 'omp' : daemon;
+      planExecutorLabels(planEngine);
+      PICKERS['plan-executor'].options = options((await load(planEngine)).execution_models);
+      refreshPicker('plan-executor');
     } catch {
-      // The server falls back to its launch flags or omp's defaults.
+      // The server falls back to its launch flags or the engine's defaults.
     }
   }
   async function submitCompose(e) {
@@ -2238,6 +2279,7 @@ const S = {
         prompt,
         cwd: cwd || null,
         session: $('#compose-session').value.trim() || null,
+        engine: $('#compose-engine').value || null,
         model: $('#compose-model').value.trim() || null,
         thinking: $('#compose-thinking').value.trim() || null,
         mode: S.composeMode,
@@ -2247,6 +2289,7 @@ const S = {
       $('#compose-prompt').value = '';
       $('#compose').close();
       announce(`Started · ${data.pane}`);
+      if (data.pane?.startsWith('dsh:')) toast('Started a dsh session.');
     } catch (err) {
       hint.textContent = err.message || 'Could not start the session.';
     } finally {
@@ -2276,7 +2319,7 @@ const S = {
     $('#compose-mode-help').textContent = {
       goal: 'The session works toward the prompt as a goal until it reports done.',
       plan: 'Read-only planning. The plan arrives here for review before anything runs.',
-      'plan-into': 'The Model above drafts a plan read-only, omp approves it without review, and the execution model carries it out.',
+      'plan-into': 'The Model above drafts a plan read-only, the harness approves it without review, and the execution model carries it out.',
     }[mode];
     $('#compose-models').hidden = mode !== 'plan-into';
   }
@@ -2286,7 +2329,7 @@ const S = {
       investigate: 'Read-only. The session looks into it and reports back.',
       act: 'The session carries out the action end to end.',
       plan: 'The session prepares a plan for review before acting.',
-      'plan-into': 'The planner drafts a plan read-only, omp approves it without review, and the execution model carries it out in a new window.',
+      'plan-into': 'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out in a new session.',
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
     const d = S.drafts.get(S.dispatchId);
@@ -2299,7 +2342,10 @@ const S = {
     d.dispatchOption = option;
     d.dispatchMode = mode || d.dispatchMode || 'investigate';
     if (fromCard) d.dispatch = d.note;
-    if (!PICKERS['dispatch-model'].options.length) void loadModels();
+    if (dshOf(c) && $('#dispatch-engine').value !== 'dsh') {
+      setPickerValue('dispatch-engine', 'dsh');
+      clearModels('dispatch');
+    } else if (!PICKERS['dispatch-model'].options.length) void loadModels();
     setDispatchMode(d.dispatchMode);
     $('#dispatch-note').value = d.dispatch;
     $('#dispatch-hint').textContent = '';
@@ -2321,16 +2367,17 @@ const S = {
       mode = d.dispatchMode,
       note = $('#dispatch-note').value.trim() || null,
       model = $('#dispatch-model').value.trim() || null,
-      thinking = $('#dispatch-thinking').value.trim() || null;
+      thinking = $('#dispatch-thinking').value.trim() || null,
+      engine = $('#dispatch-engine').value || null;
     d.dispatch = $('#dispatch-note').value;
     start.disabled = true;
     hint.textContent = 'Launching…';
-    const body = { mode, note, model, thinking };
+    const body = { mode, note, engine, model, thinking };
     if (mode === 'plan-into') body.executor = $('#dispatch-executor').value.trim() || null;
     let ok;
     if (d.dispatchOption != null) {
       d.note = $('#dispatch-note').value;
-      const answer = { option: d.dispatchOption, text: null, note, mode, model, thinking };
+      const answer = { option: d.dispatchOption, text: null, note, mode, engine, model, thinking };
       if (mode === 'plan-into') answer.executor = body.executor;
       ok = await act(c, 'answer', answer, `option-${d.dispatchOption}`);
     } else {
@@ -2354,11 +2401,12 @@ const S = {
     S.peekSending = true;
     setPeekState('waiting');
     try {
-      await api(`/v1/panes/${enc(pane)}/send`, { text });
+      await api(`${paneApi(pane)}/send`, { text });
       if (token !== S.peekToken || pane !== S.peekPane || !$('#peek').open) return;
       input.value = '';
-      $('#peek-hint').textContent = 'Sent to the pane.';
-      announce('Sent to the pane.');
+      const sent = pane.startsWith('dsh:') ? 'Sent to the dsh session.' : 'Sent to the pane.';
+      $('#peek-hint').textContent = sent;
+      announce(sent);
       void refreshPeek(token);
     } catch (e) {
       if (token === S.peekToken && pane === S.peekPane && $('#peek').open) {

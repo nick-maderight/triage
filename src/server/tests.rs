@@ -152,6 +152,7 @@ fn test_plan_card(pane: &str) -> crate::events::Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     }
 }
 
@@ -264,6 +265,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
             session: Some("daemon-default".to_owned()),
             model: Some("provider/daemon-model".to_owned()),
             thinking: Some("low".to_owned()),
+            ..crate::cards::Launch::default()
         },
     );
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
@@ -285,6 +287,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         thinking: None,
         mode: None,
         executor: None,
+        engine: None,
     };
     let response = super::start_session(
         axum::extract::State(daemon_state.clone()),
@@ -303,6 +306,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         thinking: Some("high".to_owned()),
         mode: None,
         executor: None,
+        engine: None,
     };
     let response =
         super::start_session(axum::extract::State(daemon_state), axum::Json(request)).await;
@@ -326,6 +330,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         thinking: None,
         mode: None,
         executor: None,
+        engine: None,
     };
     let response = super::start_session(axum::extract::State(bare), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -357,6 +362,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
         thinking: None,
         mode: Some("plan".to_owned()),
         executor: None,
+        engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -418,6 +424,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
             session: Some("daemon-default".to_owned()),
             model: Some("provider/daemon-model".to_owned()),
             thinking: Some("max".to_owned()),
+            ..crate::cards::Launch::default()
         },
     );
     // The New session sheet leaves model and thinking blank, so the daemon defaults apply.
@@ -429,6 +436,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
         thinking: None,
         mode: Some("plan".to_owned()),
         executor: None,
+        engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -465,6 +473,7 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
             session: Some("daemon-default".to_owned()),
             model: Some("provider/daemon-model".to_owned()),
             thinking: Some("low".to_owned()),
+            ..crate::cards::Launch::default()
         },
     );
     let request = super::SessionRequest {
@@ -475,6 +484,7 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
         thinking: None,
         mode: Some("plan-into".to_owned()),
         executor: Some("provider/executor".to_owned()),
+        engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1614,6 +1624,7 @@ esac
             session: None,
             model: Some("provider/daemon-model".to_owned()),
             thinking: None,
+            ..crate::cards::Launch::default()
         },
     );
     let (address, server) = start_http_server(state).await;
@@ -1698,7 +1709,7 @@ case "$1" in list-panes) printf '' ;; esac
         serde_json::json!({"title": "Finding launch choices", "options": [{"label": "Do as recommended"}]}),
     )).unwrap();
     db.insert_card(&card).unwrap();
-    let state = state_with(db, crate::cards::Launch { session: Some("triage".to_owned()), model: None, thinking: None });
+    let state = state_with(db, crate::cards::Launch { session: Some("triage".to_owned()), model: None, thinking: None, ..crate::cards::Launch::default() });
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{}/answer", card.id);
     let response = http_request(address, "POST", &path,
@@ -1772,6 +1783,11 @@ async fn new_session_rejects_unknown_mode_and_executor_outside_plan_into() {
     )
     .await;
     assert_eq!(stale.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        stale.body["error"].as_str().is_some_and(|error| error.contains("unknown field `plan`")),
+        "{:?}",
+        stale.body
+    );
     assert!(!directory.0.join("briefs").exists());
     server.abort();
 }
@@ -2327,10 +2343,10 @@ async fn models_answers_immediately_while_the_first_load_runs() {
     let _load_in_flight = super::MODELS.write().unwrap();
     let response = tokio::time::timeout(
         Duration::from_secs(1),
-        super::models(axum::extract::State(state(
-            Db::open(Path::new(":memory:")).unwrap(),
-            None,
-        ))),
+        super::models(
+            axum::extract::State(state(Db::open(Path::new(":memory:")).unwrap(), None)),
+            axum::extract::Query(super::ModelsQuery { engine: None }),
+        ),
     )
     .await
     .expect("models endpoint must answer while the catalog load runs");
@@ -2506,4 +2522,100 @@ fn pane_directories_list_each_directory_once_most_shared_first() {
         ]),
         ["/srv/c", "/srv/b", "/srv/a", "/srv/d"]
     );
+}
+
+#[tokio::test]
+async fn dsh_models_list_the_deepseek_models_and_thinking_levels() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let response = super::models(
+        axum::extract::State(state(db, None)),
+        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+    )
+    .await;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["engine"], "dsh");
+    assert_eq!(parsed["default"], "deepseek-flash");
+    assert_eq!(parsed["thinking"], serde_json::json!(["off", "low", "high", "max"]));
+    let selectors: Vec<&str> = parsed["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["selector"].as_str().unwrap())
+        .collect();
+    assert_eq!(selectors, ["deepseek-flash", "deepseek-v4-pro"]);
+}
+
+#[tokio::test]
+async fn models_refuse_an_unknown_engine() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let response = super::models(
+        axum::extract::State(state(db, None)),
+        axum::extract::Query(super::ModelsQuery { engine: Some("bogus".to_owned()) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn engine_switch_drops_the_daemon_model_and_keeps_a_requested_thinking_level() {
+    let mut launch = crate::cards::Launch {
+        model: Some("@smol".to_owned()),
+        thinking: Some("low".to_owned()),
+        ..crate::cards::Launch::default()
+    };
+    super::apply_launch_choices(&mut launch, Some("dsh"), None, Some("high")).unwrap();
+    assert_eq!(launch.engine, crate::cards::Engine::Dsh);
+    assert_eq!(launch.model, None);
+    assert_eq!(launch.thinking.as_deref(), Some("high"));
+}
+
+#[test]
+fn engine_switch_refuses_an_unknown_engine() {
+    let mut launch = crate::cards::Launch::default();
+    assert_eq!(
+        super::apply_launch_choices(&mut launch, Some("jcode"), None, None),
+        Err("unknown engine jcode".to_owned())
+    );
+    assert_eq!(launch.engine, crate::cards::Engine::Omp);
+}
+
+#[tokio::test]
+async fn dsh_session_refuses_an_omp_model_selector() {
+    let directory = TestDir::new("triage-dsh-session-model");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let (address, server) = start_http_server(state(db, None)).await;
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","engine":"dsh","model":"@smol"}"#,
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.body["error"], "unknown dsh model @smol");
+    assert!(!directory.0.join("briefs").exists());
+    server.abort();
+}
+
+#[tokio::test]
+async fn dsh_send_refuses_a_command_prefix_before_reaching_the_bridge() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let launch = crate::cards::Launch { engine: crate::cards::Engine::Dsh, ..crate::cards::Launch::default() };
+    let (address, server) = start_http_server(state_with(db, launch)).await;
+    let response = http_request(address, "POST", "/v1/dsh/x/send", r#"{"text":"/goal x"}"#).await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    assert_eq!(response.body["error"], "text starts with a blocked command prefix");
+    server.abort();
+}
+
+#[tokio::test]
+async fn dsh_open_without_a_host_says_dsh_is_not_running() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let launch = crate::cards::Launch { engine: crate::cards::Engine::Dsh, ..crate::cards::Launch::default() };
+    let (address, server) = start_http_server(state_with(db, launch)).await;
+    let response = http_request(address, "POST", "/v1/dsh/open", "{}").await;
+    assert_eq!(response.status, StatusCode::CONFLICT);
+    assert_eq!(response.body["error"], "dsh is not running");
+    server.abort();
 }

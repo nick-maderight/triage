@@ -648,6 +648,14 @@ pub fn plan_mode_on(screen: &str) -> bool {
     screen.lines().any(|line| line.contains("🗺 Plan"))
 }
 
+/// A launch whose omp came up without a model: its TUI printed omp's `No model selected.` error
+/// and its status row shows `⬢ no-model`. Both must show, because the status row alone also
+/// appears while omp is still binding its model at startup.
+pub fn no_model(screen: &str) -> bool {
+    screen.lines().any(|line| line.contains("No model selected."))
+        && screen.lines().any(|line| line.contains("⬢ no-model"))
+}
+
 /// Line indexes of the last two lines containing `───`, the rules around omp's editor.
 fn editor_rules(screen: &str) -> Option<(usize, usize)> {
     let mut previous = None;
@@ -1045,6 +1053,14 @@ mod tests {
         assert!(!plan_mode_on(include_str!("../tests/fixtures/ask_dialog.txt")));
         assert!(!plan_mode_on(include_str!("../tests/fixtures/plan_review_overlay.txt")));
         assert!(plan_mode_on("╭─ Plan Review ─╮\n⬢ Example Model · 🗺 Plan · ~/project"));
+    }
+
+    #[test]
+    fn detects_no_model_launch() {
+        assert!(no_model(include_str!("../tests/fixtures/no_model.txt")));
+        assert!(!no_model(include_str!("../tests/fixtures/plan_mode_idle.txt")));
+        assert!(!no_model(include_str!("../tests/fixtures/ask_dialog.txt")));
+        assert!(!no_model("⬢ no-model · 🗑 ~/tmp\n"));
     }
 
     #[test]

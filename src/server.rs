@@ -124,7 +124,40 @@ async fn validate_host_origin(
         }
     }
 
-    next.run(request).await
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    failure_body(method, path, next.run(request).await).await
+}
+
+/// Logs a failed write and returns its error as JSON. axum's extractor rejections are plain text,
+/// which the inbox cannot show. Request bodies are not logged.
+async fn failure_body(
+    method: axum::http::Method,
+    path: String,
+    response: axum::response::Response,
+) -> axum::response::Response {
+    let status = response.status();
+    if method == axum::http::Method::GET || method == axum::http::Method::HEAD || status.as_u16() < 400 {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 * 1024).await.unwrap_or_default();
+    let json = parts
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+    if json {
+        let text = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|body| body["error"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        eprintln!("triage: {method} {path} -> {} {text}", status.as_u16());
+        return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    let text = String::from_utf8_lossy(&bytes).trim().to_owned();
+    eprintln!("triage: {method} {path} -> {} {text}", status.as_u16());
+    error_response(status, &text)
 }
 
 
@@ -163,6 +196,9 @@ fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> 
         .route("/v1/panes/{pane}/peek", axum::routing::get(peek))
         .route("/v1/panes/{pane}/send", axum::routing::post(send))
         .route("/v1/panes/{pane}/jump", axum::routing::post(jump))
+        .route("/v1/dsh/open", axum::routing::post(dsh_open))
+        .route("/v1/dsh/{id}/peek", axum::routing::get(dsh_peek))
+        .route("/v1/dsh/{id}/send", axum::routing::post(dsh_send))
         .layer(axum::Extension(notify))
         .with_state(state)
         .layer(axum::middleware::from_fn(validate_host_origin))
@@ -279,6 +315,12 @@ fn default_history_limit() -> usize {
 #[derive(serde::Deserialize)]
 struct PushQuery {
     endpoint: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ModelsQuery {
+    #[serde(default)]
+    engine: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -401,24 +443,38 @@ async fn answer(
     if request.mode.as_deref().is_some_and(|mode| crate::cards::DispatchMode::parse(mode).is_none()) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown mode");
     }
+    let mut launch = state.launch.clone();
+    if let Err(error) = apply_launch_choices(
+        &mut launch,
+        request.engine.as_deref(),
+        request.model.as_deref(),
+        request.thinking.as_deref(),
+    ) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
     if request.mode.as_deref() == Some("plan-into") {
-        if let Err(error) = crate::cards::model_selector(request.executor.as_deref()) {
+        if let Err(error) = crate::cards::engine_selector(launch.engine, request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
     }
-    let mut launch = state.launch.clone();
-    if let Err(error) = apply_launch_choices(&mut launch, request.model.as_deref(), request.thinking.as_deref()) {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-    }
     card_action(state, id, move |db, card| crate::cards::answer(db, &card, &request, &launch)).await
 }
+/// A new engine drops the daemon's model and thinking level, which belong to the old engine.
 fn apply_launch_choices(
     launch: &mut crate::cards::Launch,
+    engine: Option<&str>,
     model: Option<&str>,
     thinking: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
-        crate::cards::model_selector(Some(model))?;
+    if let Some(engine) = engine.map(str::trim).filter(|engine| !engine.is_empty()) {
+        let engine = crate::cards::Engine::parse(engine).ok_or_else(|| format!("unknown engine {engine}"))?;
+        if engine != launch.engine {
+            launch.engine = engine;
+            launch.model = None;
+            launch.thinking = None;
+        }
+    }
+    if let Some(model) = crate::cards::engine_selector(launch.engine, model)? {
         launch.model = Some(model.to_owned());
     }
     if let Some(thinking) = thinking.map(str::trim).filter(|thinking| !thinking.is_empty()) {
@@ -483,6 +539,8 @@ struct DispatchRequest {
     model: Option<String>,
     #[serde(default)]
     thinking: Option<String>,
+    #[serde(default)]
+    engine: Option<String>,
     /// Execution model for a plan-into dispatch.
     #[serde(default)]
     executor: Option<String>,
@@ -505,16 +563,21 @@ async fn dispatch(
     if !plan_into && request.executor.is_some() {
         return error_response(axum::http::StatusCode::BAD_REQUEST, "executor needs mode plan-into");
     }
+    let mut launch = state.launch.clone();
+    if let Err(error) = apply_launch_choices(
+        &mut launch,
+        request.engine.as_deref(),
+        request.model.as_deref(),
+        request.thinking.as_deref(),
+    ) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
     if plan_into {
-        if let Err(error) = crate::cards::model_selector(request.executor.as_deref()) {
+        if let Err(error) = crate::cards::engine_selector(launch.engine, request.executor.as_deref()) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
-    let mut launch = state.launch.clone();
-    if let Err(error) = apply_launch_choices(&mut launch, request.model.as_deref(), request.thinking.as_deref()) {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-    }
     let executor = request.executor;
     card_action(state, id, move |db, card| {
         crate::cards::dispatch(db, &card, mode, note.as_deref(), &launch, executor.as_deref())
@@ -528,13 +591,15 @@ async fn close(
     request: Option<axum::Json<CardNoteRequest>>,
 ) -> axum::response::Response {
     let note = request.and_then(|request| request.0.note).filter(|note| !note.trim().is_empty());
-    card_action(state, id, move |db, card| crate::cards::close(db, &card, note.as_deref())).await
+    let launch = state.launch.clone();
+    card_action(state, id, move |db, card| crate::cards::close(db, &card, note.as_deref(), &launch)).await
 }
 async fn request_report(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> axum::response::Response {
-    card_action(state, id, |db, card| crate::cards::request_report(db, &card)).await
+    let launch = state.launch.clone();
+    card_action(state, id, move |db, card| crate::cards::request_report(db, &card, &launch)).await
 }
 
 async fn restore(
@@ -596,6 +661,8 @@ struct SessionRequest {
     cwd: Option<String>,
     #[serde(default)]
     session: Option<String>,
+    #[serde(default)]
+    engine: Option<String>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -793,17 +860,51 @@ fn load_models() -> (Vec<Model>, bool) {
     (roles.into_iter().chain(catalog).collect(), true)
 }
 
-async fn models(State(state): State<Arc<AppState>>) -> axum::response::Response {
+async fn models(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ModelsQuery>,
+) -> axum::response::Response {
+    let engine = match query.engine.as_deref().map(str::trim).filter(|engine| !engine.is_empty()) {
+        Some(name) => match crate::cards::Engine::parse(name) {
+            Some(engine) => engine,
+            None => return error_response(axum::http::StatusCode::BAD_REQUEST, &format!("unknown engine {name}")),
+        },
+        None => state.launch.engine,
+    };
+    let daemon = state.launch.engine == engine;
+    if engine == crate::cards::Engine::Dsh {
+        let models: Vec<Model> = crate::dsh::MODELS
+            .iter()
+            .map(|(selector, name)| Model { selector: (*selector).to_owned(), name: (*name).to_owned() })
+            .collect();
+        let default = match (daemon, state.launch.model.as_deref()) {
+            (true, Some(model)) => model,
+            _ => crate::dsh::DEFAULT_MODEL,
+        };
+        let default_thinking = if daemon { state.launch.thinking.clone() } else { None };
+        return axum::Json(serde_json::json!({
+            "engine": engine.name(),
+            "models": models,
+            "execution_models": models,
+            "default": default,
+            "thinking": crate::dsh::THINKING,
+            "default_thinking": default_thinking,
+        }))
+        .into_response();
+    }
     // Never waits for the load. Before the first snapshot, both lists are empty.
     let catalog = MODELS.try_read().map(|slot| slot.clone()).unwrap_or_default();
-    axum::Json(serde_json::json!({
+    let mut body = serde_json::json!({
+        "engine": engine.name(),
         "models": catalog.models,
         "execution_models": catalog.execution_models,
-        "default": state.launch.model,
         "thinking": crate::cards::THINKING_LEVELS,
-        "default_thinking": state.launch.thinking,
-    }))
-    .into_response()
+    });
+    if daemon {
+        body["default"] = serde_json::json!(state.launch.model);
+        body["default_thinking"] = serde_json::json!(state.launch.thinking);
+    }
+    axum::Json(body).into_response()
 }
 
 async fn tmux_sessions(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -849,31 +950,22 @@ async fn start_session(
         .filter(|cwd| !cwd.trim().is_empty())
         .or_else(|| std::env::var("HOME").ok())
         .unwrap_or_else(|| "/".to_owned());
-    let session = request
-        .session
-        .filter(|session| !session.trim().is_empty())
-        .or_else(|| state.launch.session.clone())
-        .unwrap_or_else(|| crate::cards::DEFAULT_SESSION.to_owned());
-    let model = request
-        .model
-        .filter(|model| !model.trim().is_empty())
-        .or_else(|| state.launch.model.clone());
-    let thinking = request
-        .thinking
-        .filter(|thinking| !thinking.trim().is_empty())
-        .or_else(|| state.launch.thinking.clone());
+    let mut launch = state.launch.clone();
+    if let Some(session) = request.session.filter(|session| !session.trim().is_empty()) {
+        launch.session = Some(session);
+    }
+    if let Err(error) = apply_launch_choices(
+        &mut launch,
+        request.engine.as_deref(),
+        request.model.as_deref(),
+        request.thinking.as_deref(),
+    ) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
     let action_state = Arc::clone(&state);
     match tokio::task::spawn_blocking(move || {
         let start = crate::cards::Start::parse(request.mode.as_deref(), request.executor.as_deref())?;
-        crate::cards::start_session(
-            &action_state.db,
-            &request.prompt,
-            &cwd,
-            Some(&session),
-            model.as_deref(),
-            thinking.as_deref(),
-            start,
-        )
+        crate::cards::start_session(&action_state.db, &request.prompt, &cwd, &launch, start)
     })
     .await
     {
@@ -1155,7 +1247,7 @@ fn pane_error_response(
     error: &str,
     fallback: axum::http::StatusCode,
 ) -> axum::response::Response {
-    let status = if error == "pane not found" {
+    let status = if error == "pane not found" || error == "session not found" {
         axum::http::StatusCode::NOT_FOUND
     } else {
         fallback
@@ -1189,6 +1281,76 @@ async fn send(
     axum::Json(request): axum::Json<SendRequest>,
 ) -> axum::response::Response {
     match tokio::task::spawn_blocking(move || crate::cards::send(&pane, &request.text)).await {
+        Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(Err(error)) => pane_error_response(&error, axum::http::StatusCode::CONFLICT),
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn dsh_open(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let host = state.launch.dsh_host.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::dsh::connect(host.as_deref(), crate::dsh::ACTION_TIMEOUT)?.open()
+    })
+    .await
+    {
+        Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(Err(error)) => pane_error_response(&error, axum::http::StatusCode::CONFLICT),
+        Err(error) => internal_error(error),
+    }
+}
+
+/// Peek view of a dsh session that shows its state and then its recent events as text.
+async fn dsh_peek(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let host = state.launch.dsh_host.clone();
+    match tokio::task::spawn_blocking(move || -> Result<(crate::dsh::State, Vec<crate::dsh::Event>), String> {
+        let client = crate::dsh::connect(host.as_deref(), crate::dsh::ACTION_TIMEOUT)?;
+        let session = client.state(&id)?;
+        Ok((session, client.events(&id, 80)?))
+    })
+    .await
+    {
+        Ok(Ok((session, events))) => {
+            let text = crate::omp::redact(&crate::dsh::peek_text(&events));
+            let label = if !session.pending_input.is_empty() {
+                "asking"
+            } else if session.running {
+                "working"
+            } else {
+                "waiting"
+            };
+            let width = text.lines().map(|line| line.chars().count()).max().unwrap_or(0).clamp(1, 200);
+            let height = text.lines().count().max(1);
+            axum::Json(serde_json::json!({"text": text, "state": label, "width": width, "height": height}))
+                .into_response()
+        }
+        Ok(Err(error)) => pane_error_response(&error, axum::http::StatusCode::CONFLICT),
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn dsh_send(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<SendRequest>,
+) -> axum::response::Response {
+    let host = state.launch.dsh_host.clone();
+    match tokio::task::spawn_blocking(move || {
+        if crate::cards::blocked_command_prefix(&request.text) {
+            return Err("text starts with a blocked command prefix".to_owned());
+        }
+        let client = crate::dsh::connect(host.as_deref(), crate::dsh::ACTION_TIMEOUT)?;
+        let session = client.state(&id)?;
+        if session.running || !session.pending_input.is_empty() {
+            return Err("session is not waiting".to_owned());
+        }
+        client.prompt(&id, &request.text)
+    })
+    .await
+    {
         Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
         Ok(Err(error)) => pane_error_response(&error, axum::http::StatusCode::CONFLICT),
         Err(error) => internal_error(error),
@@ -1379,6 +1541,7 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
         level,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     })
 }
 
@@ -1403,7 +1566,8 @@ pub async fn serve(
             let result = tokio::task::spawn_blocking(move || {
                 let before = state.db.queue(last_poll_ms)?;
                 let mut tracker = state.tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let written = tracker.tick(&state.db).written;
+                let written = tracker.tick(&state.db).written
+                    + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written;
                 let after = state.db.queue(now_ms)?;
                 let previous: std::collections::HashSet<_> = before.iter().map(|card| card.id.as_str()).collect();
                 let added = after.into_iter().filter(|card| !previous.contains(card.id.as_str())).collect::<Vec<_>>();

@@ -4,6 +4,7 @@
 mod cards;
 mod client;
 mod db;
+mod dsh;
 mod events;
 mod omp;
 mod push;
@@ -30,10 +31,13 @@ enum Commands {
         /// tmux session new windows open in [default: triage]
         #[arg(long)]
         session: Option<String>,
-        /// omp model selector for launched sessions [default: omp's own]
+        /// Harness for launched sessions
+        #[arg(long, value_enum, default_value_t = cards::Engine::Omp)]
+        engine: cards::Engine,
+        /// model for launched sessions, an omp selector or a dsh model (deepseek-flash or deepseek-v4-pro) [default: the harness's own]
         #[arg(long)]
         model: Option<String>,
-        /// omp thinking level for launched sessions [default: omp's own]
+        /// thinking level for launched sessions [default: the harness's own]
         #[arg(long)]
         thinking: Option<String>,
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
@@ -84,9 +88,9 @@ fn main() {
 #[tokio::main]
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Commands::Serve { listen, db, session, model, thinking, allow_hosts, no_notify } => {
+        Commands::Serve { listen, db, session, engine, model, thinking, allow_hosts, no_notify } => {
             // Validate before opening the DB so a bad flag exits 1 before anything is created.
-            cards::launch_flags(model.as_deref(), thinking.as_deref())?;
+            cards::engine_flags(engine, model.as_deref(), thinking.as_deref())?;
             let path = match db {
                 Some(path) => path,
                 None => default_db_path()?,
@@ -102,7 +106,7 @@ async fn run() -> Result<(), String> {
                 db,
                 bus,
                 tracker: std::sync::Mutex::new(tracker),
-                launch: cards::Launch { session, model, thinking },
+                launch: cards::Launch { session, model, thinking, engine, dsh_host: dsh::host_file() },
                 push,
                 allowed_hosts: allow_hosts,
             });

@@ -24,6 +24,7 @@ STUB_DIR=$RUN_DIR/tmux-stub
 mkdir -p "$STUB_DIR"
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$STUB_DIR/tmux"
 chmod 755 "$STUB_DIR/tmux"
+export DSH_HOST_FILE="$RUN_DIR/no-dsh-host.json"
 PATH="$STUB_DIR:$PATH" "$TRIAGE_BIN" serve --db "$DB" --listen "127.0.0.1:$PORT" --no-notify >/dev/null 2>&1 &
 server_pid=$!
 server_owns_port() {

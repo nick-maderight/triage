@@ -2,6 +2,7 @@
 //! Binds pane snapshots to the store and executes the user's answers.
 
 use crate::db::Db;
+use crate::dsh;
 use crate::events::{self, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star, Swipe};
 use crate::omp::{self, PaneState};
 use crate::tmux;
@@ -11,6 +12,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod dsh_track;
 
 /// Remembers each pane's last state so only transitions produce cards.
 #[derive(Default)]
@@ -36,6 +39,11 @@ pub struct Tracker {
     /// Panes whose gone-pane close ran but whose session audit has not yet succeeded.
     /// A retried audit must not sweep the information cards its first run raised.
     audit_pending: HashSet<String>,
+    /// Launch commands already relaunched once after a no-model start. A repeat start of the same
+    /// command raises a card instead (see `recover_no_model_launch`).
+    relaunched: HashSet<String>,
+    /// The host pid, retry time and per-session change marks of the dsh bridge poll.
+    dsh: dsh_track::Memo,
     #[cfg(test)]
     pending_ask_reads: usize,
     #[cfg(test)]
@@ -92,6 +100,8 @@ impl Tracker {
             paused_info: HashMap::new(),
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
+            relaunched: HashSet::new(),
+            dsh: dsh_track::Memo::default(),
             #[cfg(test)]
             pending_ask_reads: 0,
             #[cfg(test)]
@@ -359,6 +369,13 @@ impl Tracker {
                     live_transcripts.insert(path);
                 }
             }
+            if pane.command == "omp"
+                && state == PaneState::Waiting
+                && recover_no_model_launch(db, pane, &mut self.relaunched, &mut written)
+            {
+                self.states.remove(&pane.id);
+                continue;
+            }
             if proposal_changed {
                 self.pending_proposals.insert(pane.id.clone(), 0);
             }
@@ -523,6 +540,14 @@ fn pane_lock(db: &Db, pane: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     db.answer_lock(&format!("pane:{pane}"))
 }
 
+/// The lock a card action takes first, keyed by the card's dsh session or else its pane.
+fn target_lock(db: &Db, card: &Card) -> Option<std::sync::Arc<std::sync::Mutex<()>>> {
+    match dsh::session_id(card) {
+        Some(sid) => Some(db.answer_lock(&format!("dsh:{sid}"))),
+        None => card.source.pane.as_deref().map(|pane| pane_lock(db, pane)),
+    }
+}
+
 /// Execute an answer for a queued card.
 /// - ask: re-capture the pane, require `omp::classify(title) == Asking` and a parsed
 ///   dialog cursor; move with Down/Up to `option` (or to the last row for `text`,
@@ -530,14 +555,14 @@ fn pane_lock(db: &Db, pane: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
 ///   Record the swipe with reason `typed`. Any mismatch returns Err and writes nothing.
 /// - info: swipe done.
 /// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval or Esc followed by literal text for refinement and stores the choice in the swipe.
-/// `launch` names the tmux session, model and thinking level a launched session uses.
+/// `launch` names the harness, tmux session, model and thinking level a launched session uses.
 pub fn answer(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
-    let pane_mutex = card.source.pane.as_deref().map(|pane| pane_lock(db, pane));
-    let _pane_guard = pane_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
+    let target_mutex = target_lock(db, card);
+    let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
     match card.kind {
-        Kind::Ask => answer_ask(db, card, req),
+        Kind::Ask => answer_ask(db, card, req, launch),
         Kind::Finding => answer_finding(db, card, req, launch),
-        Kind::Plan => answer_plan(db, card, req),
+        Kind::Plan => answer_plan(db, card, req, launch),
         Kind::Info => {
             let answer_lock = db.answer_lock(&card.id);
             let _answer_guard = answer_lock.lock().unwrap();
@@ -639,8 +664,8 @@ pub fn dispatch(
     launch: &Launch,
     executor: Option<&str>,
 ) -> Result<(), String> {
-    let pane_mutex = card.source.pane.as_deref().map(|pane| pane_lock(db, pane));
-    let _pane_guard = pane_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
+    let target_mutex = target_lock(db, card);
+    let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
     let answer_lock = db.answer_lock(&card.id);
     let _answer_guard = answer_lock.lock().unwrap();
     let swipe = db
@@ -696,9 +721,10 @@ pub fn dispatch(
 /// closes the window when the pane was its only one. The pane goes first, so a failed kill
 /// leaves the card queued. Reason `closed %N`. A card with no pane, or whose pane tmux no
 /// longer finds, is acknowledged exactly like a plain ack, because there is nothing to close.
-pub fn close(db: &Db, card: &Card, note: Option<&str>) -> Result<(), String> {
-    let pane_mutex = card.source.pane.as_deref().map(|pane| pane_lock(db, pane));
-    let _pane_guard = pane_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
+/// A dsh card cancels its session instead and resolves that session's other cards with it.
+pub fn close(db: &Db, card: &Card, note: Option<&str>, launch: &Launch) -> Result<(), String> {
+    let target_mutex = target_lock(db, card);
+    let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
     let answer_lock = db.answer_lock(&card.id);
     let _answer_guard = answer_lock.lock().unwrap();
     let swipe = db
@@ -707,6 +733,9 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>) -> Result<(), String> {
         .and_then(|(_, swipe)| swipe);
     if !queued_for_answer(swipe.as_ref()) {
         return Err("card is not queued".to_owned());
+    }
+    if let Some(sid) = dsh::session_id(card) {
+        return dsh_track::close(db, card, sid, note, launch);
     }
     let reason = match card.source.pane.as_deref() {
         None => None,
@@ -733,10 +762,13 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>) -> Result<(), String> {
 const REQUEST_REPORT_TEXT: &str = "Send the final report your brief requires now: first line `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`, then the four report lines your brief describes.";
 
 /// Type the request for the final report into the card's waiting pane and resolve the card.
-pub fn request_report(db: &Db, card: &Card) -> Result<(), String> {
-    let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
-    let pane_mutex = pane_lock(db, pane);
-    let _pane_guard = pane_mutex.lock().unwrap();
+/// A dsh card asks its session instead. Only an idle session takes the request.
+pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
+    if dsh::session_id(card).is_none() && card.source.pane.is_none() {
+        return Err("card has no pane".to_owned());
+    }
+    let target_mutex = target_lock(db, card);
+    let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
     let answer_lock = db.answer_lock(&card.id);
     let _answer_guard = answer_lock.lock().unwrap();
     let swipe = db.card(&card.id).map_err(|error| error.to_string())?.and_then(|(_, swipe)| swipe);
@@ -746,6 +778,10 @@ pub fn request_report(db: &Db, card: &Card) -> Result<(), String> {
     if !queued_for_answer(swipe.as_ref()) {
         return Err("card is not queued".to_owned());
     }
+    if let Some(sid) = dsh::session_id(card) {
+        return dsh_track::request_report(db, card, sid, launch);
+    }
+    let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
     let panes = tmux::list_panes().map_err(|error| error.to_string())?;
     if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
         return Err("pane is not waiting".to_owned());
@@ -800,35 +836,33 @@ fn session_id(path: &str) -> Option<String> {
     uuid::Uuid::parse_str(id).ok().map(|_| id.to_owned())
 }
 
-/// Launch an omp session from free text. Returns the new pane id. The session's asks and final
-/// report reach the inbox through the tracker like any other pane. A plan launch starts in
-/// read-only plan mode and a plan-into launch runs `--plan-yolo`, where omp approves the plan
-/// itself and hands it to the execution model; every other session starts in omp goal mode with
-/// the brief as its objective.
-pub fn start_session(
-    db: &Db,
-    prompt: &str,
-    cwd: &str,
-    session: Option<&str>,
-    model: Option<&str>,
-    thinking: Option<&str>,
-    start: Start,
-) -> Result<String, String> {
+/// Launch a session from free text. Returns the new omp pane id, or `dsh:<sid>` for a dsh session.
+/// The session's asks and final report reach the inbox through the tracker like any other pane.
+/// A plan launch starts in read-only plan mode and a plan-into launch hands its plan to the
+/// execution model without review. Every other session starts in goal mode with the brief as its
+/// objective.
+pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: Start) -> Result<String, String> {
     if prompt.trim().is_empty() {
         return Err("prompt is empty".to_owned());
     }
+    if launch.engine == Engine::Dsh {
+        engine_flags(Engine::Dsh, launch.model.as_deref(), launch.thinking.as_deref())?;
+        if let Start::PlanInto(executor) = start {
+            dsh_selector(executor)?;
+        }
+        let path = write_brief(db, session_brief(prompt, start != Start::Goal))?;
+        let title = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
+        return dsh_track::launch_new(launch, cwd, &path, &truncate_chars(title.to_owned(), 60), start);
+    }
     // Validate before writing the brief so a bad choice leaves nothing behind.
-    launch_flags(model, thinking)?;
+    launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
     if let Start::PlanInto(executor) = start {
         model_selector(executor)?;
     }
     let path = write_brief(db, session_brief(prompt, start != Start::Goal))?;
-    let session = match session {
-        Some(session) => session.to_owned(),
-        None => DEFAULT_SESSION.to_owned(),
-    };
-    let command = omp_command(&path, model, thinking, start)?;
-    tmux::new_window(&session, cwd, &command).map_err(|error| error.to_string())
+    let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
+    let command = omp_command(&path, launch.model.as_deref(), launch.thinking.as_deref(), start)?;
+    tmux::new_window(session, cwd, &command).map_err(|error| error.to_string())
 }
 
 /// Give the brief to the card's own pane while that pane is an omp pane waiting for input,
@@ -845,6 +879,9 @@ fn launch_brief(
     brief: &Path,
     start: Start,
 ) -> Result<String, String> {
+    if launch.engine == Engine::Dsh {
+        return dsh_track::launch_brief(card, launch, brief, start);
+    }
     // Only launch flags turn plan-yolo on, so a Plan into dispatch never reuses a running pane.
     let source = card.source.pane.as_deref().filter(|_| !matches!(start, Start::PlanInto(_)));
     if let Some(pane) = source {
@@ -927,10 +964,7 @@ pub fn peek(pane: &str) -> Result<Peek, String> {
 /// Type `text` into a waiting omp pane. Refuses when not Waiting, when the editor
 /// holds text, or when text starts with `/` (other than `/skill:`), `!` or `$`.
 pub fn send(pane: &str, text: &str) -> Result<(), String> {
-    if text.starts_with('/') && !text.starts_with("/skill:")
-        || text.starts_with('!')
-        || text.starts_with('$')
-    {
+    if blocked_command_prefix(text) {
         return Err("text starts with a blocked command prefix".to_owned());
     }
     let panes = tmux::list_panes().map_err(|error| error.to_string())?;
@@ -946,6 +980,11 @@ pub fn send(pane: &str, text: &str) -> Result<(), String> {
         return Err("editor is not empty".to_owned());
     }
     tmux::send_text(pane, text).map_err(|error| error.to_string())
+}
+
+/// Whether the harness would run `text` as a command. Commands start with `/` (except `/skill:`), `!` or `$`.
+pub(crate) fn blocked_command_prefix(text: &str) -> bool {
+    (text.starts_with('/') && !text.starts_with("/skill:")) || text.starts_with('!') || text.starts_with('$')
 }
 
 fn add_ask_card(
@@ -1001,6 +1040,7 @@ fn add_ask_card(
         level: None,
         tool_call_id: Some(call.tool_call_id.clone()),
         report_due: false,
+        engine: None,
     };
     match db.insert_card(&card) {
         Ok(inserted) => {
@@ -1127,6 +1167,77 @@ fn add_info_card(
     succeeded
 }
 
+/// A triage-launched omp that came up without a model (see `omp::no_model`) wrote no session, so
+/// it has nothing to lose. Relaunch its argv once in the same session and cwd, then kill the dead
+/// pane. A second no-model start of the same command raises an error card and leaves its pane
+/// alone. Returns true when it acted.
+fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<String>, written: &mut usize) -> bool {
+    if omp::transcript_path(pane).is_some_and(|path| path.exists()) {
+        return false;
+    }
+    let Ok(screen) = tmux::screen(&pane.id) else {
+        return false;
+    };
+    if !omp::no_model(&screen) {
+        return false;
+    }
+    let Some(argv) = pane.foreground_argv() else {
+        return false;
+    };
+    // A bare `omp` is the operator's own launch, not one triage made.
+    if argv.first().map(String::as_str) != Some("omp") || argv.len() < 2 {
+        return false;
+    }
+    let command = argv.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
+    if relaunched.insert(command.clone()) {
+        return match tmux::new_window(&pane.session, &pane.cwd, &command) {
+            Ok(new_pane) => {
+                eprintln!("triage: {} started without a model; relaunched as {new_pane}", pane.id);
+                let _ = tmux::kill_pane(&pane.id);
+                true
+            }
+            Err(error) => {
+                eprintln!("triage: relaunch of {} failed: {error}", pane.id);
+                relaunched.remove(&command);
+                false
+            }
+        };
+    }
+    let card = Card {
+        id: format!("nomodel:{}:{}", pane.id, pane.pty_born_ms().unwrap_or_default()),
+        kind: Kind::Info,
+        priority: 2,
+        created_ms: events::now_ms(),
+        source: pane_source(pane),
+        title: "Launch failed twice: No model selected".to_owned(),
+        star: Star::default(),
+        options: vec![CardOption {
+            label: "Acknowledge".to_owned(),
+            description: None,
+            direction: None,
+            recommended: false,
+        }],
+        answerable: true,
+        allow_other: false,
+        questions: Vec::new(),
+        body: Some(format!(
+            "omp came up without a model twice, so it could not load its model configuration. The cause seen so far is host load locking ~/.omp/agent/agent.db. Start the command by hand when the load drops:\n\n{command}"
+        )),
+        refs: Vec::new(),
+        level: Some("error".to_owned()),
+        tool_call_id: None,
+        report_due: false,
+        engine: None,
+    };
+    match db.insert_card(&card) {
+        Ok(inserted) => {
+            *written += usize::from(inserted);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Queue the card a live pane gets when its run ends as `end`: a reply card, a
 /// `Stopped with error` card, or nothing for an interrupt or a run still going.
 /// `live` is false for the exit audit, which may run under the pane lock and has no omp
@@ -1141,19 +1252,7 @@ fn queue_turn_card(
     written: &mut usize,
 ) -> bool {
     let (trail, investigation) = pane_trail(db, pane);
-    let headline_of = |source: &str| {
-        truncate_chars(
-            source
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default()
-                .trim()
-                .to_owned(),
-            80,
-        )
-    };
-    let mut report_due = false;
-    let (entry_id, title, body, level, action) = match end {
+    let (entry_id, turn) = match end {
         omp::TurnEnd::Aborted | omp::TurnEnd::Running => return true,
         omp::TurnEnd::Error { entry_id, message } => {
             let message = omp::redact_credentials(&message);
@@ -1164,95 +1263,20 @@ fn queue_turn_card(
                 format!("Stopped with error: {headline}")
             };
             let body = (!message.trim().is_empty()).then_some(message);
-            (entry_id, title, body, "error", String::new())
+            (entry_id, Turn { title, body, level: "error", action: String::new(), report_due: false })
         }
         omp::TurnEnd::Reply { entry_id, text, report } => {
-            let text = omp::redact_credentials(&text);
-            let report = report.map(|report| omp::redact_credentials(&report));
-            // A status-line report written before a background wait still names the
-            // run's outcome; the closing reply follows it in the body.
-            let carried = report.filter(|_| omp::final_report(&text).is_none());
-            let source = carried.as_deref().unwrap_or(&text);
-            let reported = omp::final_report(source);
-            let missing_report = reported
-                .as_ref()
-                .is_some_and(|(_, report)| report.is_empty());
-            // A reply without a status line still ends a turn that waits for the user,
-            // so it earns the same card titled with its first non-empty line.
-            let headline = match reported {
-                None => headline_of(source),
-                Some((_, report)) if report.is_empty() => "Missing final report".to_owned(),
-                Some((_, report)) => headline_of(report),
-            };
-            let title = match reported {
-                None => headline,
-                Some((_, _)) if missing_report => headline,
-                Some((omp::FinalStatus::Complete, _)) => format!("Done: {headline}"),
-                Some((omp::FinalStatus::AgentDone, _)) => format!("Agent done: {headline}"),
-                Some((omp::FinalStatus::Incomplete, _)) => format!("Incomplete: {headline}"),
-            };
-            let body = match reported {
-                None => source.to_owned(),
-                Some((_, _)) if missing_report => {
-                    "Status received without a final report.".to_owned()
-                }
-                Some((_, report)) => report.to_owned(),
-            };
-            let (mut body, mut action) = match omp::recommended_action(&body) {
-                Some((rest, step)) => (rest, step),
-                None => (body, String::new()),
-            };
-            if carried.is_some() {
-                match omp::recommended_action(&text) {
-                    Some((closing, closing_action)) => {
-                        body.push_str("\n\n---\n\n");
-                        body.push_str(&closing);
-                        if !closing_action.is_empty() {
-                            if !action.is_empty() {
-                                action.push_str("\n\n");
-                            }
-                            action.push_str(&closing_action);
-                        }
-                    }
-                    None => {
-                        body.push_str("\n\n---\n\n");
-                        body.push_str(&text);
-                    }
-                }
-            }
-            let level = match reported {
-                None => "info",
-                Some((omp::FinalStatus::Complete, _)) if !missing_report => "info",
-                Some(_) => "warn",
-            };
-            report_due = reported.is_none() && !trail.situation.is_empty();
-            (entry_id, title, Some(body), level, action)
+            (entry_id, reply_turn(text, report, !trail.situation.is_empty()))
         }
     };
-    let card = Card {
-        id: format!("done:{}:{entry_id}", pane.id),
-        kind: Kind::Info,
-        priority: 3,
-        created_ms: events::now_ms(),
-        source: pane_source(pane),
-        title,
-        star: Star { action, ..trail },
-        options: vec![CardOption {
-            label: "Acknowledge".to_owned(),
-            description: None,
-            direction: None,
-            recommended: false,
-        }],
-        answerable: true,
-        allow_other: false,
-        questions: Vec::new(),
-        body,
-        refs: vec![path.display().to_string()],
-        level: Some(level.to_owned()),
-        tool_call_id: None,
-        report_due,
-    };
-    let succeeded = supersede_info_cards(db, &card.id, &card.refs[0], pane, written);
+    let card = turn_card(
+        format!("done:{}:{entry_id}", pane.id),
+        pane_source(pane),
+        vec![path.display().to_string()],
+        trail,
+        turn,
+    );
+    let succeeded = supersede_info_cards(db, &card.id, &card.refs[0], Some(pane), written);
     match reply_has_card(db, panes, "done", &entry_id, &card.id, written) {
         None => return false,
         Some(true) => return succeeded,
@@ -1270,6 +1294,112 @@ fn queue_turn_card(
         Err(_) => return false,
     }
     succeeded
+}
+
+/// The first non-blank line of `source`, cut to 80 characters.
+fn headline_of(source: &str) -> String {
+    truncate_chars(
+        source.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim().to_owned(),
+        80,
+    )
+}
+
+/// What a finished turn puts on its info card, before the launch trail joins it.
+struct Turn {
+    title: String,
+    body: Option<String>,
+    level: &'static str,
+    action: String,
+    report_due: bool,
+}
+
+/// The info card for a finished turn. Its launch trail becomes the star. Its one option is
+/// Acknowledge.
+fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: Turn) -> Card {
+    Card {
+        id,
+        kind: Kind::Info,
+        priority: 3,
+        created_ms: events::now_ms(),
+        source,
+        title: turn.title,
+        star: Star { action: turn.action, ..trail },
+        options: vec![CardOption {
+            label: "Acknowledge".to_owned(),
+            description: None,
+            direction: None,
+            recommended: false,
+        }],
+        answerable: true,
+        allow_other: false,
+        questions: Vec::new(),
+        body: turn.body,
+        refs,
+        level: Some(turn.level.to_owned()),
+        tool_call_id: None,
+        report_due: turn.report_due,
+        engine: None,
+    }
+}
+
+/// The card parts for a reply. `report` is the latest status-line report earlier in the run,
+/// which a closing reply follows.
+fn reply_turn(text: String, report: Option<String>, has_trail: bool) -> Turn {
+    let text = omp::redact_credentials(&text);
+    let report = report.map(|report| omp::redact_credentials(&report));
+    // A status-line report written before a background wait still names the
+    // run's outcome; the closing reply follows it in the body.
+    let carried = report.filter(|_| omp::final_report(&text).is_none());
+    let source = carried.as_deref().unwrap_or(&text);
+    let reported = omp::final_report(source);
+    let missing_report = reported.as_ref().is_some_and(|(_, report)| report.is_empty());
+    // A reply without a status line still ends a turn that waits for the user,
+    // so it earns the same card titled with its first non-empty line.
+    let headline = match reported {
+        None => headline_of(source),
+        Some((_, report)) if report.is_empty() => "Missing final report".to_owned(),
+        Some((_, report)) => headline_of(report),
+    };
+    let title = match reported {
+        None => headline,
+        Some((_, _)) if missing_report => headline,
+        Some((omp::FinalStatus::Complete, _)) => format!("Done: {headline}"),
+        Some((omp::FinalStatus::AgentDone, _)) => format!("Agent done: {headline}"),
+        Some((omp::FinalStatus::Incomplete, _)) => format!("Incomplete: {headline}"),
+    };
+    let body = match reported {
+        None => source.to_owned(),
+        Some((_, _)) if missing_report => "Status received without a final report.".to_owned(),
+        Some((_, report)) => report.to_owned(),
+    };
+    let (mut body, mut action) = match omp::recommended_action(&body) {
+        Some((rest, step)) => (rest, step),
+        None => (body, String::new()),
+    };
+    if carried.is_some() {
+        match omp::recommended_action(&text) {
+            Some((closing, closing_action)) => {
+                body.push_str("\n\n---\n\n");
+                body.push_str(&closing);
+                if !closing_action.is_empty() {
+                    if !action.is_empty() {
+                        action.push_str("\n\n");
+                    }
+                    action.push_str(&closing_action);
+                }
+            }
+            None => {
+                body.push_str("\n\n---\n\n");
+                body.push_str(&text);
+            }
+        }
+    }
+    let level = match reported {
+        None => "info",
+        Some((omp::FinalStatus::Complete, _)) if !missing_report => "info",
+        Some(_) => "warn",
+    };
+    Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail }
 }
 
 /// Hand an investigation's recommended step back to its pane as a plan. The pane must still
@@ -1310,10 +1440,12 @@ fn plan_recommended_step(db: &Db, card: &Card, pane: &str, transcript: &Path) ->
 /// one topic. Only launches since the pane's pty appeared count, because tmux reuses pane ids
 /// after a server restart.
 fn pane_trail(db: &Db, pane: &tmux::Pane) -> (Star, bool) {
-    let Some((origin, swipe)) = pane
-        .pty_born_ms()
-        .and_then(|born| db.pane_launch_since(&pane.id, born).ok().flatten())
-    else {
+    pane.pty_born_ms().map_or((Star::default(), false), |born| trail(db, &pane.id, born))
+}
+
+/// The launch trail of `key`, a pane id or `dsh:<sid>`, from launches at or after `since` ms.
+fn trail(db: &Db, key: &str, since: i64) -> (Star, bool) {
+    let Some((origin, swipe)) = db.pane_launch_since(key, since).ok().flatten() else {
         return (Star::default(), false);
     };
     let choice = swipe.text.or_else(|| {
@@ -1364,26 +1496,27 @@ fn reply_key(id: &str) -> Option<(&str, &str)> {
 /// each tmux server and cards outlive their pane, so the transcript, not the pane id,
 /// names the session a card came from. A card of the same reply under another pane id
 /// is left to `reply_has_card`. A card an earlier pane with this id raised before the
-/// pane's pty appeared closes as `pane exited`. False means a failed read or write.
+/// pane's pty appeared closes as `pane exited`. With no `pane` (a dsh session), only transcript
+/// matches count. False means a failed read or write.
 fn supersede_info_cards(
     db: &Db,
     keep: &str,
     transcript: &str,
-    pane: &tmux::Pane,
+    pane: Option<&tmux::Pane>,
     written: &mut usize,
 ) -> bool {
     let Ok(open) = db.queue(events::now_ms()) else {
         return false;
     };
     let mut succeeded = true;
-    let born = pane.pty_born_ms();
+    let born = pane.and_then(tmux::Pane::pty_born_ms);
     for older in open.iter().filter(|older| {
         older.kind == Kind::Info
             && older.id != keep
             && reply_key(&older.id).is_none_or(|key| Some(key) != reply_key(keep))
             && match older.refs.first() {
                 Some(first) => first == transcript,
-                None => older.source.pane.as_deref() == Some(pane.id.as_str()),
+                None => pane.is_some_and(|pane| older.source.pane.as_deref() == Some(pane.id.as_str())),
             }
     }) {
         let answer_lock = db.answer_lock(&older.id);
@@ -1395,9 +1528,8 @@ fn supersede_info_cards(
         if !queued_for_answer(swipe.as_ref()) {
             continue;
         }
-        let reason = if older.source.pane.as_deref() == Some(pane.id.as_str())
-            && born.is_some_and(|born| older.created_ms < born)
-        {
+        let same_pane = pane.is_some_and(|pane| older.source.pane.as_deref() == Some(pane.id.as_str()));
+        let reason = if same_pane && born.is_some_and(|born| older.created_ms < born) {
             "pane exited"
         } else {
             "superseded"
@@ -1500,6 +1632,7 @@ fn queue_ended_card(
         level: Some("warn".to_owned()),
         tool_call_id: None,
         report_due: false,
+        engine: None,
     };
     if entry != "-" {
         match reply_has_card(db, panes, "exited", &entry, &card.id, written) {
@@ -1508,7 +1641,7 @@ fn queue_ended_card(
             Some(false) => {}
         }
     }
-    if !supersede_info_cards(db, &card.id, &card.refs[0], pane, written) {
+    if !supersede_info_cards(db, &card.id, &card.refs[0], Some(pane), written) {
         return false;
     }
     match db.insert_card(&card) {
@@ -1570,6 +1703,7 @@ fn add_plan_card(
         level: None,
         tool_call_id: None,
         report_due: false,
+        engine: None,
     };
     match db.insert_card(&card) {
         Ok(inserted) => *written += usize::from(inserted),
@@ -1819,7 +1953,7 @@ fn reply_has_card(
     Some(has_card)
 }
 
-fn answer_ask(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
+fn answer_ask(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
     let answer_lock = db.answer_lock(&card.id);
     let _answer_guard = answer_lock.lock().unwrap();
     let swipe = db
@@ -1831,6 +1965,9 @@ fn answer_ask(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
     }
     if !card.answerable {
         return Err("ask card is not answerable".to_owned());
+    }
+    if let Some(sid) = dsh::session_id(card) {
+        return dsh_track::answer_ask(db, card, sid, req, launch);
     }
     let pane = card
         .source
@@ -2063,7 +2200,7 @@ fn review_shows(rows: &[String], card: &Card, answers: &[events::Answer]) -> boo
             })
 }
 
-fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
+fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
     let answer_lock = db.answer_lock(&card.id);
     let _answer_guard = answer_lock.lock().unwrap();
     let swipe = db
@@ -2076,7 +2213,10 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
     if !card.answerable {
         return Err("plan card is not answerable".to_owned());
     }
-    let executor = model_selector(req.executor.as_deref())?;
+    let executor = match dsh::session_id(card) {
+        Some(_) => dsh_selector(req.executor.as_deref())?,
+        None => model_selector(req.executor.as_deref())?,
+    };
     let refinement = req
         .text
         .as_deref()
@@ -2092,6 +2232,9 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
         None => return Err("execution model requires Approve".to_owned()),
         Some(_) => return Err("unknown plan option".to_owned()),
     };
+    if dsh::session_id(card).is_some() {
+        return dsh_track::answer_plan(db, card, req, option, refinement, executor, launch);
+    }
     let pane = card
         .source
         .pane
@@ -2179,10 +2322,15 @@ fn answer_finding(
         .ok_or_else(|| "finding option is out of range".to_owned())?;
     let chosen = req.mode.as_deref().and_then(DispatchMode::parse);
     let mode = chosen.unwrap_or_else(|| option_mode(option));
-    let tagged_pane = tmux::finding_pane(&card.id, index, req.note.as_deref(), mode)
-        .map_err(|error| error.to_string())?;
+    // dsh sessions have no tmux pane to find or tag.
+    let is_dsh = launch.engine == Engine::Dsh;
+    let tagged_pane = if is_dsh {
+        None
+    } else {
+        tmux::finding_pane(&card.id, index, req.note.as_deref(), mode).map_err(|error| error.to_string())?
+    };
     let pending_pane = if tagged_pane.is_none() {
-        recover_pending_finding_pane(swipe.as_ref(), index, req.note.as_deref(), mode)?
+        recover_pending_finding_pane(launch, swipe.as_ref(), index, req.note.as_deref(), mode)?
     } else {
         None
     };
@@ -2199,12 +2347,14 @@ fn answer_finding(
         let path = write_brief(db, finding_brief(card, option, req.note.as_deref(), mode))?;
         let pane = launch_brief(card, launch, &path, start)?;
         let pending = record_pending_finding_pane(db, &card.id, index, req.note.as_deref(), &pane, mode);
-        tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
-            .map_err(|error| error.to_string())?;
+        if !is_dsh {
+            tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
+                .map_err(|error| error.to_string())?;
+        }
         pending?;
         (pane, false)
     };
-    if needs_tag {
+    if needs_tag && !is_dsh {
         tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
             .map_err(|error| error.to_string())?;
     }
@@ -2224,6 +2374,7 @@ fn answer_finding(
 }
 
 fn recover_pending_finding_pane(
+    launch: &Launch,
     swipe: Option<&Swipe>,
     option: usize,
     note: Option<&str>,
@@ -2239,8 +2390,17 @@ fn recover_pending_finding_pane(
     else {
         return Ok(None);
     };
-    let panes = tmux::list_panes().map_err(|error| error.to_string())?;
-    if !panes.iter().any(|candidate| candidate.id == pane) {
+    // With the bridge unreachable, the session is unconfirmed and the finding launches anew.
+    let listed = match pane.strip_prefix("dsh:") {
+        Some(sid) => dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)
+            .and_then(|client| client.sessions())
+            .is_ok_and(|(_, sessions)| sessions.iter().any(|session| session.session_id == sid)),
+        None => {
+            let panes = tmux::list_panes().map_err(|error| error.to_string())?;
+            panes.iter().any(|candidate| candidate.id == pane)
+        }
+    };
+    if !listed {
         return Ok(None);
     }
     if swipe.option != Some(option)
@@ -2403,7 +2563,7 @@ const REPORT_STEP: &str = " Before you report, finish every step your instructio
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 const PLAN_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The plan arrives in the triage inbox for approval. After approval, carry out the work end to end.";
-const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. omp approves the plan on its own and hands it to the execution model, which carries out the work end to end.";
+const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The harness approves the plan on its own and hands it to the execution model, which carries out the work end to end.";
 /// Plan approval hands the work to a model that may see only the plan. omp's default
 /// "Approve and execute" starts a fresh session, and Plan into switches to the execution
 /// model, so the plan has to carry the status contract.
@@ -2511,13 +2671,41 @@ pub const THINKING_LEVELS: &[&str] = &["auto", "off", "minimal", "low", "medium"
 /// tmux session new windows open in when neither the request nor `serve --session` names one.
 pub const DEFAULT_SESSION: &str = "triage";
 
-/// Where and how triage launches omp sessions, from `triage serve` flags. Unset fields fall
-/// back to `DEFAULT_SESSION` and to omp's own configured model and thinking level.
+/// The harness a launched session runs in, either omp in a tmux window or dsh through its web host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Engine {
+    #[default]
+    Omp,
+    Dsh,
+}
+
+impl Engine {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "omp" => Some(Self::Omp),
+            "dsh" => Some(Self::Dsh),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Omp => "omp",
+            Self::Dsh => "dsh",
+        }
+    }
+}
+
+/// Where and how triage launches sessions, from `triage serve` flags. Unset omp fields fall
+/// back to `DEFAULT_SESSION` and to omp's own configured model and thinking level. `dsh_host`
+/// is the host file the dsh bridge is read from.
 #[derive(Debug, Clone, Default)]
 pub struct Launch {
     pub session: Option<String>,
     pub model: Option<String>,
     pub thinking: Option<String>,
+    pub engine: Engine,
+    pub dsh_host: Option<PathBuf>,
 }
 
 /// Trim an omp model selector and refuse shell characters. A blank selector means unset.
@@ -2537,12 +2725,7 @@ pub fn model_selector(model: Option<&str>) -> Result<Option<&str>, String> {
 /// leaves the choice to omp's configuration.
 pub fn launch_flags(model: Option<&str>, thinking: Option<&str>) -> Result<String, String> {
     let model = model_selector(model)?;
-    let thinking = thinking.map(str::trim).filter(|t| !t.is_empty());
-    if let Some(thinking) = thinking {
-        if !THINKING_LEVELS.contains(&thinking) {
-            return Err(format!("unknown thinking level {thinking}"));
-        }
-    }
+    let thinking = thinking_level(thinking)?;
     Ok(format!(
         "{}{}",
         model.map(|model| format!("--model={model} --plan={model} ")).unwrap_or_default(),
@@ -2550,6 +2733,47 @@ pub fn launch_flags(model: Option<&str>, thinking: Option<&str>) -> Result<Strin
             .map(|thinking| format!("--thinking={thinking} "))
             .unwrap_or_default(),
     ))
+}
+
+/// Trim a thinking level and check it against `THINKING_LEVELS`. A blank level means unset.
+fn thinking_level(thinking: Option<&str>) -> Result<Option<&str>, String> {
+    let thinking = thinking.map(str::trim).filter(|t| !t.is_empty());
+    if let Some(thinking) = thinking {
+        if !THINKING_LEVELS.contains(&thinking) {
+            return Err(format!("unknown thinking level {thinking}"));
+        }
+    }
+    Ok(thinking)
+}
+
+/// Trim a dsh model selector. A blank selector means unset. Anything else must be in `dsh::MODELS`.
+pub fn dsh_selector(model: Option<&str>) -> Result<Option<&str>, String> {
+    let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
+        return Ok(None);
+    };
+    if dsh::MODELS.iter().any(|(selector, _)| *selector == model) {
+        return Ok(Some(model));
+    }
+    Err(format!("unknown dsh model {model}"))
+}
+
+/// Trim and check `model` for `engine`, as an omp selector or a dsh model.
+pub fn engine_selector(engine: Engine, model: Option<&str>) -> Result<Option<&str>, String> {
+    match engine {
+        Engine::Omp => model_selector(model),
+        Engine::Dsh => dsh_selector(model),
+    }
+}
+
+/// Check the launch model and thinking level for `engine` without rendering omp flags.
+pub fn engine_flags(engine: Engine, model: Option<&str>, thinking: Option<&str>) -> Result<(), String> {
+    match engine {
+        Engine::Omp => launch_flags(model, thinking).map(|_| ()),
+        Engine::Dsh => {
+            dsh_selector(model)?;
+            thinking_level(thinking).map(|_| ())
+        }
+    }
 }
 
 /// Build the omp launch line for a brief. Goal mode feeds the brief text itself as the

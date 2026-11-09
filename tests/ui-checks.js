@@ -200,7 +200,7 @@
         if (
           url.origin === location.origin &&
           method === 'GET' &&
-          /^\/v1\/panes\/[^/]+\/peek$/.test(url.pathname)
+          /^\/v1\/(panes|dsh)\/[^/]+\/peek$/.test(url.pathname)
         ) {
           peekRequests++;
           return Promise.resolve(
@@ -740,7 +740,11 @@
         assert(segmentRow(dispatch.querySelector('#dispatch-mode')), 'the four dispatch segments share one row');
         assert(text('#dispatch-model').includes('Alpha One'), 'the Model Default names the daemon model');
         assert(text('#dispatch-thinking').includes('max'), 'the Thinking Default names the daemon level');
-        assert(text('#dispatch-executor').includes('omp smol role'), 'the executor Default names the smol role');
+        const dshEngine = document.querySelector('#dispatch-engine').value === 'dsh';
+        assert(
+          text('#dispatch-executor').includes(dshEngine ? 'planner model' : 'omp smol role'),
+          'the executor Default names the default of the chosen engine',
+        );
         dispatch.querySelector('#dispatch-start').scrollIntoView({ block: 'center' });
         const dialogRect = dispatch.getBoundingClientRect(),
           startRect = dispatch.querySelector('#dispatch-start').getBoundingClientRect();
@@ -963,6 +967,20 @@
     return { scenario: 'notify', passed: true };
   };
 
+  const checkDshCard = async () => {
+    await waitFor(() => document.querySelector('#open-btn'), 'a dsh card with an Open button');
+    assert(document.querySelector('#peek-btn, #peek-main'), 'dsh card offers Peek');
+    assert(!document.querySelector('#jump-btn'), 'dsh card offers no Jump');
+    if (document.querySelector('#peek-main')) {
+      assert(
+        [...document.querySelectorAll('.notice strong')].some((item) =>
+          item.textContent.startsWith('Answer in the dsh web UI'),
+        ),
+        'read-only dsh card points to the dsh web UI',
+      );
+    }
+    return { scenario: 'dsh-card', passed: true };
+  };
 
   globalThis.checkTriage = async (scenario) => {
     if (scenario === 'peek') return checkPeek();
@@ -982,6 +1000,7 @@
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();
     if (scenario === 'notify') return checkNotify();
+    if (scenario === 'dsh-card') return checkDshCard();
     fail(`unknown scenario ${String(scenario)}`);
   };
 })();

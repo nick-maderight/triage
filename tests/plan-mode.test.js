@@ -70,6 +70,7 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       $: (selector) => elements[selector] || null,
       textField: () => false,
       current: () => card,
+      dshOf: () => null,
       draft: (current) => state.drafts.get(current.id),
       showDialog: (current) => {
         current.open = true;
@@ -223,6 +224,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
       '#dispatch-hint': hint,
       '#dispatch-note': { value: 'Make a plan' },
       '#dispatch-model': { value: 'provider/planner' },
+      '#dispatch-engine': { value: 'dsh' },
       '#dispatch-thinking': { value: 'high' },
       '#dispatch-executor': { value: '' },
       '#dispatch': dialog,
@@ -253,7 +255,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/v1/cards/launch-card/dispatch');
   assert.deepEqual(JSON.parse(requests[0].init.body), {
-    mode: 'plan', note: 'Make a plan', model: 'provider/planner', thinking: 'high',
+    mode: 'plan', note: 'Make a plan', engine: 'dsh', model: 'provider/planner', thinking: 'high',
   });
 
   requests.length = 0;
@@ -264,6 +266,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
   assert.equal(requests.length, 1);
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     mode: 'plan-into',
+    engine: 'dsh',
     note: 'Make a plan',
     model: 'provider/planner',
     thinking: 'high',
@@ -294,6 +297,7 @@ test('finding options open the launch sheet and answer with its choices', async 
       '#dispatch-models': { hidden: true },
       '#dispatch-note': { value: '', focus() {} },
       '#dispatch-model': { value: 'provider/chosen' },
+      '#dispatch-engine': { value: '' },
       '#dispatch-thinking': { value: 'xhigh' },
       '#dispatch-executor': { value: 'provider/executor' },
       '#dispatch-hint': hint,
@@ -322,6 +326,7 @@ test('finding options open the launch sheet and answer with its choices', async 
       answerable: () => true,
       showDialog: (current) => { current.open = true; },
       loadModels() {},
+      dshOf: () => null,
       snapshot: () => ({}),
       render() {},
       enc: encodeURIComponent,
@@ -351,7 +356,7 @@ test('finding options open the launch sheet and answer with its choices', async 
   assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     option: 0, text: null, note: 'Do the safe thing', mode: 'act',
-    model: 'provider/chosen', thinking: 'xhigh',
+    engine: null, model: 'provider/chosen', thinking: 'xhigh',
   });
 
   requests.length = 0;
@@ -376,6 +381,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
       '#compose-start': start,
       '#compose-hint': { textContent: '' },
       '#compose-session': { value: '' },
+      '#compose-engine': { value: 'dsh' },
       '#compose-model': { value: '' },
       '#compose-thinking': { value: '' },
       '#compose-executor': { value: 'provider/executor' },
@@ -405,6 +411,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
 
   const bodies = requests.map(({ init }) => JSON.parse(init.body));
   assert.equal(bodies.length, 3);
+  assert.ok(bodies.every((body) => body.engine === 'dsh'));
   assert.equal(bodies[0].prompt, 'Start a session');
   assert.equal(bodies[1].prompt, 'Start in plan mode');
   assert.equal(bodies[2].prompt, 'Start in plan into mode');
@@ -417,14 +424,16 @@ test('compose posts its mode and the execution model only for Plan into', async 
 
 test('plan picker loads cycle roles without replacing the general model catalog', async () => {
   const pickers = {
+      'compose-engine': { options: [], fallback: 'Daemon default' },
       'compose-model': { options: [], fallback: 'Daemon default' },
-      'compose-executor': { options: [], fallback: 'omp smol role' },
-      'dispatch-model': { options: [], fallback: 'Daemon default' },
-      'dispatch-executor': { options: [], fallback: 'omp smol role' },
       'compose-thinking': { options: [], fallback: 'Daemon default' },
+      'compose-executor': { options: [], fallback: 'omp smol role' },
+      'dispatch-engine': { options: [], fallback: 'Daemon default' },
+      'dispatch-model': { options: [], fallback: 'Daemon default' },
+      'dispatch-thinking': { options: [], fallback: 'Daemon default' },
+      'dispatch-executor': { options: [], fallback: 'omp smol role' },
       'plan-executor': { options: [], fallback: 'current Plan Review role' },
     },
-    modelPickers = ['compose-model', 'compose-executor', 'dispatch-model', 'dispatch-executor', 'plan-executor'],
     data = {
       models: [{ selector: 'provider/model', name: 'Concrete model' }, { selector: '@smol', name: 'smol role' }],
       execution_models: [{ selector: '@default', name: 'default role' }, { selector: '@smol', name: 'smol role' }],
@@ -434,15 +443,55 @@ test('plan picker loads cycle roles without replacing the general model catalog'
     },
     context = vm.createContext({
       PICKERS: pickers,
-      MODEL_PICKERS: modelPickers,
+      $: () => ({ value: '' }),
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async () => data,
       refreshPicker() {},
+      current: () => null,
     });
-  vm.runInContext(`${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`, context);
+  vm.runInContext(
+    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`,
+    context,
+  );
   await context.loadModels();
   assert.deepEqual(pickers['plan-executor'].options.map((option) => option.value), ['@default', '@smol']);
   assert.deepEqual(pickers['compose-executor'].options.map((option) => option.value), ['provider/model', '@smol']);
+});
+
+test('each sheet lists the models of the engine its Engine field picks', async () => {
+  const pickers = Object.fromEntries(
+      ['compose', 'dispatch'].flatMap((sheet) =>
+        ['engine', 'model', 'thinking', 'executor'].map((id) => [`${sheet}-${id}`, { options: [], fallback: '' }]),
+      ).concat([['plan-executor', { options: [], fallback: '' }]]),
+    ),
+    catalogs = {
+      omp: { engine: 'omp', models: [{ selector: '@kimi', name: '@kimi' }], execution_models: [], default: '@kimi', thinking: ['high'] },
+      dsh: { engine: 'dsh', models: [{ selector: 'p/m', name: 'p/m' }], execution_models: [], default: null, thinking: ['high'] },
+    },
+    requested = [],
+    context = vm.createContext({
+      PICKERS: pickers,
+      $: (selector) => ({ value: selector === '#dispatch-engine' ? 'dsh' : '' }),
+      pickerOption: (value, label, hint) => ({ value, label, hint }),
+      api: async (path) => {
+        requested.push(path);
+        return catalogs[path.endsWith('dsh') ? 'dsh' : 'omp'];
+      },
+      refreshPicker() {},
+      current: () => null,
+    });
+  vm.runInContext(
+    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`,
+    context,
+  );
+  await context.loadModels();
+  assert.deepEqual(requested, ['/v1/models', '/v1/models?engine=dsh']);
+  assert.deepEqual(pickers['compose-model'].options.map((option) => option.value), ['@kimi']);
+  assert.equal(pickers['compose-model'].fallback, '@kimi');
+  assert.deepEqual(pickers['dispatch-model'].options.map((option) => option.value), ['p/m']);
+  assert.equal(pickers['dispatch-model'].fallback, 'dsh default');
+  assert.equal(pickers['dispatch-executor'].fallback, 'planner model');
+  assert.equal(pickers['dispatch-engine'].fallback, 'omp');
 });
 
 test('plan approval sends chosen role while Default and Refine keep their request contracts', () => {

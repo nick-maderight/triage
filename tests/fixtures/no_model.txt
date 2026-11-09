@@ -1,0 +1,15 @@
+  Error: No model selected.
+
+  Use /login, set an API key environment variable, or create /home/user/.omp/agent/agent.db
+
+  Then use /model to select a model.
+
+  Connected to MCP servers: chrome-devtools, open-design.
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+  </file>
+
+ ────────────────────────────────────────────────────────────────────────────────
+
+  ⬢ no-model · 🗑 ~/tmp                                                                                                                                                                                                                                                          ◫ 20K/? ⟲
