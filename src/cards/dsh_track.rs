@@ -774,7 +774,9 @@ pub(super) fn launch_new(
         // A host older than workspaces rejects the field before it starts anything, so the
         // same brief starts in a session of its own directory instead of failing.
         Err(error) if launch.dsh_workspace.is_some() && error.contains("cwd") => {
-            body.as_object_mut().map(|fields| fields.remove("workspace"));
+            if let Some(fields) = body.as_object_mut() {
+                fields.remove("workspace");
+            }
             body["cwd"] = json!(cwd);
             client.launch(&body).map(|sid| format!("dsh:{sid}"))
         }
