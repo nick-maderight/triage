@@ -120,7 +120,6 @@ fn card(id: &str, priority: u8, created_ms: i64, pane: &str) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
-        engine: None,
     }
 }
 
@@ -168,7 +167,6 @@ fn thread_card(
         level: None,
         tool_call_id: None,
         report_due: false,
-        engine: None,
     }
 }
 

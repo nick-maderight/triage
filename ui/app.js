@@ -2199,12 +2199,7 @@ const S = {
       thinking = PICKERS['compose-thinking'];
     try {
       const data = await api('/v1/models');
-      const engine = data.engine || 'omp';
-      // A plan card from the other harness offers that harness's execution models.
-      const plan = current();
-      const planEngine = plan?.kind === 'plan' ? (plan.engine || 'omp') : engine;
-      const planData = planEngine === engine ? data : await api(`/v1/models?engine=${planEngine}`);
-      const execution = (planData.execution_models || []).map(({ selector, name }) =>
+      const execution = (data.execution_models || []).map(({ selector, name }) =>
         pickerOption(selector, name, name === selector ? null : selector),
       );
       model.options = data.models.map(({ selector, name }) =>
@@ -2212,20 +2207,13 @@ const S = {
       );
       model.fallback = data.default
         ? model.options.find((option) => option.value === data.default)?.label || data.default
-        : `${engine} default`;
+        : 'omp default';
       thinking.options = data.thinking.map((level) => pickerOption(level));
-      thinking.fallback = data.default_thinking ?? `${engine} default`;
+      thinking.fallback = data.default_thinking ?? 'omp default';
       for (const id of MODEL_PICKERS) {
         const cfg = PICKERS[id];
         cfg.options = id === 'plan-executor' ? execution : model.options;
         if (id === 'compose-model' || id === 'dispatch-model') cfg.fallback = model.fallback;
-        if (id === 'compose-executor' || id === 'dispatch-executor') {
-          cfg.fallback = engine === 'jcode' ? 'planner model' : 'omp smol role';
-        }
-        if (id === 'plan-executor') {
-          cfg.placeholder = planEngine === 'jcode' ? 'Search models' : 'Search roles';
-          cfg.fallback = planEngine === 'jcode' ? 'current model' : 'current Plan Review role';
-        }
         refreshPicker(id);
       }
       refreshPicker('compose-thinking');
@@ -2233,7 +2221,7 @@ const S = {
       PICKERS['dispatch-thinking'].fallback = thinking.fallback;
       refreshPicker('dispatch-thinking');
     } catch {
-      // The server falls back to its launch flags or the engine's defaults.
+      // The server falls back to its launch flags or omp's defaults.
     }
   }
   async function submitCompose(e) {
@@ -2288,7 +2276,7 @@ const S = {
     $('#compose-mode-help').textContent = {
       goal: 'The session works toward the prompt as a goal until it reports done.',
       plan: 'Read-only planning. The plan arrives here for review before anything runs.',
-      'plan-into': 'The Model above drafts a plan read-only. Then the execution model carries it out without review.',
+      'plan-into': 'The Model above drafts a plan read-only, omp approves it without review, and the execution model carries it out.',
     }[mode];
     $('#compose-models').hidden = mode !== 'plan-into';
   }
@@ -2298,7 +2286,7 @@ const S = {
       investigate: 'Read-only. The session looks into it and reports back.',
       act: 'The session carries out the action end to end.',
       plan: 'The session prepares a plan for review before acting.',
-      'plan-into': 'The planner drafts a plan read-only. Then the execution model carries it out in a new window without review.',
+      'plan-into': 'The planner drafts a plan read-only, omp approves it without review, and the execution model carries it out in a new window.',
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
     const d = S.drafts.get(S.dispatchId);

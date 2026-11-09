@@ -3,7 +3,6 @@
 
 use crate::db::Db;
 use crate::events::{self, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star, Swipe};
-use crate::jcode;
 use crate::omp::{self, PaneState};
 use crate::tmux;
 use std::collections::{HashMap, HashSet};
@@ -11,7 +10,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// Remembers each pane's last state so only transitions produce cards.
 #[derive(Default)]
@@ -37,8 +36,6 @@ pub struct Tracker {
     /// Panes whose gone-pane close ran but whose session audit has not yet succeeded.
     /// A retried audit must not sweep the information cards its first run raised.
     audit_pending: HashSet<String>,
-    /// The session the tracker follows in each jcode pane, keyed by pane id.
-    jcode: HashMap<String, JcodePane>,
     #[cfg(test)]
     pending_ask_reads: usize,
     #[cfg(test)]
@@ -73,37 +70,6 @@ struct HeldReply {
     goal: bool,
 }
 
-/// A jcode pane the tracker follows. Its messages come from the session's files and are read
-/// again only when one of those files changes.
-struct JcodePane {
-    pane: tmux::Pane,
-    sid: String,
-    state: PaneState,
-    /// When the pane entered `state`, as an instant for the grace and as wall-clock ms for the crumb.
-    since: Instant,
-    since_ms: i64,
-    /// File modification times when `messages` was read.
-    stamp: (Option<SystemTime>, Option<SystemTime>),
-    messages: Vec<jcode::Message>,
-    /// Key of the turn already carded, either the last reply's message id or `error-<ts_ms>`.
-    carded: Option<String>,
-}
-
-impl JcodePane {
-    fn new(pane: &tmux::Pane, sid: &str, state: PaneState) -> Self {
-        Self {
-            pane: pane.clone(),
-            sid: sid.to_owned(),
-            state,
-            since: Instant::now(),
-            since_ms: events::now_ms(),
-            stamp: (None, None),
-            messages: Vec::new(),
-            carded: None,
-        }
-    }
-}
-
 /// Outcome of one tick: how many events were written. The caller broadcasts a
 /// queue change when it is above zero.
 pub struct TickReport {
@@ -126,7 +92,6 @@ impl Tracker {
             paused_info: HashMap::new(),
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
-            jcode: HashMap::new(),
             #[cfg(test)]
             pending_ask_reads: 0,
             #[cfg(test)]
@@ -318,7 +283,7 @@ impl Tracker {
     ///   cards are never swept.
     /// - Plan proposals from the transcript add a card only while the review overlay is open.
     ///   The tracker completes it after the overlay closes or supersedes it when a newer proposal appears.
-    /// jcode panes go through `tick_jcode`. Other non-omp panes are ignored.
+    /// Non-omp panes are ignored.
     pub fn tick(&mut self, db: &Db) -> TickReport {
         let Ok(panes) = tmux::list_panes() else {
             return TickReport { written: 0 };
@@ -333,13 +298,7 @@ impl Tracker {
         let mut failed_restored_panes = HashSet::new();
         let mut exited: Vec<(&tmux::Pane, Option<PathBuf>, bool)> = Vec::new();
         let mut live_transcripts = HashSet::new();
-        let mut live_jcode = HashSet::new();
         for pane in &panes {
-            if jcode::is_jcode(pane) {
-                self.tick_jcode(db, pane, &panes, &mut written);
-                live_jcode.insert(pane.id.clone());
-                continue;
-            }
             let state = omp::classify(&pane.title);
             let previous = self.states.get(&pane.id).copied();
             if state == PaneState::Asking {
@@ -512,18 +471,6 @@ impl Tracker {
             .filter(|pane| !present.contains(pane.as_str()))
             .cloned()
             .collect::<HashSet<_>>();
-        // jcode panes that stopped running jcode. A vanished one joins the gone panes.
-        // A pane still listed has ended. Only its session is audited.
-        let stopped = self
-            .jcode
-            .keys()
-            .filter(|pane| !live_jcode.contains(pane.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let (vanished, ended): (Vec<_>, Vec<_>) = stopped
-            .into_iter()
-            .partition(|pane| !present.contains(pane.as_str()));
-        let gone = gone.into_iter().chain(vanished).collect::<HashSet<_>>();
         // One pane gone while tmux still lists panes means its window was closed by hand.
         // An empty listing means the tmux server died. Unread reports must survive that.
         let individual = gone.len() == 1 && !panes.is_empty();
@@ -542,12 +489,7 @@ impl Tracker {
                 self.states.remove(&pane);
                 self.pending_ask_ids.remove(&pane);
                 self.pending_panes.remove(&pane);
-                let audited = match self.jcode.get(&pane) {
-                    Some(entry) => audit_jcode_session(db, entry, &panes, &mut written),
-                    None => self.audit_gone_pane(db, &pane, &panes, &live_transcripts, &mut written),
-                };
-                if audited {
-                    self.jcode.remove(&pane);
+                if self.audit_gone_pane(db, &pane, &panes, &live_transcripts, &mut written) {
                     self.seen.remove(&pane);
                     self.audit_pending.remove(&pane);
                 }
@@ -570,59 +512,7 @@ impl Tracker {
                 self.seen.remove(&pane.id);
             }
         }
-        for id in ended {
-            if let Some(entry) = self.jcode.get(&id) {
-                if audit_jcode_session(db, entry, &panes, &mut written) {
-                    self.jcode.remove(&id);
-                }
-            }
-        }
         TickReport { written }
-    }
-
-    /// One poll of a jcode pane. Its turn is carded once the pane has waited past the grace.
-    /// Leaving Waiting for Working first closes the pane's waiting cards and plan cards.
-    fn tick_jcode(&mut self, db: &Db, pane: &tmux::Pane, panes: &[tmux::Pane], written: &mut usize) {
-        let Some(sid) = jcode::session_id(pane) else {
-            return;
-        };
-        let state = jcode::classify(&pane.title);
-        if self.jcode.get(&pane.id).is_none_or(|entry| entry.sid != sid) {
-            self.jcode.insert(pane.id.clone(), JcodePane::new(pane, &sid, state));
-        }
-        let Some(entry) = self.jcode.get_mut(&pane.id) else {
-            return;
-        };
-        entry.pane.clone_from(pane);
-        if entry.state == PaneState::Waiting && state == PaneState::Working {
-            let Ok(open) = db.unresolved_cards_for_pane(&pane.id) else {
-                return;
-            };
-            let plans = open.into_iter().filter(|card| card.kind == Kind::Plan).collect();
-            if !finish_resumed_cards(db, pane, written)
-                || !finish_cards(db, plans, "answered in pane", written)
-            {
-                return;
-            }
-        }
-        if entry.state != state {
-            entry.state = state;
-            entry.since = Instant::now();
-            entry.since_ms = events::now_ms();
-        }
-        if state != PaneState::Waiting || entry.since.elapsed() < GOAL_CONTINUATION_GRACE {
-            return;
-        }
-        let stamp = jcode::file_times(&entry.sid);
-        if stamp != entry.stamp {
-            let Ok(messages) = jcode::messages(&entry.sid) else {
-                return;
-            };
-            entry.messages = messages;
-            entry.stamp = stamp;
-        }
-        // A false result leaves `carded` unset. The next tick then retries the turn.
-        card_jcode_turn(db, &entry.pane, panes, &entry.sid, &entry.messages, entry.since_ms, &mut entry.carded, written);
     }
 }
 
@@ -682,8 +572,8 @@ pub enum Start<'a> {
     Goal,
     /// Read-only plan mode through a per-run config overlay; the plan comes back as a card.
     Plan,
-    /// Plan-yolo launch. The plan is approved automatically and handed to this execution model.
-    /// When unset, omp uses its `smol` role and jcode keeps the planner model.
+    /// `--plan-yolo`. omp approves the plan itself and hands it to this execution model,
+    /// or to its `smol` role when unset.
     PlanInto(Option<&'a str>),
 }
 
@@ -857,7 +747,7 @@ pub fn request_report(db: &Db, card: &Card) -> Result<(), String> {
         return Err("card is not queued".to_owned());
     }
     let panes = tmux::list_panes().map_err(|error| error.to_string())?;
-    if !panes.iter().any(|candidate| candidate.id == pane && pane_state(candidate) == PaneState::Waiting) {
+    if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
         return Err("pane is not waiting".to_owned());
     }
     send(pane, REQUEST_REPORT_TEXT)?;
@@ -910,12 +800,11 @@ fn session_id(path: &str) -> Option<String> {
     uuid::Uuid::parse_str(id).ok().map(|_| id.to_owned())
 }
 
-/// Launch a session from free text. Returns the new pane id. The session's asks and final
+/// Launch an omp session from free text. Returns the new pane id. The session's asks and final
 /// report reach the inbox through the tracker like any other pane. A plan launch starts in
-/// read-only plan mode. A plan-into launch auto-approves the plan and hands it to the
-/// execution model. Every other session starts with the brief as its objective. `engine`
-/// picks the harness.
-#[allow(clippy::too_many_arguments)]
+/// read-only plan mode and a plan-into launch runs `--plan-yolo`, where omp approves the plan
+/// itself and hands it to the execution model; every other session starts in omp goal mode with
+/// the brief as its objective.
 pub fn start_session(
     db: &Db,
     prompt: &str,
@@ -924,7 +813,6 @@ pub fn start_session(
     model: Option<&str>,
     thinking: Option<&str>,
     start: Start,
-    engine: Engine,
 ) -> Result<String, String> {
     if prompt.trim().is_empty() {
         return Err("prompt is empty".to_owned());
@@ -934,25 +822,16 @@ pub fn start_session(
     if let Start::PlanInto(executor) = start {
         model_selector(executor)?;
     }
-    if engine == Engine::Jcode {
-        jcode_selector(model)?;
-        if let Start::PlanInto(executor) = start {
-            jcode_selector(executor)?;
-        }
-    }
     let path = write_brief(db, session_brief(prompt, start != Start::Goal))?;
     let session = match session {
         Some(session) => session.to_owned(),
         None => DEFAULT_SESSION.to_owned(),
     };
-    let command = match engine {
-        Engine::Omp => omp_command(&path, model, thinking, start)?,
-        Engine::Jcode => jcode_command(&path, model, thinking, start)?,
-    };
+    let command = omp_command(&path, model, thinking, start)?;
     tmux::new_window(&session, cwd, &command).map_err(|error| error.to_string())
 }
 
-/// Give the brief to the card's own pane while that pane is a waiting omp or jcode pane,
+/// Give the brief to the card's own pane while that pane is an omp pane waiting for input,
 /// so the work continues in the session that already has the context. Otherwise open a new
 /// window in the daemon's launch session; a window another launch left behind is never
 /// taken. A new window starts in omp goal mode with the brief text as its objective, except
@@ -972,21 +851,16 @@ fn launch_brief(
         let waiting = tmux::list_panes()
             .map_err(|error| error.to_string())?
             .into_iter()
-            .find(|candidate| candidate.id == pane && pane_state(candidate) == PaneState::Waiting);
-        if let Some(target) = waiting {
-            if jcode::is_jcode(&target) {
-                type_jcode_brief(&target, brief, start)?;
-            } else {
-                type_brief(pane, brief, start)?;
-            }
+            .any(|candidate| {
+                candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting
+            });
+        if waiting {
+            type_brief(pane, brief, start)?;
             return Ok(pane.to_owned());
         }
     }
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
-    let command = match launch.engine {
-        Engine::Omp => omp_command(brief, launch.model.as_deref(), launch.thinking.as_deref(), start)?,
-        Engine::Jcode => jcode_command(brief, launch.model.as_deref(), launch.thinking.as_deref(), start)?,
-    };
+    let command = omp_command(brief, launch.model.as_deref(), launch.thinking.as_deref(), start)?;
     tmux::new_window(session, &card.source.cwd, &command).map_err(|error| error.to_string())
 }
 
@@ -997,17 +871,6 @@ fn type_brief(pane: &str, brief: &Path, start: Start) -> Result<(), String> {
     }
     let text = format!("Read the brief at {} and carry it out.", brief.display());
     tmux::send_text(pane, &text).map_err(|error| error.to_string())
-}
-
-/// Hand a brief to a waiting jcode pane. A plan brief goes in as jcode's `/plan` command.
-fn type_jcode_brief(pane: &tmux::Pane, brief: &Path, start: Start) -> Result<(), String> {
-    let sid = jcode::session_id(pane).ok_or_else(|| "jcode session not found".to_owned())?;
-    let text = format!("Read the brief at {} and carry it out.", brief.display());
-    if start == Start::Plan {
-        jcode::send_command(&sid, &format!("/plan {text}"))
-    } else {
-        jcode::send_text(&sid, &text)
-    }
 }
 
 fn ensure_plan_mode(pane: &str) -> Result<(), String> {
@@ -1038,15 +901,6 @@ pub(crate) fn queued_for_answer(swipe: Option<&Swipe>) -> bool {
 }
 
 
-/// The state of an omp or jcode pane, read from its title.
-fn pane_state(pane: &tmux::Pane) -> PaneState {
-    if jcode::is_jcode(pane) {
-        jcode::classify(&pane.title)
-    } else {
-        omp::classify(&pane.title)
-    }
-}
-
 /// What the peek panel shows: the redacted visible screen laid out as tmux shows it.
 pub struct Peek {
     pub text: String,
@@ -1064,7 +918,7 @@ pub fn peek(pane: &str) -> Result<Peek, String> {
     let text = tmux::screen(pane).map_err(|error| error.to_string())?;
     Ok(Peek {
         text: omp::redact(&text),
-        state: pane_state(target),
+        state: omp::classify(&target.title),
         width: target.width,
         height: target.height,
     })
@@ -1084,12 +938,8 @@ pub fn send(pane: &str, text: &str) -> Result<(), String> {
         .iter()
         .find(|candidate| candidate.id == pane)
         .ok_or_else(|| "pane not found".to_owned())?;
-    if pane_state(target) != PaneState::Waiting {
+    if omp::classify(&target.title) != PaneState::Waiting {
         return Err("pane is not waiting".to_owned());
-    }
-    if jcode::is_jcode(target) {
-        let sid = jcode::session_id(target).ok_or_else(|| "jcode session not found".to_owned())?;
-        return jcode::send_text(&sid, text);
     }
     let screen = tmux::capture(pane, 60).map_err(|error| error.to_string())?;
     if !omp::editor_empty(&screen) {
@@ -1151,7 +1001,6 @@ fn add_ask_card(
         level: None,
         tool_call_id: Some(call.tool_call_id.clone()),
         report_due: false,
-        engine: None,
     };
     match db.insert_card(&card) {
         Ok(inserted) => {
@@ -1402,7 +1251,6 @@ fn queue_turn_card(
         level: Some(level.to_owned()),
         tool_call_id: None,
         report_due,
-        engine: None,
     };
     let succeeded = supersede_info_cards(db, &card.id, &card.refs[0], pane, written);
     match reply_has_card(db, panes, "done", &entry_id, &card.id, written) {
@@ -1601,96 +1449,6 @@ fn audit_ended_session(
     }
 }
 
-/// Card the turn a jcode session just finished. The card is its error, its plan or its reply.
-/// `carded` holds the key of the last turn carded. A landed card replaces it with this turn's key.
-/// False means a read or write failed. The next tick retries.
-#[allow(clippy::too_many_arguments)]
-fn card_jcode_turn(
-    db: &Db,
-    pane: &tmux::Pane,
-    panes: &[tmux::Pane],
-    sid: &str,
-    messages: &[jcode::Message],
-    since_ms: i64,
-    carded: &mut Option<String>,
-    written: &mut usize,
-) -> bool {
-    let turn = jcode::turn_status(sid);
-    let reply = jcode::last_assistant(messages);
-    // An error crumb written as the pane started waiting belongs to this turn.
-    let key = match &turn {
-        Some(turn) if turn.status == "error" && turn.ts_ms + 5_000 >= since_ms => {
-            format!("error-{}", turn.ts_ms)
-        }
-        _ => match reply {
-            Some(reply) => reply.id.clone(),
-            None => return true,
-        },
-    };
-    if carded.as_deref() == Some(key.as_str()) {
-        return true;
-    }
-    let Some(path) = jcode::snapshot_path(sid) else {
-        return true;
-    };
-    let succeeded = match (turn, reply) {
-        (Some(turn), _) if key.starts_with("error-") => queue_turn_card(
-            db,
-            pane,
-            panes,
-            &path,
-            omp::TurnEnd::Error { entry_id: key.clone(), message: turn.error },
-            false,
-            written,
-        ),
-        (_, Some(reply)) => match jcode::plan(&reply.text) {
-            Some(plan) => add_jcode_plan_card(db, pane, &path, &reply.id, &plan, written),
-            None => queue_turn_card(
-                db,
-                pane,
-                panes,
-                &path,
-                omp::TurnEnd::Reply {
-                    entry_id: reply.id.clone(),
-                    text: reply.text.clone(),
-                    report: None,
-                },
-                false,
-                written,
-            ),
-        },
-        _ => true,
-    };
-    if succeeded {
-        *carded = Some(key);
-    }
-    succeeded
-}
-
-/// What a jcode session that left its pane owes the inbox, read from its files as they are now.
-/// An unreported dispatch raises an `Unreported` card. A turn still running at the last poll
-/// raises an `Ended mid-turn` card. Any other turn is carded as a live pane would card it.
-/// False means retry.
-fn audit_jcode_session(db: &Db, entry: &JcodePane, panes: &[tmux::Pane], written: &mut usize) -> bool {
-    let messages = match jcode::messages(&entry.sid) {
-        Ok(messages) => messages,
-        // A deleted session has nothing left to audit.
-        Err(error) => return error.kind() == std::io::ErrorKind::NotFound,
-    };
-    let Some(path) = jcode::snapshot_path(&entry.sid) else {
-        return true;
-    };
-    let audit = jcode::dispatch_audit(&messages);
-    if audit.dispatched && !audit.reported {
-        return queue_ended_card(db, &entry.pane, panes, &path, "Unreported", audit.entry_id, audit.last_text, written);
-    }
-    if entry.state == PaneState::Working {
-        return queue_ended_card(db, &entry.pane, panes, &path, "Ended mid-turn", audit.entry_id, audit.last_text, written);
-    }
-    let mut carded = entry.carded.clone();
-    card_jcode_turn(db, &entry.pane, panes, &entry.sid, &messages, entry.since_ms, &mut carded, written)
-}
-
 /// One warning card for an ended session: id `exited:<pane>:<entry or ->`, title
 /// `<prefix>: <first non-blank report line, cut to 80>` or `<prefix>: no reply recorded`,
 /// the stripped report as body, and the transcript as ref. It supersedes the reply card
@@ -1742,7 +1500,6 @@ fn queue_ended_card(
         level: Some("warn".to_owned()),
         tool_call_id: None,
         report_due: false,
-        engine: None,
     };
     if entry != "-" {
         match reply_has_card(db, panes, "exited", &entry, &card.id, written) {
@@ -1813,63 +1570,6 @@ fn add_plan_card(
         level: None,
         tool_call_id: None,
         report_due: false,
-        engine: None,
-    };
-    match db.insert_card(&card) {
-        Ok(inserted) => *written += usize::from(inserted),
-        Err(_) => return false,
-    }
-    let Ok(cards) = db.unresolved_cards_for_pane(&pane.id) else {
-        return false;
-    };
-    finish_cards(
-        db,
-        cards
-            .into_iter()
-            .filter(|older| older.kind == Kind::Plan && older.id != card.id)
-            .collect(),
-        "superseded",
-        written,
-    )
-}
-
-/// The plan card for a jcode reply with a ```plan fence. jcode has no review overlay to check.
-/// The reply alone raises the card. The card also supersedes the pane's older plan cards.
-fn add_jcode_plan_card(db: &Db, pane: &tmux::Pane, path: &Path, entry: &str, plan: &jcode::Plan, written: &mut usize) -> bool {
-    let source = pane_source(pane);
-    let title = if plan.title.trim().is_empty() {
-        source.label.clone()
-    } else {
-        plan.title.clone()
-    };
-    let card = Card {
-        id: format!("plan:{}:{entry}", pane.id),
-        kind: Kind::Plan,
-        priority: 1,
-        created_ms: events::now_ms(),
-        source,
-        title: format!("Plan ready: {title}"),
-        star: Star::default(),
-        options: vec![
-            CardOption {
-                label: "Approve".to_owned(),
-                recommended: true,
-                ..CardOption::default()
-            },
-            CardOption {
-                label: "Refine".to_owned(),
-                ..CardOption::default()
-            },
-        ],
-        answerable: true,
-        allow_other: true,
-        questions: Vec::new(),
-        body: Some(omp::redact(&plan.body)),
-        refs: vec![path.display().to_string()],
-        level: None,
-        tool_call_id: None,
-        report_due: false,
-        engine: Some("jcode".to_owned()),
     };
     match db.insert_card(&card) {
         Ok(inserted) => *written += usize::from(inserted),
@@ -2397,9 +2097,6 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
         .pane
         .as_deref()
         .ok_or_else(|| "plan card has no pane".to_owned())?;
-    if card.engine.as_deref() == Some("jcode") {
-        return answer_jcode_plan(db, card, pane, option, executor, refinement, req.note.clone());
-    }
     let mut screen = tmux::screen(pane).map_err(|error| error.to_string())?;
     if !omp::plan_review_open(&screen) {
         return Err("plan review is not open".to_owned());
@@ -2450,46 +2147,6 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq) -> Result<(), String> {
         )
     };
     if recorded {
-        Ok(())
-    } else {
-        Err("could not record swipe".to_owned())
-    }
-}
-
-/// Approve or refine a plan from a jcode pane. jcode has no review overlay to drive.
-/// The answer goes to the session as a message. The pane must be waiting for it.
-fn answer_jcode_plan(
-    db: &Db,
-    card: &Card,
-    pane: &str,
-    option: Option<usize>,
-    executor: Option<&str>,
-    refinement: Option<&str>,
-    note: Option<String>,
-) -> Result<(), String> {
-    let panes = tmux::list_panes().map_err(|error| error.to_string())?;
-    let target = panes
-        .iter()
-        .find(|candidate| candidate.id == pane)
-        .ok_or_else(|| "plan pane not found".to_owned())?;
-    let sid = jcode::session_id(target).ok_or_else(|| "jcode session not found".to_owned())?;
-    if pane_state(target) != PaneState::Waiting {
-        return Err("pane is not waiting".to_owned());
-    }
-    let (sent, reply) = if option == Some(0) {
-        if let Some(executor) = executor {
-            let line = jcode::selector_command(executor)
-                .map_err(|_| "plan executor must be a jcode profile/model selector".to_owned())?;
-            jcode::send_command(&sid, &line)?;
-            thread::sleep(Duration::from_secs(1));
-        }
-        (jcode::PLAN_APPROVAL, executor.map(str::to_owned))
-    } else {
-        let refinement = refinement.ok_or_else(|| "Refine requires nonempty text".to_owned())?;
-        (refinement, Some(refinement.to_owned()))
-    };
-    jcode::send_text(&sid, sent)?;
-    if record_swipe(db, &card.id, "done", option, reply, note, Some("typed".to_owned())) {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
@@ -2746,7 +2403,7 @@ const REPORT_STEP: &str = " Before you report, finish every step your instructio
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 const PLAN_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The plan arrives in the triage inbox for approval. After approval, carry out the work end to end.";
-const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The plan is approved automatically and handed to the execution model, which carries out the work end to end.";
+const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. omp approves the plan on its own and hands it to the execution model, which carries out the work end to end.";
 /// Plan approval hands the work to a model that may see only the plan. omp's default
 /// "Approve and execute" starts a fresh session, and Plan into switches to the execution
 /// model, so the plan has to carry the status contract.
@@ -2854,14 +2511,6 @@ pub const THINKING_LEVELS: &[&str] = &["auto", "off", "minimal", "low", "medium"
 /// tmux session new windows open in when neither the request nor `serve --session` names one.
 pub const DEFAULT_SESSION: &str = "triage";
 
-/// The harness a launch starts. Either omp or jcode, which runs through `jcode-launch`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum Engine {
-    #[default]
-    Omp,
-    Jcode,
-}
-
 /// Where and how triage launches omp sessions, from `triage serve` flags. Unset fields fall
 /// back to `DEFAULT_SESSION` and to omp's own configured model and thinking level.
 #[derive(Debug, Clone, Default)]
@@ -2869,7 +2518,6 @@ pub struct Launch {
     pub session: Option<String>,
     pub model: Option<String>,
     pub thinking: Option<String>,
-    pub engine: Engine,
 }
 
 /// Trim an omp model selector and refuse shell characters. A blank selector means unset.
@@ -2941,47 +2589,6 @@ fn omp_command(
             Ok(format!("omp {flags}--plan-yolo {into}@{}", shell_quote(&brief.to_string_lossy())))
         }
     }
-}
-
-/// A jcode model selector, `PROFILE/ID`. jcode-launch takes no `@role` selectors.
-/// An unset selector stays unset.
-pub fn jcode_selector(model: Option<&str>) -> Result<Option<&str>, String> {
-    let model = model_selector(model)?;
-    if let Some(selector) = model {
-        let well_formed = selector.split_once('/').is_some_and(|(profile, id)| {
-            !profile.is_empty() && !profile.starts_with('@') && !id.is_empty() && !id.contains('/')
-        });
-        if !well_formed {
-            return Err(format!("jcode model must be PROFILE/ID, got {selector}"));
-        }
-    }
-    Ok(model)
-}
-
-/// Check a request selector against the daemon's engine.
-pub fn engine_selector(engine: Engine, selector: Option<&str>) -> Result<Option<&str>, String> {
-    match engine {
-        Engine::Omp => model_selector(selector),
-        Engine::Jcode => jcode_selector(selector),
-    }
-}
-
-/// Build the jcode-launch line for a brief. Plan mode and plan-yolo map to jcode-launch flags.
-/// A plan-into launch with no executor keeps the planner model.
-fn jcode_command(brief: &Path, model: Option<&str>, thinking: Option<&str>, start: Start) -> Result<String, String> {
-    let model = jcode_selector(model)?.map(|model| format!("--model={model} ")).unwrap_or_default();
-    let thinking = launch_flags(None, thinking)?;
-    let mode = match start {
-        Start::Goal => String::new(),
-        Start::Plan => "--plan-mode ".to_owned(),
-        Start::PlanInto(executor) => {
-            let into = jcode_selector(executor)?
-                .map(|executor| format!("--plan-yolo-into={executor} "))
-                .unwrap_or_default();
-            format!("--plan-yolo {into}")
-        }
-    };
-    Ok(format!("jcode-launch {model}{thinking}{mode}@{}", shell_quote(&brief.to_string_lossy())))
 }
 
 fn shell_quote(value: &str) -> String {
