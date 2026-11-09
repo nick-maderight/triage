@@ -1657,13 +1657,16 @@ fn investigation_step_stays_on_its_card_when_plan_mode_refuses() {
 fn act_complete_report_keeps_its_recommended_line_in_the_body() {
     if let Some(root) = child_root("act_complete_report_keeps_its_recommended_line_in_the_body") {
         let (_pty, tty) = new_pty();
-        let investigated = reply_turn(
-            "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Run the investigation follow-up.".to_owned(),
-            None,
-            true,
-            true,
+        assert_eq!(
+            reply_turn(
+                "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Run the investigation follow-up.".to_owned(),
+                None,
+                true,
+                true,
+            )
+            .action,
+            "Run the investigation follow-up."
         );
-        assert_eq!(investigated.action, "Run the investigation follow-up.");
         fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
         fs::write(root.join("tmux-waiting"), b"").unwrap();
         fs::create_dir_all(root.join("tmux-screens")).unwrap();
