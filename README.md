@@ -45,6 +45,8 @@ Triage can also launch sessions in dsh, DeepSeek's coding harness. `--engine dsh
 
 A new dsh session runs `deepseek-flash` unless the request or the daemon's `--model` picks `deepseek-v4-pro`. dsh-host maps triage's thinking levels onto dsh's four efforts.
 
+Every new dsh session joins the workspace that `--dsh-workspace` names, `triage` by default, so the dsh web UI shows triage's sessions in one group instead of leaving each under Ungrouped. dsh groups a session by the directory it was created in, so a workspace session starts in that workspace's directory rather than the project's. Its brief therefore names the project directory and tells the session to call the `working_directory` tool with `cd` set to it before starting, and a dispatch brief carries the same directory under `## Working directory`. `--dsh-workspace ""` leaves each session in its own directory. A host older than workspaces refuses the launch, and triage then starts the session in the project directory, ungrouped, instead of failing.
+
 | Thinking level | dsh effort |
 | --- | --- |
 | `auto` or none | dsh's default |
@@ -130,6 +132,7 @@ Settings are `triage serve` flags; there is no configuration file. Put them on t
 | `--engine` | `omp` | Harness for launched sessions, `omp` or `dsh`. A request can override it in the New session or Dispatch sheet, or on a finding answer. |
 | `--model` | omp's own model | Default model for new windows. A request can override it in the New session or Dispatch sheet, or on a finding answer. It takes an omp selector or `@role`; omp resolves a role when each window starts. A brief sent to a waiting source pane keeps that pane's model, except Plan mode can switch it to the pane's own `plan` role. With `--engine dsh` it takes `deepseek-flash`, the default, or `deepseek-v4-pro`. |
 | `--thinking` | omp's own level | Thinking level for launched sessions; accepts `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
+| `--dsh-workspace` | `triage` | dsh workspace every new dsh session joins, so the dsh web UI groups triage's sessions. It is one lowercase name; dsh-host keeps the workspace in `~/.dsh/workspaces/<name>`. Empty starts each session in its project directory, ungrouped. |
 | `--allow-host` | none | Repeatable. Host names accepted besides `localhost`, `127.0.0.1` and `::1`. |
 | `--no-notify` | off | Turns off `notify-send` notifications on the daemon's machine. Browser push is set per device in the inbox's Notifications sheet. |
 

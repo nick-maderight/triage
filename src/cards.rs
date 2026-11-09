@@ -863,7 +863,7 @@ pub fn dispatch(
     if !queued_for_answer(swipe.as_ref()) {
         return Err("card is not queued".to_owned());
     }
-    let path = write_brief(db, dispatch_brief(card, mode, note))?;
+    let path = write_brief(db, dispatch_brief(card, mode, note, workspace_workdir(launch, &card_workdir(card))))?;
     let start = match mode {
         DispatchMode::Plan => Start::Plan,
         DispatchMode::PlanInto => Start::PlanInto(executor),
@@ -1038,7 +1038,7 @@ pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: S
         if let Start::PlanInto(executor) = start {
             dsh_selector(executor)?;
         }
-        let path = write_brief(db, session_brief(prompt, start != Start::Goal))?;
+        let path = write_brief(db, session_brief(prompt, start != Start::Goal, workspace_workdir(launch, cwd)))?;
         let title = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
         return dsh_track::launch_new(launch, cwd, &path, &truncate_chars(title.to_owned(), 60), start);
     }
@@ -1047,7 +1047,7 @@ pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: S
     if let Start::PlanInto(executor) = start {
         model_selector(executor)?;
     }
-    let path = write_brief(db, session_brief(prompt, start != Start::Goal))?;
+    let path = write_brief(db, session_brief(prompt, start != Start::Goal, None))?;
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
     let command = omp_command(&path, launch.model.as_deref(), launch.thinking.as_deref(), start)?;
     tmux::new_window(session, cwd, &command).map_err(|error| error.to_string())
@@ -1664,7 +1664,7 @@ fn plan_recommended_step(db: &Db, card: &Card, pane: &str, transcript: &Path) ->
     if !queued || !tmux::screen(pane).is_ok_and(|screen| omp::editor_empty(&screen)) {
         return false;
     }
-    let Ok(brief) = write_brief(db, dispatch_brief(card, DispatchMode::Plan, None)) else {
+    let Ok(brief) = write_brief(db, dispatch_brief(card, DispatchMode::Plan, None, None)) else {
         return false;
     };
     type_brief(pane, &brief, Start::Plan).is_ok()
@@ -2814,20 +2814,51 @@ const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draf
 /// model, so the plan has to carry the status contract.
 const PLAN_REPORT_STEP: &str = "Approval hands the plan to a model that may see only the plan. End the plan with a section headed \"Final report\" that repeats the previous paragraph word for word.";
 
-fn session_brief(prompt: &str, plan: bool) -> String {
-    let mut brief = format!(
+/// The directory a dsh workspace session must work from. A workspace session starts in the
+/// workspace directory, so its brief names the project directory and the tool that moves it.
+fn workspace_workdir(launch: &Launch, cwd: &str) -> Option<String> {
+    (launch.engine == Engine::Dsh && launch.dsh_workspace.is_some() && !cwd.is_empty())
+        .then(|| cwd.to_owned())
+}
+
+fn card_workdir(card: &Card) -> String {
+    if card.source.cwd.is_empty() {
+        std::env::var("HOME").unwrap_or_else(|_| "/".to_owned())
+    } else {
+        card.source.cwd.clone()
+    }
+}
+
+fn workdir_note(cwd: &str) -> String {
+    format!(
+        "Work from `{cwd}`. This session starts in its dsh workspace directory, so call the `working_directory` tool with `cd` set to that path before you start.\n\n"
+    )
+}
+
+fn workdir_section(cwd: &str) -> String {
+    format!(
+        "## Working directory\n`{cwd}`\n\nThis session starts in its dsh workspace directory. Call the `working_directory` tool with `cd` set to that path before you start.\n\n"
+    )
+}
+
+fn session_brief(prompt: &str, plan: bool, workdir: Option<String>) -> String {
+    let mut brief = String::new();
+    if let Some(cwd) = workdir.as_deref() {
+        brief.push_str(&workdir_note(cwd));
+    }
+    brief.push_str(&format!(
         "{}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}",
         prompt.trim()
-    );
+    ));
     if plan {
         brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
     }
     brief
 }
 
-fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>) -> String {
+fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>, workdir: Option<String>) -> String {
     let mut brief = format!(
-        "# {}: {}\n\n## Card\n- Kind: {}\n- Source: {} ({})\n- Priority: {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Body\n{}\n\n## Direction from the user\n{}\n\n## References\n",
+        "# {}: {}\n\n## Card\n- Kind: {}\n- Source: {} ({})\n- Priority: {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Body\n{}\n\n## Direction from the user\n{}\n\n{}\n## References\n",
         mode.swipe_text(),
         card.title,
         card.card_event_type(),
@@ -2841,6 +2872,7 @@ fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>) -> String
         card.star.result,
         card.body.as_deref().unwrap_or_default(),
         note.unwrap_or_default(),
+        workdir.as_deref().map(workdir_section).unwrap_or_default(),
     );
     push_refs(&mut brief, card);
     push_instructions(&mut brief, mode);
@@ -2943,7 +2975,8 @@ impl Engine {
 
 /// Where and how triage launches sessions, from `triage serve` flags. Unset omp fields fall
 /// back to `DEFAULT_SESSION` and to omp's own configured model and thinking level. `dsh_host`
-/// is the host file the dsh bridge is read from.
+/// is the host file the dsh bridge is read from. `dsh_workspace` names the dsh workspace every
+/// new dsh session joins, so the dsh web UI shows triage's sessions in one group.
 #[derive(Debug, Clone, Default)]
 pub struct Launch {
     pub session: Option<String>,
@@ -2951,6 +2984,7 @@ pub struct Launch {
     pub thinking: Option<String>,
     pub engine: Engine,
     pub dsh_host: Option<PathBuf>,
+    pub dsh_workspace: Option<String>,
 }
 
 /// Trim an omp model selector and refuse shell characters. A blank selector means unset.

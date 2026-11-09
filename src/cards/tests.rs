@@ -585,8 +585,8 @@ fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
 #[test]
 fn plan_briefs_make_the_plan_repeat_the_status_contract_for_a_fresh_session() {
     let card = info_card("done:%12:plan", "%12");
-    let dispatched = dispatch_brief(&card, DispatchMode::Plan, None);
-    let composed = session_brief("Prepare a plan.", true);
+    let dispatched = dispatch_brief(&card, DispatchMode::Plan, None, None);
+    let composed = session_brief("Prepare a plan.", true, None);
     assert!(
         dispatched.ends_with(&format!(
             "{ENVOY_STATUS_CONTRACT}{REPORT_STEP}\n{PLAN_REPORT_STEP}\n"
@@ -599,14 +599,14 @@ fn plan_briefs_make_the_plan_repeat_the_status_contract_for_a_fresh_session() {
         )),
         "{composed}"
     );
-    assert!(!dispatch_brief(&card, DispatchMode::Act, None).contains(PLAN_REPORT_STEP));
-    assert!(!session_brief("Reply with pong.", false).contains(PLAN_REPORT_STEP));
+    assert!(!dispatch_brief(&card, DispatchMode::Act, None, None).contains(PLAN_REPORT_STEP));
+    assert!(!session_brief("Reply with pong.", false, None).contains(PLAN_REPORT_STEP));
     assert!(
-        dispatch_brief(&card, DispatchMode::Act, None)
+        dispatch_brief(&card, DispatchMode::Act, None, None)
             .ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}"))
     );
     assert!(
-        session_brief("Reply with pong.", false)
+        session_brief("Reply with pong.", false, None)
             .ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}"))
     );
 }
@@ -5755,6 +5755,9 @@ struct BridgeData {
     requests: usize,
     reads: Vec<String>,
     posts: Vec<(String, Value)>,
+    // refuse_workspace answers a launch that names a workspace the way a host older
+    // than workspaces does.
+    refuse_workspace: bool,
 }
 
 impl BridgeData {
@@ -5788,6 +5791,10 @@ impl BridgeData {
             }
             ("POST", _) => {
                 let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+                if path == "/v1/launch" && self.refuse_workspace && !value["workspace"].is_null() {
+                    self.posts.push((path.clone(), value));
+                    return (StatusCode::BAD_REQUEST, json!({"error": "cwd must be an absolute path"}));
+                }
                 let reply = if path == "/v1/launch" {
                     let launched = value["sessionId"].as_str().unwrap_or(&self.launch_id).to_owned();
                     json!({"sessionId": launched})
@@ -6729,4 +6736,64 @@ fn startup_launch_that_wrote_a_session_is_not_repeated() {
         Some(scratch.path()),
         Some(&bin),
     );
+}
+
+fn brief_from_prompt(prompt: &Value) -> String {
+    let prompt = prompt.as_str().expect("a launch prompt");
+    let path = prompt
+        .strip_prefix("Read the brief at ")
+        .and_then(|rest| rest.strip_suffix(" and carry it out."))
+        .unwrap_or_else(|| panic!("unexpected launch prompt {prompt}"));
+    fs::read_to_string(path).unwrap()
+}
+
+#[test]
+fn dsh_workspace_launch_posts_the_workspace_and_briefs_the_project_directory() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
+    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["workspace"], "triage");
+    assert!(launches[0].get("cwd").is_none(), "{launches:?}");
+    let brief = brief_from_prompt(&launches[0]["prompt"]);
+    assert!(brief.starts_with("Work from `/work/project`."), "{brief}");
+    assert!(brief.contains("`working_directory` tool"), "{brief}");
+    assert!(brief.contains(ENVOY_STATUS_CONTRACT), "{brief}");
+}
+
+#[test]
+fn dsh_workspace_launch_falls_back_to_the_project_directory_on_an_older_host() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.refuse_workspace = true);
+    let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
+    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 2);
+    assert_eq!(launches[0]["workspace"], "triage");
+    assert!(launches[1]["workspace"].is_null(), "{launches:?}");
+    assert_eq!(launches[1]["cwd"], "/work/project");
+}
+
+#[test]
+fn dsh_workspace_dispatch_brief_names_the_working_directory() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Act, None, &launch, None).unwrap();
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["workspace"], "triage");
+    let brief = brief_from_prompt(&launches[0]["prompt"]);
+    assert!(brief.contains("## Working directory\n`/work/project`"), "{brief}");
+    assert!(brief.contains("## References"), "{brief}");
+    assert!(brief.find("## Working directory") < brief.find("## References"), "{brief}");
 }

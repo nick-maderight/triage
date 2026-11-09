@@ -7,6 +7,25 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Check a workspace name against the bridge's rule: one lowercase path segment, which
+/// keeps every session in the directory the name points at. A blank name means unset.
+pub fn workspace_name(name: Option<&str>) -> Result<Option<&str>, String> {
+    let name = name.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(name) = name {
+        let allowed = !name.is_empty()
+            && name.len() <= 64
+            && name != "."
+            && name != ".."
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_.".contains(c));
+        if !allowed {
+            return Err(format!("invalid dsh workspace {name}"));
+        }
+    }
+    Ok(name)
+}
+
 /// The models dsh offers, as (selector, display name).
 pub const MODELS: [(&str, &str); 2] = [
     ("deepseek-flash", "DeepSeek-V4.1-Flash"),
@@ -317,6 +336,17 @@ mod tests {
             error: None,
             name: None,
             command: None,
+        }
+    }
+
+    #[test]
+    fn workspace_names_are_one_lowercase_path_segment() {
+        assert_eq!(workspace_name(Some("triage")), Ok(Some("triage")));
+        assert_eq!(workspace_name(Some(" autorules ")), Ok(Some("autorules")));
+        assert_eq!(workspace_name(Some("")), Ok(None));
+        let long = "x".repeat(65);
+        for name in ["Triage", "a/b", "..", ".", "a b", &long] {
+            assert!(workspace_name(Some(name)).is_err(), "{name}");
         }
     }
 

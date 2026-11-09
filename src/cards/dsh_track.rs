@@ -754,8 +754,7 @@ pub(super) fn launch_new(
         Start::Plan => ("plan", None),
         Start::PlanInto(executor) => ("plan-into", executor),
     };
-    let body = json!({
-        "cwd": cwd,
+    let mut body = json!({
         "prompt": brief_prompt(brief),
         "title": title,
         "model": launch.model.as_deref().unwrap_or(dsh::DEFAULT_MODEL),
@@ -763,5 +762,20 @@ pub(super) fn launch_new(
         "mode": mode,
         "executor": executor,
     });
-    client.launch(&body).map(|sid| format!("dsh:{sid}"))
+    if let Some(workspace) = launch.dsh_workspace.as_deref() {
+        body["workspace"] = json!(workspace);
+    } else {
+        body["cwd"] = json!(cwd);
+    }
+    match client.launch(&body) {
+        Ok(sid) => Ok(format!("dsh:{sid}")),
+        // A host older than workspaces rejects the field before it starts anything, so the
+        // same brief starts in a session of its own directory instead of failing.
+        Err(error) if launch.dsh_workspace.is_some() && error.contains("cwd") => {
+            body.as_object_mut().map(|fields| fields.remove("workspace"));
+            body["cwd"] = json!(cwd);
+            client.launch(&body).map(|sid| format!("dsh:{sid}"))
+        }
+        Err(error) => Err(error),
+    }
 }

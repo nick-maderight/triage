@@ -40,6 +40,10 @@ enum Commands {
         /// thinking level for launched sessions [default: the harness's own]
         #[arg(long)]
         thinking: Option<String>,
+        /// dsh workspace every new dsh session joins, so the dsh web UI groups triage's
+        /// sessions; empty keeps each session in its own directory [default: triage]
+        #[arg(long, default_value = "triage")]
+        dsh_workspace: String,
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
         #[arg(long = "allow-host", value_name = "HOST")]
         allow_hosts: Vec<String>,
@@ -88,9 +92,10 @@ fn main() {
 #[tokio::main]
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Commands::Serve { listen, db, session, engine, model, thinking, allow_hosts, no_notify } => {
+        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, allow_hosts, no_notify } => {
             // Validate before opening the DB so a bad flag exits 1 before anything is created.
             cards::engine_flags(engine, model.as_deref(), thinking.as_deref())?;
+            let dsh_workspace = dsh::workspace_name(Some(&dsh_workspace))?.map(str::to_owned);
             let path = match db {
                 Some(path) => path,
                 None => default_db_path()?,
@@ -106,7 +111,14 @@ async fn run() -> Result<(), String> {
                 db,
                 bus,
                 tracker: std::sync::Mutex::new(tracker),
-                launch: cards::Launch { session, model, thinking, engine, dsh_host: dsh::host_file() },
+                launch: cards::Launch {
+                    session,
+                    model,
+                    thinking,
+                    engine,
+                    dsh_host: dsh::host_file(),
+                    dsh_workspace,
+                },
                 push,
                 allowed_hosts: allow_hosts,
             });
