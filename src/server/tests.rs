@@ -59,9 +59,9 @@ fn roles_from_config_parses_role_names_as_role_selectors() {
 #[test]
 fn string_list_from_config_parses_value_arrays() {
     let config = r#"{"key":"enabledModels","value":["provider/a","provider/b"],"type":"list","description":""}"#;
-    assert_eq!(super::string_list_from_config(config), ["provider/a", "provider/b"]);
-    assert!(super::string_list_from_config(r#"{"value":null}"#).is_empty());
-    assert!(super::string_list_from_config("not json").is_empty());
+    assert_eq!(super::string_list_from_config(config).unwrap(), ["provider/a", "provider/b"]);
+    assert!(super::string_list_from_config(r#"{"value":null}"#).unwrap().is_empty());
+    assert!(super::string_list_from_config("not json").is_none());
 }
 
 #[test]
@@ -94,17 +94,11 @@ fn parse_catalog_keeps_only_enabled_selectors() {
             {"selector":"provider/c","name":"Gamma"}
         ]}"#;
     let enabled = vec!["provider/a".to_owned(), "provider/b".to_owned()];
-    let models = super::parse_catalog(catalog, &enabled);
-    let entries: Vec<(&str, &str)> = models
-        .iter()
-        .map(|m| (m.selector.as_str(), m.name.as_str()))
-        .collect();
-    assert_eq!(
-        entries,
-        [("provider/a", "Alpha"), ("provider/b", "provider/b")]
-    );
-    assert_eq!(super::parse_catalog(catalog, &[]).len(), 3);
-    assert!(super::parse_catalog("not json", &enabled).is_empty());
+    let models = super::parse_catalog(catalog, &enabled).unwrap();
+    let entries: Vec<(&str, &str)> = models.iter().map(|m| (m.selector.as_str(), m.name.as_str())).collect();
+    assert_eq!(entries, [("provider/a", "Alpha"), ("provider/b", "provider/b")]);
+    assert_eq!(super::parse_catalog(catalog, &[]).unwrap().len(), 3);
+    assert!(super::parse_catalog("not json", &enabled).is_none());
 }
 
 fn event_with_id(event_type: &str, source: &str, id: &str, data: serde_json::Value) -> CloudEvent {
@@ -2411,6 +2405,98 @@ esac
         "a changed omp config must reload the catalog"
     );
     assert_eq!(snapshot(), ["provider/new"]);
+}
+#[cfg(unix)]
+#[test]
+fn models_retries_failed_loads_without_another_config_change() {
+    if run_with_fake_tmux_child("server::tests::models_retries_failed_loads_without_another_config_change") {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let agent = TestDir::new("triage-omp-retry");
+    let catalog = agent.0.join("catalog.json");
+    let fail_models = agent.0.join("fail-models");
+    let fail_cycle = agent.0.join("fail-cycle");
+    let config = agent.0.join("config.yml");
+    let omp = PathBuf::from(std::env::var_os("PATH").unwrap()).join("omp");
+    std::fs::write(
+        &omp,
+        format!(
+            r#"#!/bin/sh
+case "$*" in
+"models --json")
+  if [ -f '{fail_models}' ]; then exit 1; fi
+  /bin/cat '{catalog}'
+  ;;
+"config get modelRoles --json") printf '%s\n' '{{"value":{{"smol":"provider/b","default":"provider/a"}}}}' ;;
+"config get enabledModels --json") printf '%s\n' '{{"value":[]}}' ;;
+"config get cycleOrder --json")
+  if [ -f '{fail_cycle}' ]; then printf '%s\n' 'not json'; else printf '%s\n' '{{"value":["smol","default"]}}'; fi
+  ;;
+*) exit 1 ;;
+esac
+"#,
+            catalog = catalog.display(),
+            fail_models = fail_models.display(),
+            fail_cycle = fail_cycle.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&omp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&config, "modelRoles: {}\n").unwrap();
+    std::fs::write(
+        &catalog,
+        r#"{"models":[{"selector":"provider/recovered","name":"Recovered model"}]}"#,
+    )
+    .unwrap();
+
+    let snapshot = || {
+        let catalog = super::MODELS.read().unwrap();
+        (
+            catalog.models.iter().map(|model| model.selector.clone()).collect::<Vec<_>>(),
+            catalog.execution_models.iter().map(|model| model.selector.clone()).collect::<Vec<_>>(),
+        )
+    };
+    let mut loaded = None;
+
+    std::fs::write(&fail_models, "fail").unwrap();
+    std::fs::write(&fail_cycle, "fail").unwrap();
+    assert!(super::refresh_models(Some(agent.0.as_path()), &mut loaded));
+    assert!(loaded.is_none());
+    assert_eq!(snapshot(), (vec!["@default".to_owned(), "@smol".to_owned()], Vec::<String>::new()));
+
+    std::fs::remove_file(&fail_models).unwrap();
+    std::fs::remove_file(&fail_cycle).unwrap();
+    assert!(super::refresh_models(Some(agent.0.as_path()), &mut loaded));
+    assert_eq!(
+        snapshot(),
+        (
+            vec!["@default".to_owned(), "@smol".to_owned(), "provider/recovered".to_owned()],
+            vec!["@smol".to_owned(), "@default".to_owned()]
+        )
+    );
+
+    std::fs::File::options()
+        .write(true)
+        .open(&config)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+    std::fs::write(&fail_cycle, "fail").unwrap();
+    assert!(super::refresh_models(Some(agent.0.as_path()), &mut loaded));
+    assert!(snapshot().1.is_empty());
+    std::fs::remove_file(&fail_cycle).unwrap();
+    assert!(super::refresh_models(Some(agent.0.as_path()), &mut loaded));
+    assert_eq!(snapshot().1, ["@smol", "@default"]);
+
+    std::fs::write(
+        &catalog,
+        r#"{"models":[{"selector":"provider/not-reloaded","name":"Stale by design"}]}"#,
+    )
+    .unwrap();
+    assert!(!super::refresh_models(Some(agent.0.as_path()), &mut loaded));
+    assert!(snapshot().0.contains(&"provider/recovered".to_owned()));
 }
 #[test]
 fn pane_directories_list_each_directory_once_most_shared_first() {

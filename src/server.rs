@@ -635,20 +635,15 @@ const MODELS_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
 type ConfigStamp = Vec<Option<std::time::SystemTime>>;
 
 /// Starts the catalog thread when first forced; forcing only spawns, it never waits. The thread
-/// loads at once, then reloads whenever omp's config files change, so a model or role change in
-/// omp reaches the picker without a daemon restart.
+/// loads at once, then retries after a failed catalog query.
 static MODELS_LOAD: std::sync::LazyLock<()> = std::sync::LazyLock::new(|| {
     let _ = std::thread::Builder::new()
         .name("triage-models".to_owned())
         .spawn(|| {
-            let dir = omp_agent_dir();
             let mut loaded = None;
             loop {
+                let dir = omp_agent_dir();
                 refresh_models(dir.as_deref(), &mut loaded);
-                // Without omp's agent directory there is nothing to watch, so the first load stands.
-                if dir.is_none() {
-                    break;
-                }
                 std::thread::sleep(MODELS_CHECK);
             }
         });
@@ -661,6 +656,7 @@ fn omp_agent_dir() -> Option<std::path::PathBuf> {
     (output.status.success() && !dir.is_empty()).then(|| dir.into())
 }
 
+
 fn config_stamp(dir: &std::path::Path) -> ConfigStamp {
     OMP_CONFIG_FILES
         .iter()
@@ -668,21 +664,20 @@ fn config_stamp(dir: &std::path::Path) -> ConfigStamp {
         .collect()
 }
 
-/// Loads the catalog when nothing is loaded yet or omp's config files changed since the last load,
-/// and says whether it loaded. The stamp is taken before the load, so a change during the load
-/// triggers another. A failed load still records its stamp: its roles-only result stands until the
-/// next config change instead of rerunning the twenty-second load on every check.
+/// Loads the catalog when no successful snapshot exists or omp's config changes. Failed queries leave the stamp unset, so the next 30-second check retries. Successful empty lists are cached.
 fn refresh_models(dir: Option<&std::path::Path>, loaded: &mut Option<ConfigStamp>) -> bool {
     let stamp = dir.map(config_stamp).unwrap_or_default();
     if loaded.as_ref() == Some(&stamp) {
         return false;
     }
-    let models = load_models();
-    let execution_models = load_execution_models(&models);
+    let (models, models_ok) = load_models();
+    let (execution_models, execution_models_ok) = load_execution_models(&models);
     if let Ok(mut slot) = MODELS.write() {
         *slot = ModelCatalog { models, execution_models };
     }
-    *loaded = Some(stamp);
+    if models_ok && execution_models_ok {
+        *loaded = Some(stamp);
+    }
     true
 }
 
@@ -718,21 +713,24 @@ fn load_roles() -> Vec<Model> {
 }
 
 /// Parses string-array values printed by `omp config get`.
-fn string_list_from_config(stdout: &str) -> Vec<String> {
-    let parsed: serde_json::Value = serde_json::from_str(stdout).unwrap_or_default();
-    parsed["value"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_str().map(str::to_owned))
-        .collect()
+/// Parses string-array values printed by `omp config get`; invalid JSON is `None`.
+fn string_list_from_config(stdout: &str) -> Option<Vec<String>> {
+    let parsed: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    Some(
+        parsed["value"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect(),
+    )
 }
 
 /// The configured enabledModels whitelist; a failed query yields an empty list, which filters nothing.
 fn load_enabled() -> Vec<String> {
     let output = std::process::Command::new("omp").args(["config", "get", "enabledModels", "--json"]).output();
     let Some(output) = output.ok().filter(|o| o.status.success()) else { return Vec::new() };
-    string_list_from_config(&String::from_utf8_lossy(&output.stdout))
+    string_list_from_config(&String::from_utf8_lossy(&output.stdout)).unwrap_or_default()
 }
 
 /// Builds role selectors in Plan Review's configured order.
@@ -751,10 +749,13 @@ fn execution_models(models: &[Model], cycle: &[String]) -> Vec<Model> {
 }
 
 /// Loads model roles in the configured Plan Review order.
-fn load_execution_models(models: &[Model]) -> Vec<Model> {
+fn load_execution_models(models: &[Model]) -> (Vec<Model>, bool) {
     let output = std::process::Command::new("omp").args(["config", "get", "cycleOrder", "--json"]).output();
-    let Some(output) = output.ok().filter(|o| o.status.success()) else { return Vec::new() };
-    execution_models(models, &string_list_from_config(&String::from_utf8_lossy(&output.stdout)))
+    let Some(output) = output.ok().filter(|o| o.status.success()) else { return (Vec::new(), false) };
+    let Some(cycle) = string_list_from_config(&String::from_utf8_lossy(&output.stdout)) else {
+        return (Vec::new(), false);
+    };
+    (execution_models(models, &cycle), true)
 }
 
 /// Parses `omp models --json` output. The catalog carries every bundled model, valid or not —
@@ -762,30 +763,34 @@ fn load_execution_models(models: &[Model]) -> Vec<Model> {
 /// HTTP 400 because the model runs only through an inference profile (`global.`/`us.` prefix) —
 /// so a configured enabledModels whitelist keeps the picker to models that actually run. An empty
 /// whitelist (omp's default, everything allowed) leaves the catalog untouched.
-fn parse_catalog(stdout: &str, enabled: &[String]) -> Vec<Model> {
-    let parsed: serde_json::Value = serde_json::from_str(stdout).unwrap_or_default();
-    parsed["models"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|m| {
-            let selector = m["selector"].as_str()?;
-            if !enabled.is_empty() && !enabled.iter().any(|allowed| allowed == selector) {
-                return None;
-            }
-            let name = m["name"].as_str().filter(|name| !name.trim().is_empty()).unwrap_or(selector);
-            Some(Model { selector: selector.to_owned(), name: name.to_owned() })
-        })
-        .collect()
+fn parse_catalog(stdout: &str, enabled: &[String]) -> Option<Vec<Model>> {
+    let parsed: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    Some(
+        parsed["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| {
+                let selector = m["selector"].as_str()?;
+                if !enabled.is_empty() && !enabled.iter().any(|allowed| allowed == selector) {
+                    return None;
+                }
+                let name = m["name"].as_str().filter(|name| !name.trim().is_empty()).unwrap_or(selector);
+                Some(Model { selector: selector.to_owned(), name: name.to_owned() })
+            })
+            .collect(),
+    )
 }
 
-fn load_models() -> Vec<Model> {
+fn load_models() -> (Vec<Model>, bool) {
     let roles = load_roles();
     let enabled = load_enabled();
     let output = std::process::Command::new("omp").args(["models", "--json"]).output();
-    let Some(output) = output.ok().filter(|o| o.status.success()) else { return roles };
-    let catalog = parse_catalog(&String::from_utf8_lossy(&output.stdout), &enabled);
-    roles.into_iter().chain(catalog).collect()
+    let Some(output) = output.ok().filter(|o| o.status.success()) else { return (roles, false) };
+    let Some(catalog) = parse_catalog(&String::from_utf8_lossy(&output.stdout), &enabled) else {
+        return (roles, false);
+    };
+    (roles.into_iter().chain(catalog).collect(), true)
 }
 
 async fn models(State(state): State<Arc<AppState>>) -> axum::response::Response {
