@@ -736,9 +736,10 @@
         await waitFor(() => dispatch.open, 'dispatch opens on P');
         const mode = (name) => document.querySelector(`#dispatch-mode-${name}`);
         assert(mode('plan-into').getAttribute('aria-checked') === 'true', 'P preselects Plan into');
-        assert(!dispatch.querySelector('#dispatch-models').hidden, 'both model fields are visible');
+        assert(!dispatch.querySelector('#dispatch-models').hidden, 'Plan into shows the execution model field');
         assert(segmentRow(dispatch.querySelector('#dispatch-mode')), 'the four dispatch segments share one row');
-        assert(text('#dispatch-model').includes('Alpha One'), 'the planner Default names the daemon model');
+        assert(text('#dispatch-model').includes('Alpha One'), 'the Model Default names the daemon model');
+        assert(text('#dispatch-thinking').includes('max'), 'the Thinking Default names the daemon level');
         assert(text('#dispatch-executor').includes('omp smol role'), 'the executor Default names the smol role');
         dispatch.querySelector('#dispatch-start').scrollIntoView({ block: 'center' });
         const dialogRect = dispatch.getBoundingClientRect(),
@@ -748,7 +749,9 @@
           'the Launch button stays inside the dialog',
         );
         mode('act').click();
-        assert(dispatch.querySelector('#dispatch-models').hidden, 'Act hides the model fields');
+        assert(dispatch.querySelector('#dispatch-models').hidden, 'Act hides the execution model field');
+        assert(text('#dispatch-model').includes('Alpha One'), 'Act keeps the Model field visible');
+        assert(text('#dispatch-thinking').includes('max'), 'Act keeps the Thinking field visible');
         return { scenario: 'plan-into', passed: true };
       } finally {
         window.fetch = nativeFetch;

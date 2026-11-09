@@ -196,7 +196,7 @@ test('a confirms the primary action even when a button holds focus', () => {
   ]);
 });
 
-test('dispatch sheet posts models only with Plan into', async () => {
+test('dispatch sheet posts model and thinking for every mode', async () => {
   const card = { id: 'launch-card', kind: 'finding', title: 'Launch work' },
     state = {
       cards: [card],
@@ -223,6 +223,7 @@ test('dispatch sheet posts models only with Plan into', async () => {
       '#dispatch-hint': hint,
       '#dispatch-note': { value: 'Make a plan' },
       '#dispatch-model': { value: 'provider/planner' },
+      '#dispatch-thinking': { value: 'high' },
       '#dispatch-executor': { value: '' },
       '#dispatch': dialog,
     },
@@ -251,7 +252,9 @@ test('dispatch sheet posts models only with Plan into', async () => {
   await context.submitDispatch({ preventDefault() {} });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/v1/cards/launch-card/dispatch');
-  assert.deepEqual(JSON.parse(requests[0].init.body), { mode: 'plan', note: 'Make a plan' });
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    mode: 'plan', note: 'Make a plan', model: 'provider/planner', thinking: 'high',
+  });
 
   requests.length = 0;
   card.id = 'plan-into-card';
@@ -263,8 +266,104 @@ test('dispatch sheet posts models only with Plan into', async () => {
     mode: 'plan-into',
     note: 'Make a plan',
     model: 'provider/planner',
+    thinking: 'high',
     executor: null,
   });
+});
+
+test('finding options open the launch sheet and answer with its choices', async () => {
+  const card = {
+      id: 'finding-card', kind: 'finding', options: [
+        { label: 'Do as recommended', recommended: true },
+        { label: 'Investigate first' },
+      ],
+    },
+    buttons = ['investigate', 'act', 'plan', 'plan-into'].map((mode) => ({
+      dataset: { mode },
+      attrs: { 'aria-checked': String(mode === 'investigate') },
+      tabIndex: mode === 'investigate' ? 0 : -1,
+      setAttribute(name, value) { this.attrs[name] = value; },
+      getAttribute(name) { return this.attrs[name]; },
+    })),
+    dialog = { open: false, close() { this.open = false; } },
+    start = { disabled: false },
+    hint = { textContent: '' },
+    elements = {
+      '#dispatch-mode': { children: buttons },
+      '#dispatch-mode-help': { textContent: '' },
+      '#dispatch-models': { hidden: true },
+      '#dispatch-note': { value: '', focus() {} },
+      '#dispatch-model': { value: 'provider/chosen' },
+      '#dispatch-thinking': { value: 'xhigh' },
+      '#dispatch-executor': { value: 'provider/executor' },
+      '#dispatch-hint': hint,
+      '#dispatch-start': start,
+      '#dispatch': dialog,
+    },
+    state = {
+      cards: [card], counts: { finding: 1 }, drafts: new Map(), dispatchId: null,
+      pending: null, remoteSwapUntil: 0, inflight: new Set(), actionRevision: 0,
+      dirty: false, idx: 0, history: { loaded: true, error: null },
+    },
+    requests = [],
+    context = vm.createContext({
+      S: state,
+      PICKERS: { 'dispatch-model': { options: [{ value: 'provider/chosen' }] } },
+      Date: { now: () => 1000 },
+      window: { matchMedia: () => ({ matches: true }) },
+      document: { activeElement: null },
+      $: (selector) => elements[selector] || null,
+      draft: (current) => {
+        if (!state.drafts.has(current.id)) state.drafts.set(current.id, {
+          note: 'Do the safe thing', dispatch: '', dispatchMode: 'investigate', dispatchOption: null,
+        });
+        return state.drafts.get(current.id);
+      },
+      answerable: () => true,
+      showDialog: (current) => { current.open = true; },
+      loadModels() {},
+      snapshot: () => ({}),
+      render() {},
+      enc: encodeURIComponent,
+      fetch: async (url, init) => {
+        requests.push({ url, init });
+        return { ok: true, json: async () => ({ ok: true }) };
+      },
+      resultMessage: () => 'Launched Do as recommended · Launch work',
+      toast() {},
+      refresh() {},
+    });
+  vm.runInContext(
+    `${functionSource('optionMode')}\n${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${functionSource('pick')}\n${functionSource('api', true)}\n${functionSource('act', true)}\n${functionSource('settle', true)}\n${functionSource('submitDispatch', true)}\nglobalThis.pick = pick; globalThis.submitDispatch = submitDispatch;`,
+    context,
+  );
+  context.setDispatchMode = (mode) => {
+    const selected = buttons.find((button) => button.dataset.mode === mode);
+    buttons.forEach((button) => button.setAttribute('aria-checked', String(button === selected)));
+    state.drafts.get(card.id).dispatchMode = mode;
+  };
+
+  context.pick(card, 0);
+  assert.equal(dialog.open, true);
+  assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'act');
+  assert.equal(elements['#dispatch-note'].value, 'Do the safe thing');
+  await context.submitDispatch({ preventDefault() {} });
+  assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    option: 0, text: null, note: 'Do the safe thing', mode: 'act',
+    model: 'provider/chosen', thinking: 'xhigh',
+  });
+
+  requests.length = 0;
+  state.cards = [card];
+  state.counts.finding = 1;
+  context.pick(card, 1);
+  assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'investigate');
+  context.setDispatchMode('plan');
+  await context.submitDispatch({ preventDefault() {} });
+  assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
+  assert.equal(JSON.parse(requests[0].init.body).mode, 'plan');
+  assert.equal('executor' in JSON.parse(requests[0].init.body), false);
 });
 
 test('compose posts its mode and the execution model only for Plan into', async () => {

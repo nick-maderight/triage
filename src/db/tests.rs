@@ -119,6 +119,7 @@ fn card(id: &str, priority: u8, created_ms: i64, pane: &str) -> Card {
         refs: Vec::new(),
         level: None,
         tool_call_id: None,
+        report_due: false,
     }
 }
 
@@ -165,6 +166,7 @@ fn thread_card(
         refs: refs.iter().map(|r| r.to_string()).collect(),
         level: None,
         tool_call_id: None,
+        report_due: false,
     }
 }
 

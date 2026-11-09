@@ -135,9 +135,10 @@ pub fn finding_pane(
     card_id: &str,
     option: usize,
     note: Option<&str>,
+    mode: crate::cards::DispatchMode,
 ) -> io::Result<Option<String>> {
     let card_tag = card_tag(card_id);
-    let expected_tag = finding_choice_tag(&card_tag, option, note)?;
+    let expected_tag = finding_choice_tag(&card_tag, option, note, mode)?;
     for pane in list_panes()? {
         if let Some(tag) = pane.triage_card_tag.as_deref() {
             let suffix = tag.strip_prefix(card_tag.as_str());
@@ -159,18 +160,24 @@ pub fn tag_finding_pane(
     card_id: &str,
     option: usize,
     note: Option<&str>,
+    mode: crate::cards::DispatchMode,
 ) -> io::Result<()> {
-    let tag = finding_choice_tag(&card_tag(card_id), option, note)?;
+    let tag = finding_choice_tag(&card_tag(card_id), option, note, mode)?;
     tmux_run(&["set-option", "-p", "-t", pane, "@triage_card_id", &tag])?;
     Ok(())
 }
 
-fn finding_choice_tag(card_tag: &str, option: usize, note: Option<&str>) -> io::Result<String> {
+fn finding_choice_tag(
+    card_tag: &str,
+    option: usize,
+    note: Option<&str>,
+    mode: crate::cards::DispatchMode,
+) -> io::Result<String> {
     use std::fmt::Write as _;
 
-    let mut tag = String::with_capacity(card_tag.len().saturating_add(64));
+    let mut tag = String::with_capacity(card_tag.len().saturating_add(80));
     tag.push_str(card_tag);
-    write!(&mut tag, ":{option}:").unwrap();
+    write!(&mut tag, ":{option}:{}:", mode.swipe_text()).unwrap();
     if let Some(note) = note {
         write!(&mut tag, "s{:032x}", digest(note.as_bytes())).unwrap();
     } else {
@@ -501,7 +508,7 @@ printf '%%12\n'
     }
 
     #[test]
-    fn finding_pane_rejects_changed_option_or_note() {
+    fn finding_pane_rejects_changed_option_note_or_mode() {
         const TMUX_SCRIPT: &str = r##"#!/bin/sh
 case "$1" in
     set-option)
@@ -520,14 +527,22 @@ esac
 "##;
 
         if std::env::var_os("TRIAGE_FINDING_PANE_CHILD").is_some() {
-            tag_finding_pane("%1", "card", 2, Some("original note")).unwrap();
-            let same_choice = finding_pane("card", 2, Some("original note"))
+            let mode = crate::cards::DispatchMode::Act;
+            tag_finding_pane("%1", "card", 2, Some("original note"), mode).unwrap();
+            let same_choice = finding_pane("card", 2, Some("original note"), mode)
                 .unwrap()
                 .as_deref()
                 == Some("%1");
-            let option_rejected = finding_pane("card", 3, Some("original note")).is_err();
-            let note_rejected = finding_pane("card", 2, Some("changed note")).is_err();
-            let results = format!("{same_choice}\n{option_rejected}\n{note_rejected}\n");
+            let option_rejected = finding_pane("card", 3, Some("original note"), mode).is_err();
+            let note_rejected = finding_pane("card", 2, Some("changed note"), mode).is_err();
+            let mode_rejected = finding_pane(
+                "card",
+                2,
+                Some("original note"),
+                crate::cards::DispatchMode::Plan,
+            )
+            .is_err();
+            let results = format!("{same_choice}\n{option_rejected}\n{note_rejected}\n{mode_rejected}\n");
             let results_path =
                 PathBuf::from(std::env::var_os("TRIAGE_FINDING_PANE_RESULT_FILE").unwrap());
             std::fs::write(results_path, results).unwrap();
@@ -537,7 +552,7 @@ esac
         let scratch = Scratch::new("finding-pane");
         let tmux_dir = scratch.fake_tmux("bin", TMUX_SCRIPT);
         let results_path = scratch.0.join("results");
-        let output = child_test("finding_pane_rejects_changed_option_or_note", &tmux_dir)
+        let output = child_test("finding_pane_rejects_changed_option_note_or_mode", &tmux_dir)
             .env("TRIAGE_FINDING_PANE_CHILD", "1")
             .env("TRIAGE_TMUX_TAG_FILE", scratch.0.join("tag"))
             .env("TRIAGE_FINDING_PANE_RESULT_FILE", &results_path)
@@ -554,6 +569,7 @@ esac
         assert_eq!(results.next(), Some("true"));
         assert_eq!(results.next(), Some("true"), "changed option must be rejected");
         assert_eq!(results.next(), Some("true"), "changed note must be rejected");
+        assert_eq!(results.next(), Some("true"), "changed mode must be rejected");
         assert_eq!(results.next(), None);
     }
 
@@ -562,18 +578,25 @@ esac
         let note_a = "a".repeat(32 * 1024);
         let note_b = "b".repeat(32 * 1024);
         let card_tag = card_tag("card");
-        let tag_a = finding_choice_tag(&card_tag, 0, Some(&note_a)).unwrap();
-        let tag_b = finding_choice_tag(&card_tag, 0, Some(&note_b)).unwrap();
+        let tag_a = finding_choice_tag(&card_tag, 0, Some(&note_a), crate::cards::DispatchMode::Act).unwrap();
+        let tag_b = finding_choice_tag(&card_tag, 0, Some(&note_b), crate::cards::DispatchMode::Act).unwrap();
 
         assert!(tag_a.len() < 128);
         assert!(tag_b.len() < 128);
         assert_ne!(tag_a, tag_b);
     }
+    #[test]
+    fn finding_choice_tag_distinguishes_mode() {
+        let card_tag = card_tag("card");
+        let act = finding_choice_tag(&card_tag, 0, None, crate::cards::DispatchMode::Act).unwrap();
+        let plan = finding_choice_tag(&card_tag, 0, None, crate::cards::DispatchMode::Plan).unwrap();
+        assert_ne!(act, plan);
+    }
 
     #[test]
     fn finding_tag_bounds_large_card_id() {
         let card_id = "x".repeat(70 * 1024);
-        let tag = finding_choice_tag(&card_tag(&card_id), 0, None).unwrap();
+        let tag = finding_choice_tag(&card_tag(&card_id), 0, None, crate::cards::DispatchMode::Act).unwrap();
         assert!(tag.len() < 128);
     }
 }
