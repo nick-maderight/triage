@@ -39,7 +39,7 @@ fn read(path: &Path, declared: &str) -> Option<(String, Vec<u8>)> {
 }
 
 /// The media type the bytes themselves declare. SVG, HTML and every other type are refused.
-fn sniff(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn sniff(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
         return Some("image/png");
     }

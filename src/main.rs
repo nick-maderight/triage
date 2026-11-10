@@ -11,6 +11,7 @@ mod omp;
 mod push;
 mod server;
 mod tmux;
+mod uploads;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

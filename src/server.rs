@@ -203,6 +203,8 @@ fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> 
         .route("/v1/dsh/{id}/peek", axum::routing::get(dsh_peek))
         .route("/v1/dsh/{id}/send", axum::routing::post(dsh_send))
         .layer(axum::Extension(notify))
+        // A prompt image rides the request as base64; everything else stays far below this.
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .with_state(state)
         .layer(axum::middleware::from_fn(validate_host_origin))
         .layer(axum::Extension(policy))
@@ -441,30 +443,38 @@ async fn ingest(
 async fn answer(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
-    axum::Json(request): axum::Json<crate::events::AnswerReq>,
+    axum::Json(request): axum::Json<AnswerRequest>,
 ) -> axum::response::Response {
-    if request.mode.as_deref().is_some_and(|mode| crate::cards::DispatchMode::parse(mode).is_none()) {
+    let answer = request.answer;
+    if answer.mode.as_deref().is_some_and(|mode| crate::cards::DispatchMode::parse(mode).is_none()) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown mode");
     }
     let mut launch = state.launch.clone();
     if let Err(error) = apply_launch_choices(
         &mut launch,
-        request.engine.as_deref(),
-        request.model.as_deref(),
-        request.thinking.as_deref(),
+        answer.engine.as_deref(),
+        answer.model.as_deref(),
+        answer.thinking.as_deref(),
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
-    if request.mode.as_deref() == Some("plan-into") {
+    if answer.mode.as_deref() == Some("plan-into") {
         if let Err(error) = crate::cards::plan_into_choices(
             launch.engine,
-            request.executor.as_deref(),
-            request.executor_thinking.as_deref(),
+            answer.executor.as_deref(),
+            answer.executor_thinking.as_deref(),
         ) {
             return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
         }
     }
-    card_action(state, id, move |db, card| crate::cards::answer(db, &card, &request, &launch)).await
+    let image = match store_image(state.db.path(), request.image).await {
+        Ok(image) => image,
+        Err(response) => return response,
+    };
+    card_action(state, id, move |db, card| {
+        crate::cards::answer(db, &card, &answer, &launch, image.as_ref())
+    })
+    .await
 }
 
 /// A new engine drops the daemon's model and thinking level, which belong to the old engine.
@@ -537,6 +547,25 @@ struct CardNoteRequest {
     note: Option<String>,
 }
 
+/// An image a prompt carries, encoded as the inbox holds it. The daemon saves one copy under
+/// `uploads/` and hands the engines that copy: omp as an `@` reference, dsh as the same bytes.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageRequest {
+    media_type: String,
+    data: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AnswerRequest {
+    #[serde(flatten)]
+    answer: crate::events::AnswerReq,
+    #[serde(default)]
+    image: Option<ImageRequest>,
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 struct DispatchRequest {
     #[serde(default)]
@@ -554,6 +583,8 @@ struct DispatchRequest {
     executor: Option<String>,
     #[serde(default)]
     executor_thinking: Option<String>,
+    #[serde(default)]
+    image: Option<ImageRequest>,
 }
 
 async fn dispatch(
@@ -600,6 +631,10 @@ async fn dispatch(
     let note = request.note.filter(|note| !note.trim().is_empty());
     let executor = request.executor;
     let executor_thinking = request.executor_thinking;
+    let image = match store_image(state.db.path(), request.image).await {
+        Ok(image) => image,
+        Err(response) => return response,
+    };
     card_action(state, id, move |db, card| {
         crate::cards::dispatch(
             db,
@@ -609,9 +644,30 @@ async fn dispatch(
             &launch,
             executor.as_deref(),
             executor_thinking.as_deref(),
+            image.as_ref(),
         )
     })
     .await
+}
+
+/// Save a request's image under the daemon's `uploads/`, or the 400 to answer with.
+async fn store_image(
+    db_file: &std::path::Path,
+    image: Option<ImageRequest>,
+) -> Result<Option<crate::uploads::Upload>, axum::response::Response> {
+    let Some(image) = image else {
+        return Ok(None);
+    };
+    let db_file = db_file.to_path_buf();
+    match tokio::task::spawn_blocking(move || {
+        crate::uploads::store(&db_file, &image.media_type, &image.data, image.name.as_deref())
+    })
+    .await
+    {
+        Ok(Ok(upload)) => Ok(Some(upload)),
+        Ok(Err(error)) => Err(error_response(axum::http::StatusCode::BAD_REQUEST, &error)),
+        Err(error) => Err(internal_error(error)),
+    }
 }
 
 async fn close(
@@ -703,6 +759,8 @@ struct SessionRequest {
     /// Effort the Plan into execution model takes, which only a dsh plan can name.
     #[serde(default)]
     executor_thinking: Option<String>,
+    #[serde(default)]
+    image: Option<ImageRequest>,
 }
 
 /// A model entry for the shared pickers, named by its omp selector.
@@ -1021,7 +1079,23 @@ async fn start_session(
             request.executor.as_deref(),
             request.executor_thinking.as_deref(),
         )?;
-        crate::cards::start_session(&action_state.db, &request.prompt, &cwd, &launch, start)
+        let image = match request.image.as_ref() {
+            Some(image) => Some(crate::uploads::store(
+                &action_state.db.path(),
+                &image.media_type,
+                &image.data,
+                image.name.as_deref(),
+            )?),
+            None => None,
+        };
+        crate::cards::start_session(
+            &action_state.db,
+            &request.prompt,
+            &cwd,
+            &launch,
+            start,
+            image.as_ref(),
+        )
     })
     .await
     {
@@ -1436,7 +1510,7 @@ async fn dsh_send(
         if session.running || !session.pending_input.is_empty() {
             return Err("session is not waiting".to_owned());
         }
-        client.prompt(&id, &request.text)
+        client.prompt(&id, &request.text, None)
     })
     .await
     {

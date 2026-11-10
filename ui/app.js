@@ -2361,6 +2361,90 @@ const S = {
         models.find((entry) => entry.selector === data?.default);
     return model && Array.isArray(model.efforts) ? model.efforts : data?.thinking || [];
   }
+  // An image attached in the New session or Dispatch sheet. It is read as base64 and sent
+  // with the prompt; the daemon stores one copy for both engines.
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+    IMAGE_LIMIT = 10 * 1024 * 1024,
+    sheetImages = { compose: null, dispatch: null };
+
+  function showSheetImage(prefix) {
+    const image = sheetImages[prefix],
+      preview = $(`#${prefix}-image-preview`),
+      thumb = $(`#${prefix}-image-thumb`),
+      name = $(`#${prefix}-image-name`);
+    if (!preview || !thumb) return;
+    if (image?.url) URL.revokeObjectURL(image.url);
+    if (image) image.url = null;
+    if (!image?.file) {
+      preview.hidden = true;
+      thumb.removeAttribute('src');
+      name.textContent = '';
+      return;
+    }
+    image.url = URL.createObjectURL(image.file);
+    thumb.src = image.url;
+    name.textContent = image.file.name;
+    preview.hidden = false;
+  }
+  function attachSheetImage(prefix, file) {
+    const hint = $(`#${prefix}-hint`);
+    if (!file) return;
+    if (!IMAGE_TYPES.has(file.type)) {
+      hint.textContent = 'Attach a PNG, JPEG, WebP or GIF image.';
+      return;
+    }
+    if (file.size > IMAGE_LIMIT) {
+      hint.textContent = 'That image is over 10 MB.';
+      return;
+    }
+    sheetImages[prefix] = { file, url: null };
+    showSheetImage(prefix);
+    hint.textContent = '';
+  }
+  function clearSheetImage(prefix) {
+    const image = sheetImages[prefix];
+    if (image?.url) URL.revokeObjectURL(image.url);
+    sheetImages[prefix] = null;
+    const input = $(`#${prefix}-image`);
+    if (input) input.value = '';
+    showSheetImage(prefix);
+  }
+  function sheetImageBody(prefix) {
+    const file = sheetImages[prefix]?.file;
+    if (!file) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || ''),
+          comma = result.indexOf(',');
+        if (comma < 0) {
+          reject(new Error('Could not read the image.'));
+          return;
+        }
+        resolve({ media_type: file.type, data: result.slice(comma + 1), name: file.name });
+      };
+      reader.onerror = () => reject(new Error('Could not read the image.'));
+      reader.readAsDataURL(file);
+    });
+  }
+  function wireSheetImage(prefix) {
+    const input = $(`#${prefix}-image`),
+      add = $(`#${prefix}-image-add`),
+      remove = $(`#${prefix}-image-remove`);
+    if (!input || !add) return;
+    add.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => attachSheetImage(prefix, input.files?.[0]));
+    remove?.addEventListener('click', () => clearSheetImage(prefix));
+    const text = $(prefix === 'compose' ? '#compose-prompt' : '#dispatch-note');
+    text?.addEventListener('paste', (e) => {
+      const file = [...(e.clipboardData?.files || [])].find((f) => IMAGE_TYPES.has(f.type));
+      if (file && !e.clipboardData.getData('text')) {
+        e.preventDefault();
+        attachSheetImage(prefix, file);
+      }
+    });
+  }
+
   async function submitCompose(e) {
     e.preventDefault();
     const prompt = $('#compose-prompt').value.trim(),
@@ -2368,6 +2452,13 @@ const S = {
       start = $('#compose-start'),
       hint = $('#compose-hint');
     if (!prompt || start.disabled) return;
+    let image;
+    try {
+      image = await sheetImageBody('compose');
+    } catch (err) {
+      hint.textContent = err.message;
+      return;
+    }
     start.disabled = true;
     hint.textContent = 'Starting…';
     try {
@@ -2380,6 +2471,7 @@ const S = {
         thinking: $('#compose-thinking').value.trim() || null,
         mode: S.composeMode,
       };
+      if (image) body.image = image;
       if (S.composeMode === 'plan-into') {
         body.executor = $('#compose-executor').value.trim() || null;
         body.executor_thinking = $('#compose-executor-effort').value.trim() || null;
@@ -2471,9 +2563,17 @@ const S = {
       thinking = $('#dispatch-thinking').value.trim() || null,
       engine = $('#dispatch-engine').value || null;
     d.dispatch = $('#dispatch-note').value;
+    let image;
+    try {
+      image = await sheetImageBody('dispatch');
+    } catch (err) {
+      hint.textContent = err.message;
+      return;
+    }
     start.disabled = true;
     hint.textContent = 'Launching…';
     const body = { mode, note, engine, model, thinking };
+    if (image) body.image = image;
     if (mode === 'plan-into') {
       body.executor = $('#dispatch-executor').value.trim() || null;
       body.executor_thinking = $('#dispatch-executor-effort').value.trim() || null;
@@ -2482,6 +2582,7 @@ const S = {
     if (d.dispatchOption != null) {
       d.note = $('#dispatch-note').value;
       const answer = { option: d.dispatchOption, text: null, note, mode, engine, model, thinking };
+      if (image) answer.image = image;
       if (mode === 'plan-into') answer.executor = body.executor;
       ok = await act(c, 'answer', answer, `option-${d.dispatchOption}`);
     } else {
@@ -2948,8 +3049,14 @@ const S = {
   });
   $('#history').addEventListener('close', () => closeDialog($('#history')));
   $('#keys').addEventListener('close', () => closeDialog($('#keys')));
-  $('#compose').addEventListener('close', () => closeDialog($('#compose')));
-  $('#dispatch').addEventListener('close', () => closeDialog($('#dispatch')));
+  $('#compose').addEventListener('close', () => {
+    clearSheetImage('compose');
+    closeDialog($('#compose'));
+  });
+  $('#dispatch').addEventListener('close', () => {
+    clearSheetImage('dispatch');
+    closeDialog($('#dispatch'));
+  });
   $('#notify').addEventListener('close', () => closeDialog($('#notify')));
   $('#dispatch-form').addEventListener('submit', submitDispatch);
   $('#dispatch-note').addEventListener('input', (e) => {
@@ -2979,6 +3086,8 @@ const S = {
     });
   }
   $('#compose-form').addEventListener('submit', submitCompose);
+  wireSheetImage('compose');
+  wireSheetImage('dispatch');
   $('#compose').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
       e.preventDefault();

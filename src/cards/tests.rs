@@ -547,6 +547,7 @@ fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
             &card,
             &AnswerReq { option: Some(0), mode: Some("plan".to_owned()), ..AnswerReq::default() },
             &in_session("session"),
+        None,
         );
         let brief_path = fs::read_dir(root.join("briefs"))
             .unwrap()
@@ -694,6 +695,7 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
                 &symlink_card,
                 &answer_req(0, None),
                 &in_session("session"),
+            None,
             );
             let link_remains = fs::symlink_metadata(&legacy_path)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink());
@@ -950,7 +952,7 @@ fn stale_ask_answer_rejects_replaced_call_before_tracker_tick() {
         let stale = ask_card("%12", "old-call");
         db.insert_card(&stale).unwrap();
 
-        let result = answer(&db, &stale, &answer_req(0, None), &Launch::default());
+        let result = answer(&db, &stale, &answer_req(0, None), &Launch::default(), None);
         let stale_card_is_untouched = db.card(&stale.id).unwrap().unwrap().1.is_none();
         let no_key_sent = !root.join("tmux-keys.log").exists();
         let rejected_stale_call =
@@ -1001,7 +1003,7 @@ fn multi_select_ask_is_rejected_without_tmux_input() {
         let unanswerable = card.as_ref().is_some_and(|card| !card.answerable);
         let answer_result = card
             .as_ref()
-            .map(|card| answer(&db, card, &answer_req(0, None), &Launch::default()));
+            .map(|card| answer(&db, card, &answer_req(0, None), &Launch::default(), None));
         let rejected = answer_result.as_ref().is_some_and(|result| {
             result.as_ref().err().map(String::as_str) == Some("ask card is not answerable")
         });
@@ -1111,7 +1113,7 @@ fn multi_question_ask_types_each_answer_and_submits_after_review() {
             answers: landing_answers(),
             ..AnswerReq::default()
         };
-        let result = answer(&db, &card, &request, &Launch::default());
+        let result = answer(&db, &card, &request, &Launch::default(), None);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
         let swipe = db.card(&card.id).unwrap().unwrap().1;
         let expected = concat!(
@@ -1177,7 +1179,7 @@ fn multi_question_ask_leaves_dialog_open_when_review_differs() {
             answers: landing_answers(),
             ..AnswerReq::default()
         };
-        let result = answer(&db, &card, &request, &Launch::default());
+        let result = answer(&db, &card, &request, &Launch::default(), None);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let no_swipe = db.card(&card.id).unwrap().unwrap().1.is_none();
         let expected = concat!(
@@ -3239,6 +3241,7 @@ fn concurrent_ask_answers_send_one_key_sequence() {
                         &first_card,
                         &answer_req(0, None),
                         &Launch::default(),
+                    None,
                     ),
                 ))
                 .unwrap();
@@ -3256,6 +3259,7 @@ fn concurrent_ask_answers_send_one_key_sequence() {
                         &second_card,
                         &answer_req(0, None),
                         &Launch::default(),
+                    None,
                     ),
                 ))
                 .unwrap();
@@ -3321,7 +3325,7 @@ fn other_answer_uses_full_card_option_count_for_navigation() {
             text: Some("Violet".to_owned()),
             ..AnswerReq::default()
         };
-        answer(&db, &card, &request, &Launch::default()).unwrap();
+        answer(&db, &card, &request, &Launch::default(), None).unwrap();
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let down = keys.lines().filter(|line| line.ends_with(" Down")).count();
         let swipe = current_swipe(&db, &card.id);
@@ -3369,6 +3373,7 @@ fn status_only_report_warns_and_preserves_info_ack() {
             &old,
             &answer_req(0, Some("preserved API note")),
             &Launch::default(),
+        None,
         );
         let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
         let mut written = 0;
@@ -3423,6 +3428,7 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let info_swipe = current_swipe(&db, &info.id);
         let repeat = dispatch(
@@ -3433,6 +3439,7 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let ask_result = dispatch(
             &db,
@@ -3442,6 +3449,7 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let ask_swipe = current_swipe(&db, &ask.id);
         let brief_dir = root.join("briefs");
@@ -3501,6 +3509,7 @@ fn dispatch_reuses_waiting_source_pane_instead_of_new_window() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let swipe = current_swipe(&db, &info.id);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
@@ -3542,7 +3551,7 @@ fn finding_answer_opens_new_window_and_leaves_idle_dispatched_window_alone() {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let card = finding_card(&root);
         db.insert_card(&card).unwrap();
-        let result = answer(&db, &card, &answer_req(0, None), &Launch::default());
+        let result = answer(&db, &card, &answer_req(0, None), &Launch::default(), None);
         let swipe = current_swipe(&db, &card.id);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
         let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
@@ -3589,6 +3598,7 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
             &Launch::default(),
             None,
             None,
+        None,
         );
         let configured = info_card("done:%12:set", "%12");
         db.insert_card(&configured).unwrap();
@@ -3605,6 +3615,7 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
             },
             None,
             None,
+        None,
         );
         let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
         let launches: Vec<&str> = log
@@ -3654,6 +3665,7 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let look = dispatch(
             &db,
@@ -3663,6 +3675,7 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let swipe = current_swipe(&db, &act_card.id);
         let briefs: Vec<String> = fs::read_dir(root.join("briefs"))
@@ -3738,6 +3751,7 @@ fn dispatch_plan_mode_writes_reviewable_brief_and_config_overlay() {
             &in_session("session"),
             None,
             None,
+        None,
         );
         let mut brief_path = None;
         let mut overlay_path = None;
@@ -3813,6 +3827,7 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
             &launch,
             Some("provider/executor"),
             None,
+        None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
         let brief = fs::read_dir(root.join("briefs"))
@@ -3897,6 +3912,7 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             &in_session("session"),
             None,
             None,
+        None,
         );
 
         let on = info_card("done:%12:on", "%12");
@@ -3909,6 +3925,7 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             &in_session("session"),
             None,
             None,
+        None,
         );
         let toggles_after_on = fs::read_to_string(root.join("tmux-keys.log"))
             .unwrap()
@@ -3928,6 +3945,7 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             &in_session("session"),
             None,
             None,
+        None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let toggle_count = keys.lines().filter(|line| line.contains(" M-P")).count();
@@ -3982,6 +4000,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
+        None,
         );
         let unknown_result = answer(
             &db,
@@ -3991,8 +4010,9 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
+        None,
         );
-        let approve_result = answer(&db, &approve, &answer_req(0, None), &Launch::default());
+        let approve_result = answer(&db, &approve, &answer_req(0, None), &Launch::default(), None);
         let refine_result = answer(
             &db,
             &refine,
@@ -4003,6 +4023,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
+        None,
         );
         let executor_refine_result = answer(
             &db,
@@ -4014,6 +4035,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
+        None,
         );
         let other_result = answer(
             &db,
@@ -4023,6 +4045,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
+        None,
         );
         let approve_swipe = current_swipe(&db, &approve.id);
         let refine_swipe = current_swipe(&db, &refine.id);
@@ -4111,30 +4134,35 @@ fn plan_approval_selects_execution_model_before_enter() {
             &selected,
             &AnswerReq { option: Some(0), executor: Some("@slow".to_owned()), ..AnswerReq::default() },
             &Launch::default(),
+        None,
         );
         let unavailable_result = answer(
             &db,
             &unavailable,
             &AnswerReq { option: Some(0), executor: Some("@missing".to_owned()), ..AnswerReq::default() },
             &Launch::default(),
+        None,
         );
         let default_result = answer(
             &db,
             &default,
             &AnswerReq { option: Some(0), executor: Some("@default".to_owned()), ..AnswerReq::default() },
             &Launch::default(),
+        None,
         );
         let mismatch_result = answer(
             &db,
             &mismatch,
             &AnswerReq { option: Some(0), executor: Some("@slow".to_owned()), ..AnswerReq::default() },
             &Launch::default(),
+        None,
         );
         let blank_result = answer(
             &db,
             &blank,
             &AnswerReq { option: Some(0), ..AnswerReq::default() },
             &Launch::default(),
+        None,
         );
         let effort_result = answer(
             &db,
@@ -4146,6 +4174,7 @@ fn plan_approval_selects_execution_model_before_enter() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
+        None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let keys: Vec<_> = keys.lines().collect();
@@ -4307,7 +4336,7 @@ fn pane_actions_wait_for_the_action_in_flight() {
         let guard = lock.lock().unwrap();
         thread::scope(|scope| {
             let actions = [
-                scope.spawn(|| answer(&db, &acknowledged, &AnswerReq::default(), &launch)),
+                scope.spawn(|| answer(&db, &acknowledged, &AnswerReq::default(), &launch, None)),
                 scope.spawn(|| {
                     dispatch(
                         &db,
@@ -4317,6 +4346,7 @@ fn pane_actions_wait_for_the_action_in_flight() {
                         &launch,
                         None,
                         None,
+                    None,
                     )
                 }),
                 scope.spawn(|| close(&db, &closed, None, &launch)),
@@ -4393,6 +4423,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             "/tmp",
             &in_session("session"),
             Start::Goal,
+        None,
         );
         let launched = start_session(
             &db,
@@ -4400,6 +4431,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             "/tmp",
             &in_session("session"),
             Start::Goal,
+        None,
         );
         let brief = fs::read_dir(root.join("briefs"))
             .unwrap()
@@ -4440,6 +4472,7 @@ fn start_session_plan_mode_uses_overlay_config_before_the_prompt_brief() {
             "/tmp",
             &in_session("session"),
             Start::Plan,
+        None,
         );
         let mut brief_path = None;
         let mut overlay_path = None;
@@ -4509,23 +4542,24 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
         Some("provider/planner"),
         Some("high"),
         Start::PlanInto(Some("provider/executor"), None),
+    None,
     )
     .unwrap();
     assert_eq!(
         chosen,
         "omp --model=provider/planner --plan=provider/planner --thinking=high --plan-yolo --plan-yolo-into=provider/executor @'/tmp/b.md'"
     );
-    let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "), None)).unwrap();
+    let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "), None), None).unwrap();
     assert_eq!(blank, "omp --plan-yolo @'/tmp/b.md'");
-    let default_with_effort = omp_command(brief, None, None, Start::PlanInto(None, Some("medium"))).unwrap();
+    let default_with_effort = omp_command(brief, None, None, Start::PlanInto(None, Some("medium")), None).unwrap();
     assert_eq!(
         default_with_effort,
         "omp --plan-yolo --plan-yolo-into=@smol:medium @'/tmp/b.md'"
     );
-    assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None)).is_err());
-    let leveled = omp_command(brief, None, None, Start::PlanInto(Some("@smol"), Some("low"))).unwrap();
+    assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None), None).is_err());
+    let leveled = omp_command(brief, None, None, Start::PlanInto(Some("@smol"), Some("low")), None).unwrap();
     assert_eq!(leveled, "omp --plan-yolo --plan-yolo-into=@smol:low @'/tmp/b.md'");
-    let named = omp_command(brief, None, None, Start::PlanInto(Some("provider/executor:max"), Some("low"))).unwrap();
+    let named = omp_command(brief, None, None, Start::PlanInto(Some("provider/executor:max"), Some("low")), None).unwrap();
     assert_eq!(named, "omp --plan-yolo --plan-yolo-into=provider/executor:max @'/tmp/b.md'");
 }
 
@@ -4576,6 +4610,7 @@ fn goal_command_makes_the_brief_the_objective() {
         Some("provider/example-model"),
         Some("high"),
         Start::Goal,
+    None,
     )
     .unwrap();
     assert_eq!(
@@ -4585,13 +4620,84 @@ fn goal_command_makes_the_brief_the_objective() {
             brief.display()
         )
     );
-    let blank = omp_command(&brief, Some(" "), Some(""), Start::Goal).unwrap();
+    let blank = omp_command(&brief, Some(" "), Some(""), Start::Goal, None).unwrap();
     assert!(blank.starts_with("omp --goal '# Act: Ship it"), "{blank}");
     assert!(!blank.contains('@'));
-    assert!(omp_command(&brief, None, Some("turbo"), Start::Goal).is_err());
-    assert!(omp_command(&brief, Some("x; rm -rf ~"), None, Start::Goal).is_err());
-    assert!(omp_command(&directory.join("missing.md"), None, None, Start::Goal).is_err());
+    assert!(omp_command(&brief, None, Some("turbo"), Start::Goal, None).is_err());
+    assert!(omp_command(&brief, Some("x; rm -rf ~"), None, Start::Goal, None).is_err());
+    assert!(omp_command(&directory.join("missing.md"), None, None, Start::Goal, None).is_err());
     fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn an_image_rides_the_omp_command() {
+    let directory =
+        std::env::temp_dir().join(format!("triage-image-command-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let brief = directory.join("brief.md");
+    fs::write(&brief, "# Act: Ship it\n\nDo the work.\n").unwrap();
+    let image_path = directory.join("shot.png");
+    fs::write(&image_path, b"png").unwrap();
+    let image = crate::uploads::Upload {
+        path: image_path.clone(),
+        base64: "iVBORw0KGgo=".to_owned(),
+        media_type: "image/png".to_owned(),
+        name: "shot.png".to_owned(),
+    };
+    let goal = omp_command(&brief, None, None, Start::Goal, Some(&image)).unwrap();
+    assert!(goal.contains(&format!("Attached image: @{}.", image_path.display())), "{goal}");
+    let plan = omp_command(&brief, None, None, Start::Plan, Some(&image)).unwrap();
+    assert!(plan.ends_with(&format!("@'{}'", image_path.display())), "{plan}");
+    let into = omp_command(&brief, None, None, Start::PlanInto(None, None), Some(&image)).unwrap();
+    assert!(into.ends_with(&format!("@'{}'", image_path.display())), "{into}");
+    let no_image = omp_command(&brief, None, None, Start::Goal, None).unwrap();
+    assert!(!no_image.contains(&image_path.display().to_string()), "{no_image}");
+    fs::remove_dir_all(&directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn dispatch_with_an_image_types_it_into_a_waiting_pane() {
+    if let Some(root) = child_root("dispatch_with_an_image_types_it_into_a_waiting_pane") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let card = info_card("done:%12:report", "%12");
+        db.insert_card(&card).unwrap();
+        let image_path = root.join("shot.png");
+        fs::write(&image_path, b"png").unwrap();
+        let image = crate::uploads::Upload {
+            path: fs::canonicalize(&image_path).unwrap(),
+            base64: "iVBORw0KGgo=".to_owned(),
+            media_type: "image/png".to_owned(),
+            name: "shot.png".to_owned(),
+        };
+        dispatch(
+            &db,
+            &card,
+            DispatchMode::Act,
+            None,
+            &in_session("session"),
+            None,
+            None,
+            Some(&image),
+        )
+        .unwrap();
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        assert!(
+            keys.contains(&format!("@{}", image.path.display())),
+            "the image reference reached the pane: {keys}"
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "dispatch_with_an_image_types_it_into_a_waiting_pane",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 /// omp writes the `--goal` objective as the session's first user message. An exited
@@ -4604,7 +4710,7 @@ fn exited_goal_session_without_report_is_audited_as_a_dispatch() {
     fs::create_dir_all(&briefs).unwrap();
     let brief = briefs.join("triage-brief-goal.md");
     fs::write(&brief, "# Act: It's done\n\nDo the work.\n").unwrap();
-    let command = omp_command(&brief, None, None, Start::Goal).unwrap();
+    let command = omp_command(&brief, None, None, Start::Goal, None).unwrap();
     let quoted = command
         .strip_prefix("omp --goal '")
         .unwrap()
@@ -4647,6 +4753,7 @@ fn tracker_ask_completion_preserves_api_note() {
                     &answer_card,
                     &answer_req(0, Some("preserved API note")),
                     &Launch::default(),
+                None,
                 ))
                 .unwrap();
         });
@@ -4977,14 +5084,14 @@ fn finding_retry_reuses_tagged_pane_after_done_swipe_failure() {
         let failure = install_swipe_failure(&db_path, "fail_done_swipe", "done");
         let request = answer_req(0, Some("review"));
 
-        let first_result = answer(&db, &card, &request, &in_session("session"));
+        let first_result = answer(&db, &card, &request, &in_session("session"), None);
         let pending = current_swipe(&db, &card.id);
         let first_launch_count = new_window_count(&root);
         failure
             .execute_batch("DROP TRIGGER fail_done_swipe;")
             .unwrap();
 
-        let retry_result = answer(&db, &card, &request, &in_session("session"));
+        let retry_result = answer(&db, &card, &request, &in_session("session"), None);
         let completed = current_swipe(&db, &card.id);
         let retry_reused_pane = first_result.is_err()
             && pending.action == "later"
@@ -5020,19 +5127,21 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
         fs::write(root.join("tmux-fail-first-tag"), b"").unwrap();
         let original = answer_req(0, Some("review"));
 
-        let first_result = answer(&db, &card, &original, &in_session("session"));
+        let first_result = answer(&db, &card, &original, &in_session("session"), None);
         let pending_reason = current_swipe(&db, &card.id).reason;
         let changed_option = answer(
             &db,
             &card,
             &answer_req(1, Some("review")),
             &in_session("session"),
+        None,
         );
         let changed_note = answer(
             &db,
             &card,
             &answer_req(0, Some("changed")),
             &in_session("session"),
+        None,
         );
         let changed_mode = answer(
             &db,
@@ -5044,9 +5153,10 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
                 ..AnswerReq::default()
             },
             &in_session("session"),
+        None,
         );
         let launches_before_retry = new_window_count(&root);
-        let retry_result = answer(&db, &card, &original, &in_session("session"));
+        let retry_result = answer(&db, &card, &original, &in_session("session"), None);
         let completed = current_swipe(&db, &card.id);
         let different_choice = |result: &Result<(), String>| {
             result.as_ref().err().map(String::as_str)
@@ -5090,7 +5200,7 @@ fn finding_retry_tags_pane_when_pending_swipe_write_fails() {
         let failure = install_swipe_failure(&db_path, "fail_pending_swipe", "later");
         let request = answer_req(0, Some("review"));
 
-        let first_result = answer(&db, &card, &request, &in_session("session"));
+        let first_result = answer(&db, &card, &request, &in_session("session"), None);
         let no_pending_swipe = db.card(&card.id).unwrap().unwrap().1.is_none();
         let tagged_before_retry = root.join("tmux-tag-%42").exists();
         let first_launch_count = new_window_count(&root);
@@ -5098,7 +5208,7 @@ fn finding_retry_tags_pane_when_pending_swipe_write_fails() {
             .execute_batch("DROP TRIGGER fail_pending_swipe;")
             .unwrap();
 
-        let retry_result = answer(&db, &card, &request, &in_session("session"));
+        let retry_result = answer(&db, &card, &request, &in_session("session"), None);
         let completed = db.card(&card.id).unwrap().unwrap().1;
         let retry_reused_tagged_pane = first_result.is_err()
             && no_pending_swipe
@@ -6418,6 +6528,7 @@ fn the_plan_card_approve_takes_the_execution_model_and_leaves_plan_mode() {
             ..AnswerReq::default()
         },
         &bridge.launch(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -6448,6 +6559,7 @@ fn the_plan_card_refine_sends_its_feedback_back_to_planning() {
         &card,
         &AnswerReq { option: Some(1), text: Some("Add a rollback step.".to_owned()), ..AnswerReq::default() },
         &bridge.launch(),
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -6800,8 +6912,8 @@ fn dsh_answer_ask_posts_the_picked_label_or_typed_text() {
     let picked = db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().unwrap().0;
     let typed = db.card(&format!("ask:dsh:{SID}:ev-2")).unwrap().unwrap().0;
     let launch = bridge.launch();
-    answer(&db, &picked, &AnswerReq { option: Some(1), ..AnswerReq::default() }, &launch).unwrap();
-    answer(&db, &typed, &AnswerReq { text: Some("Green".to_owned()), ..AnswerReq::default() }, &launch).unwrap();
+    answer(&db, &picked, &AnswerReq { option: Some(1), ..AnswerReq::default() }, &launch, None).unwrap();
+    answer(&db, &typed, &AnswerReq { text: Some("Green".to_owned()), ..AnswerReq::default() }, &launch, None).unwrap();
     assert_eq!(
         bridge.posts("/v1/answer"),
         vec![
@@ -6830,6 +6942,7 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
         &first,
         &AnswerReq { option: Some(0), executor: Some("@smol".to_owned()), ..AnswerReq::default() },
         &launch,
+    None,
     );
     assert_eq!(refused, Err("unknown dsh model @smol".to_owned()));
     assert!(bridge.posts("/v1/answer").is_empty());
@@ -6844,6 +6957,7 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
             ..AnswerReq::default()
         },
         &launch,
+    None,
     )
     .unwrap();
     assert_eq!(
@@ -6858,6 +6972,7 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
         &second,
         &AnswerReq { option: Some(1), text: Some("Add a rollback step.".to_owned()), ..AnswerReq::default() },
         &launch,
+    None,
     )
     .unwrap();
     assert_eq!(
@@ -6882,6 +6997,7 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
         "/work/project",
         &launch,
         Start::PlanInto(Some("deepseek-flash"), Some("max")),
+    None,
     );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
@@ -6906,7 +7022,7 @@ fn dsh_goal_launch_without_a_model_leaves_the_host_default() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
-    let pane = start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal);
+    let pane = start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -6924,7 +7040,7 @@ fn dsh_launch_without_a_host_file_says_dsh_is_not_running() {
     let db = dsh_db(&scratch);
     let launch = Launch { engine: Engine::Dsh, ..Launch::default() };
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &launch, Start::Goal),
+        start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, None),
         Err("dsh is not running".to_owned())
     );
 }
@@ -6936,7 +7052,7 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -6946,13 +7062,64 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
 }
 
 #[test]
+fn dsh_dispatch_carries_the_image() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.sessions = vec![session(4)]);
+    let image = crate::uploads::Upload {
+        path: scratch.path().join("shot.png"),
+        base64: "iVBORw0KGgo=".to_owned(),
+        media_type: "image/png".to_owned(),
+        name: "shot.png".to_owned(),
+    };
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(
+        &db,
+        &card,
+        DispatchMode::Act,
+        None,
+        &bridge.launch(),
+        None,
+        None,
+        Some(&image),
+    )
+    .unwrap();
+    let prompts = bridge.posts("/v1/prompt");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["image"]["mediaType"], "image/png");
+    assert_eq!(prompts[0]["image"]["data"], "iVBORw0KGgo=");
+    assert_eq!(prompts[0]["image"]["name"], "shot.png");
+
+    bridge.edit(|data| {
+        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:5"), Kind::Info);
+    dispatch(
+        &db,
+        &card,
+        DispatchMode::Act,
+        None,
+        &bridge.launch(),
+        None,
+        None,
+        Some(&image),
+    )
+    .unwrap();
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["image"]["mediaType"], "image/png");
+    assert_eq!(launches[0]["image"]["data"], "iVBORw0KGgo=");
+}
+
+#[test]
 fn dsh_plan_on_an_idle_session_relaunches_it_in_plan_mode() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -6968,7 +7135,7 @@ fn dsh_plan_into_dispatch_starts_a_new_session() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None).unwrap();
+    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -6987,7 +7154,7 @@ fn dsh_dispatch_to_a_running_session_starts_a_new_goal_session() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -7083,6 +7250,7 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
         &finding,
         &AnswerReq { option: Some(0), mode: Some("act".to_owned()), ..AnswerReq::default() },
         &bridge.launch(),
+    None,
     )
     .unwrap();
     assert!(bridge.posts("/v1/launch").is_empty());
@@ -7310,7 +7478,7 @@ fn dsh_workspace_launch_posts_the_workspace_and_briefs_the_project_directory() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
-    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal);
+    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -7329,7 +7497,7 @@ fn dsh_workspace_launch_falls_back_to_the_project_directory_on_an_older_host() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.refuse_workspace = true);
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
-    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal);
+    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 2);
@@ -7345,7 +7513,7 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     let bridge = FakeBridge::start(scratch.path());
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &launch, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &launch, None, None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["workspace"], "triage");

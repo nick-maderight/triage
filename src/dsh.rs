@@ -345,11 +345,18 @@ impl Client {
         Ok(launched.session_id)
     }
 
-    pub fn prompt(&self, session_id: &str, text: &str) -> Result<(), String> {
-        self.post::<IgnoredAny>(
-            "/v1/prompt",
-            &json!({"sessionId": session_id, "text": text}),
-        )?;
+    /// Queue text in an idle session. `image` is the encoded attachment the prompt carries.
+    pub fn prompt(
+        &self,
+        session_id: &str,
+        text: &str,
+        image: Option<Value>,
+    ) -> Result<(), String> {
+        let mut body = json!({"sessionId": session_id, "text": text});
+        if let Some(image) = image {
+            body["image"] = image;
+        }
+        self.post::<IgnoredAny>("/v1/prompt", &body)?;
         Ok(())
     }
 
