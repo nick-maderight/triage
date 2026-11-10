@@ -282,6 +282,10 @@ struct Listed<T> {
     #[serde(default)]
     pid: u32,
     items: Vec<T>,
+    /// The host decides a plan the model wrote as text instead of a review. A
+    /// host older than that route leaves it out.
+    #[serde(default, rename = "planDecisions")]
+    plan_decisions: bool,
 }
 
 #[derive(Deserialize)]
@@ -303,10 +307,11 @@ impl Client {
         }
     }
 
-    /// The bridge's host pid and the sessions it lists.
-    pub fn sessions(&self) -> Result<(u32, Vec<Session>), String> {
+    /// The bridge's host pid, the sessions it lists, and whether the host decides a plan the
+    /// model wrote as text instead of through a review.
+    pub fn sessions(&self) -> Result<(u32, Vec<Session>, bool), String> {
         let listed: Listed<Session> = self.get("/v1/sessions", &[])?;
-        Ok((listed.pid, listed.items))
+        Ok((listed.pid, listed.items, listed.plan_decisions))
     }
 
     /// The host pid and the questions and plan reviews that wait for an answer.
@@ -364,6 +369,27 @@ impl Client {
     ) -> Result<(), String> {
         let body = json!({"eventId": event_id, "value": value, "executor": executor, "effort": effort});
         self.post::<IgnoredAny>("/v1/answer", &body)?;
+        Ok(())
+    }
+
+    /// Decide a plan the model wrote as text: `approve` leaves plan mode and starts the work
+    /// with `executor` at `effort`, while `refine` sends `feedback` as the next planning step.
+    pub fn decide_plan(
+        &self,
+        session_id: &str,
+        decision: &str,
+        feedback: Option<&str>,
+        executor: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), String> {
+        let body = json!({
+            "sessionId": session_id,
+            "decision": decision,
+            "feedback": feedback,
+            "executor": executor,
+            "effort": effort,
+        });
+        self.post::<IgnoredAny>("/v1/plan", &body)?;
         Ok(())
     }
 

@@ -65,12 +65,12 @@ impl Tracker {
             return TickReport { written };
         };
         let client = dsh::Client::new(&host, dsh::TICK_TIMEOUT);
-        let listed = client.sessions().and_then(|(pid, sessions)| {
+        let listed = client.sessions().and_then(|(pid, sessions, plans)| {
             client
                 .pending()
-                .map(|(_, pending)| (pid, sessions, pending))
+                .map(|(_, pending)| (pid, sessions, pending, plans))
         });
-        let (pid, sessions, pending) = match listed {
+        let (pid, sessions, pending, plan_decisions) = match listed {
             Ok(listed) => listed,
             Err(error) => {
                 backoff(&mut self.dsh, now, &error);
@@ -100,6 +100,12 @@ impl Tracker {
             self.dsh.sessions.clear();
         }
         self.dsh.pid = Some(pid);
+        // A plan card waits on its session: one that left the host, archived or deleted, can no
+        // longer be approved and would otherwise sit in the inbox forever.
+        let live: HashSet<&str> = sessions.iter().map(|session| session.session_id.as_str()).collect();
+        if !finish_gone_plan_ready(db, &live, &mut written) {
+            return TickReport { written };
+        }
         pending_cards(db, &client, &sessions, &pending, &ignored, &mut written);
         finish_prompts(db, "answered in dsh", gone, &mut written);
         let waiting: HashSet<&str> = pending
@@ -113,6 +119,7 @@ impl Tracker {
             &sessions,
             &waiting,
             &ignored,
+            plan_decisions,
             now,
             &mut written,
         ) {
@@ -338,6 +345,104 @@ fn plan_message<'a>(replies: &[(i64, &'a str)], turn_start: i64) -> Option<&'a s
         .find(|text| plan_heading(text).is_some())
 }
 
+/// What that plan is called: its heading, else the report's first line, so a plan written
+/// without one still names the card.
+fn plan_name(plan: Option<&str>, turn: &super::Turn) -> String {
+    match plan {
+        Some(plan) => plan_heading(plan).map_or_else(|| headline_of(plan), str::to_owned),
+        None => headline_of(turn.body.as_deref().unwrap_or_default()),
+    }
+}
+
+/// The plan card of a turn that ended in plan mode. Its Approve leaves plan mode and starts the
+/// work, and its Refine sends the feedback back for more planning.
+fn plan_card(
+    session: &dsh::Session,
+    end: &dsh::Event,
+    name: &str,
+    plan: Option<&str>,
+    report: Option<String>,
+) -> Card {
+    let sid = session.session_id.as_str();
+    let source = dsh_source(sid, Some(session));
+    let body = plan.map_or_else(|| report.unwrap_or_default(), omp::redact_credentials);
+    Card {
+        id: plan_ready_id(sid, end.seq),
+        kind: Kind::Plan,
+        priority: 1,
+        created_ms: events::now_ms(),
+        refs: vec![source.uri.clone()],
+        source,
+        title: plan_ready_title(name),
+        star: Star::default(),
+        options: vec![
+            CardOption {
+                label: "Approve".to_owned(),
+                recommended: true,
+                ..CardOption::default()
+            },
+            CardOption {
+                label: "Refine".to_owned(),
+                ..CardOption::default()
+            },
+        ],
+        answerable: true,
+        allow_other: true,
+        questions: Vec::new(),
+        body: Some(body),
+        images: Vec::new(),
+        level: None,
+        tool_call_id: None,
+        report_due: false,
+        engine: Some("dsh".to_owned()),
+    }
+}
+
+/// The card id of the plan a session wrote without a review. It keys on the turn end, so a
+/// later plan of the same session is its own card.
+fn plan_ready_id(sid: &str, seq: i64) -> String {
+    format!("plan-ready:dsh:{sid}:{seq}")
+}
+
+/// Whether `card` is the plan a session wrote without a review.
+fn is_plan_ready(card: &Card) -> bool {
+    plan_ready_session(card).is_some()
+}
+
+/// The session a plan-ready card belongs to.
+fn plan_ready_session(card: &Card) -> Option<&str> {
+    card.id
+        .strip_prefix("plan-ready:dsh:")
+        .and_then(|rest| rest.rsplit_once(':'))
+        .map(|(sid, _)| sid)
+}
+
+/// Close the queued plan cards whose session the host no longer lists. False when a read or
+/// write failed, so the caller tries again on its next poll.
+fn finish_gone_plan_ready(db: &Db, live: &HashSet<&str>, written: &mut usize) -> bool {
+    let Ok(open) = db.unresolved_cards() else {
+        return false;
+    };
+    let cards = open
+        .into_iter()
+        .filter(|card| plan_ready_session(card).is_some_and(|sid| !live.contains(sid)))
+        .collect();
+    finish_cards(db, cards, "session closed", written)
+}
+
+/// Close the queued plan cards of the session a later turn moved past. False when a read or
+/// write failed, so the caller tries again on its next poll.
+fn finish_plan_ready(db: &Db, session: &str, written: &mut usize) -> bool {
+    let Ok(open) = db.unresolved_cards() else {
+        return false;
+    };
+    let cards = open
+        .into_iter()
+        .filter(|card| plan_ready_session(card) == Some(session))
+        .collect();
+    finish_cards(db, cards, "superseded", written)
+}
+
 /// Resolve the open dsh questions and plan reviews that `stale` selects. Returns false after a
 /// failed read or write.
 fn finish_prompts(
@@ -368,6 +473,7 @@ fn report_sessions(
     sessions: &[dsh::Session],
     waiting: &HashSet<&str>,
     ignored: &HashSet<String>,
+    plan_decisions: bool,
     now: i64,
     written: &mut usize,
 ) -> Result<(), String> {
@@ -414,12 +520,17 @@ fn report_sessions(
             entry.reported_seq = end.seq;
             continue;
         }
-        let card = report_card(db, session, &recent, end);
+        let card = report_card(db, session, &recent, end, plan_decisions);
         if matches!(db.card(&card.id), Ok(Some(_))) {
             entry.reported_seq = end.seq;
             continue;
         }
         if !supersede_info_cards(db, &card.id, &card.refs[0], None, written) {
+            continue;
+        }
+        // A turn after a plan card means the plan was carried out, and a newer plan is the card
+        // that matters, so the older plan card is spent either way.
+        if !finish_plan_ready(db, &session.session_id, written) {
             continue;
         }
         if let Ok(inserted) = db.insert_card(&card) {
@@ -471,7 +582,13 @@ fn turn_images(recent: &[dsh::Event], turn_start: i64, end: i64) -> Vec<CardImag
 
 /// The info card for the turn that ended at `end`. Its body is the newest reply with a status
 /// line in that turn, else the newest reply.
-fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh::Event) -> Card {
+fn report_card(
+    db: &Db,
+    session: &dsh::Session,
+    recent: &[dsh::Event],
+    end: &dsh::Event,
+    plan_decisions: bool,
+) -> Card {
     let sid = session.session_id.as_str();
     let turn_start = recent
         .iter()
@@ -534,10 +651,13 @@ fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh
     // A report it ends with is not a finished result. The card says what waits instead.
     let plan = plan_message(&replies, turn_start);
     if session.plan_active && reason == "completed" && replied {
-        let name = match plan {
-            Some(plan) => plan_heading(plan).map_or_else(|| headline_of(plan), str::to_owned),
-            None => headline_of(turn.body.as_deref().unwrap_or_default()),
-        };
+        let name = plan_name(plan, &turn);
+        // A host that decides plans turns the turn into the plan card whose Approve leaves
+        // plan mode. A host older than that route can only report, so the plan stays a report
+        // that names what waits for you.
+        if plan_decisions {
+            return plan_card(session, end, &name, plan, turn.body);
+        }
         turn.title = plan_ready_title(&name);
         if let Some(plan) = plan {
             turn.body = Some(omp::redact_credentials(plan));
@@ -699,6 +819,21 @@ pub(super) fn answer_plan(
 ) -> Result<(), String> {
     let sid = dsh::session_id(card).ok_or_else(|| "card is not a dsh session".to_owned())?;
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
+    // A plan written without a review waits on no pending item: the host leaves plan mode and
+    // starts the work, or keeps planning with the feedback.
+    if is_plan_ready(card) {
+        return decide_plan(
+            db,
+            card,
+            &client,
+            sid,
+            req,
+            option,
+            refinement,
+            executor,
+            executor_effort,
+        );
+    }
     let item =
         pending_item(&client, sid, card)?.ok_or_else(|| "plan review is not open".to_owned())?;
     let question = item
@@ -740,6 +875,41 @@ pub(super) fn answer_plan(
         Err("could not record swipe".to_owned())
     }
 }
+/// Approve or refine a plan the session wrote as text. Approve leaves plan mode with the
+/// execution model and starts the plan; Refine keeps planning with the feedback.
+fn decide_plan(
+    db: &Db,
+    card: &Card,
+    client: &dsh::Client,
+    sid: &str,
+    req: &AnswerReq,
+    option: Option<usize>,
+    refinement: Option<&str>,
+    executor: Option<&str>,
+    executor_effort: Option<&str>,
+) -> Result<(), String> {
+    let (decision, feedback, text) = if option == Some(0) {
+        ("approve", None, executor.map(str::to_owned))
+    } else {
+        let feedback = refinement.ok_or_else(|| "Refine requires nonempty text".to_owned())?;
+        ("refine", Some(feedback), Some(feedback.to_owned()))
+    };
+    client.decide_plan(sid, decision, feedback, executor, executor_effort)?;
+    if record_swipe(
+        db,
+        &card.id,
+        "done",
+        option,
+        text,
+        req.note.clone(),
+        Some("sent to dsh".to_owned()),
+    ) {
+        Ok(())
+    } else {
+        Err("could not record swipe".to_owned())
+    }
+}
+
 /// Archive a dsh session and stop its activity before resolving its open cards.
 pub(super) fn close(
     db: &Db,

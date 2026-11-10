@@ -2704,7 +2704,7 @@ fn recover_pending_finding_pane(
     let listed = match pane.strip_prefix("dsh:") {
         Some(sid) => dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)
             .and_then(|client| client.sessions())
-            .is_ok_and(|(_, sessions)| sessions.iter().any(|session| session.session_id == sid)),
+            .is_ok_and(|(_, sessions, _)| sessions.iter().any(|session| session.session_id == sid)),
         None => {
             let panes = tmux::list_panes().map_err(|error| error.to_string())?;
             panes.iter().any(|candidate| candidate.id == pane)

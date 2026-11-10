@@ -5923,6 +5923,9 @@ struct BridgeData {
     // refuse_workspace answers a launch that names a workspace the way a host older
     // than workspaces does.
     refuse_workspace: bool,
+    // plan_decisions says the host decides a plan the model wrote as text, the way a
+    // host that carries the route does.
+    plan_decisions: bool,
 }
 
 impl BridgeData {
@@ -5934,7 +5937,10 @@ impl BridgeData {
             self.reads.push(uri.to_string());
         }
         match (method.as_str(), path.as_str()) {
-            ("GET", "/v1/sessions") => (StatusCode::OK, json!({"pid": self.pid, "items": self.sessions})),
+            ("GET", "/v1/sessions") => (
+                StatusCode::OK,
+                json!({"pid": self.pid, "items": self.sessions, "planDecisions": self.plan_decisions}),
+            ),
             ("GET", "/v1/pending") if self.syncing => {
                 (StatusCode::SERVICE_UNAVAILABLE, json!({"error": "syncing"}))
             }
@@ -6354,6 +6360,143 @@ fn plan_mode_error_turn_keeps_its_stop_card() {
     let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
     assert!(card.title.starts_with("Stopped with error"), "{card:?}");
     assert_eq!(card.level.as_deref(), Some("warn"));
+}
+
+/// A turn that ended in plan mode on a host that decides plans: the card the session waits on.
+fn plan_decided_card(bridge: &FakeBridge, db: &Db) -> Card {
+    bridge.edit(|data| data.plan_decisions = true);
+    assert_eq!(dsh_tick(&mut Tracker::default(), db, Some(bridge.host()), NOW), 1);
+    db.card(&format!("plan-ready:dsh:{SID}:4")).unwrap().expect("plan card").0
+}
+
+#[test]
+fn a_host_that_decides_plans_turns_a_plan_mode_turn_into_a_plan_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let plan = "# Keep autorules sessions out\n\n## Goal\n\nNo cards.";
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(2, "Reading the tracker."),
+                reply_event(3, plan),
+                turn_end(4, "completed"),
+            ],
+        );
+    });
+    let card = plan_decided_card(&bridge, &db);
+    assert_eq!(card.kind, Kind::Plan);
+    assert_eq!(card.title, "Plan ready: Keep autorules sessions out");
+    assert_eq!(card.body.as_deref(), Some(plan));
+    let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
+    assert_eq!(labels, ["Approve", "Refine"]);
+    assert!(card.options[0].recommended && card.answerable && card.allow_other);
+    assert!(card.tool_call_id.is_none() && !card.report_due, "{card:?}");
+    assert_eq!(card.engine.as_deref(), Some("dsh"));
+    assert_eq!(done_cards(&db).len(), 0, "a plan is not a finished report");
+}
+
+#[test]
+fn the_plan_card_approve_takes_the_execution_model_and_leaves_plan_mode() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it\n\nDo it."), turn_end(4, "completed")]);
+    });
+    let card = plan_decided_card(&bridge, &db);
+    answer(
+        &db,
+        &card,
+        &AnswerReq {
+            option: Some(0),
+            executor: Some("deepseek-v4-pro".to_owned()),
+            executor_thinking: Some("max".to_owned()),
+            ..AnswerReq::default()
+        },
+        &bridge.launch(),
+    )
+    .unwrap();
+    assert_eq!(
+        bridge.posts("/v1/plan"),
+        vec![json!({
+            "sessionId": SID,
+            "decision": "approve",
+            "feedback": null,
+            "executor": "deepseek-v4-pro",
+            "effort": "max",
+        })]
+    );
+    assert_eq!(swipe_reason(&db, &card.id).as_deref(), Some("sent to dsh"));
+}
+
+#[test]
+fn the_plan_card_refine_sends_its_feedback_back_to_planning() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it\n\nDo it."), turn_end(4, "completed")]);
+    });
+    let card = plan_decided_card(&bridge, &db);
+    answer(
+        &db,
+        &card,
+        &AnswerReq { option: Some(1), text: Some("Add a rollback step.".to_owned()), ..AnswerReq::default() },
+        &bridge.launch(),
+    )
+    .unwrap();
+    assert_eq!(
+        bridge.posts("/v1/plan"),
+        vec![json!({
+            "sessionId": SID,
+            "decision": "refine",
+            "feedback": "Add a rollback step.",
+            "executor": null,
+            "effort": null,
+        })]
+    );
+}
+
+#[test]
+fn a_later_turn_of_the_session_supersedes_its_plan_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it"), turn_end(4, "completed")]);
+    });
+    let card = plan_decided_card(&bridge, &db);
+    bridge.edit(|data| {
+        data.sessions = vec![session(8)];
+        data.events.get_mut(SID).unwrap().extend(vec![
+            reply_event(7, "ENVOY_STATUS: complete\nShipped."),
+            turn_end(8, "completed"),
+        ]);
+    });
+    dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW + 3_000);
+    assert_eq!(swipe_reason(&db, &card.id).as_deref(), Some("superseded"));
+    assert!(db.card(&format!("done:dsh:{SID}:8")).unwrap().unwrap().1.is_none());
+}
+
+#[test]
+fn a_plan_card_closes_when_its_session_leaves_the_host() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it"), turn_end(4, "completed")]);
+    });
+    let card = plan_decided_card(&bridge, &db);
+    bridge.edit(|data| data.sessions.clear());
+    dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW + 3_000);
+    assert_eq!(swipe_reason(&db, &card.id).as_deref(), Some("session closed"));
 }
 
 #[test]
