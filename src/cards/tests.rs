@@ -6540,7 +6540,7 @@ fn dsh_dispatch_to_a_running_session_starts_a_new_goal_session() {
 }
 
 #[test]
-fn dsh_close_cancels_the_session_and_resolves_its_other_cards() {
+fn dsh_close_archives_the_session_and_resolves_its_other_cards() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
@@ -6548,7 +6548,8 @@ fn dsh_close_cancels_the_session_and_resolves_its_other_cards() {
     let done = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
     let ask_card = dsh_card(&db, &format!("ask:dsh:{SID}:ev-1"), Kind::Ask);
     close(&db, &done, Some("thanks"), &bridge.launch()).unwrap();
-    assert_eq!(bridge.posts("/v1/cancel"), vec![json!({"sessionId": SID})]);
+    assert_eq!(bridge.posts("/v1/archive"), vec![json!({"sessionId": SID})]);
+    assert!(bridge.posts("/v1/cancel").is_empty());
     assert_eq!(swipe_reason(&db, &done.id), Some(format!("closed dsh:{SID}")));
     assert_eq!(swipe_reason(&db, &ask_card.id), Some(format!("closed dsh:{SID}")));
 }

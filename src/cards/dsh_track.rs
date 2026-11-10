@@ -643,8 +643,7 @@ pub(super) fn answer_plan(
         Err("could not record swipe".to_owned())
     }
 }
-
-/// Cancel a dsh session, then resolve the card and the session's other open cards.
+/// Archive a dsh session and stop its activity before resolving its open cards.
 pub(super) fn close(
     db: &Db,
     card: &Card,
@@ -654,7 +653,7 @@ pub(super) fn close(
 ) -> Result<(), String> {
     let reason = format!("closed dsh:{sid}");
     let open = db.unresolved_cards().map_err(|error| error.to_string())?;
-    dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?.cancel(sid)?;
+    dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?.archive(sid)?;
     if !record_swipe(
         db,
         &card.id,

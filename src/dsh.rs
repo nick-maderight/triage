@@ -218,8 +218,8 @@ impl Client {
         Ok(())
     }
 
-    pub fn cancel(&self, session_id: &str) -> Result<(), String> {
-        self.post::<IgnoredAny>("/v1/cancel", &json!({"sessionId": session_id}))?;
+    pub fn archive(&self, session_id: &str) -> Result<(), String> {
+        self.post::<IgnoredAny>("/v1/archive", &json!({"sessionId": session_id}))?;
         Ok(())
     }
 
