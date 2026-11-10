@@ -83,6 +83,9 @@ pub struct Session {
     #[serde(default)]
     pub cursor: i64,
     pub goal_phase: Option<String>,
+    /// Plan mode is on. A turn that ends here wrote only a plan.
+    #[serde(default)]
+    pub plan_active: bool,
 }
 
 /// The dsh workspaces whose sessions never become cards. An automated producer such as an
@@ -461,6 +464,7 @@ mod tests {
             updated_at_ms: 0,
             cursor: 0,
             goal_phase: None,
+            plan_active: false,
         }
     }
 

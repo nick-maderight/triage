@@ -150,6 +150,15 @@ test('a session report states its outcome above a title without the status prefi
     status: ['No final report', 'warning'],
     title: 'Working on the deploy',
   });
+  assert.deepEqual(head(info('Plan ready: Keep autorules out of triage')), {
+    status: ['Plan ready', undefined],
+    title: 'Keep autorules out of triage',
+  });
+  assert.deepEqual(
+    head(info('Plan ready: The plan', '## The plan\n\nSteps follow.')),
+    { status: ['Plan ready', undefined], title: 'The plan' },
+    'a plan-mode report states the plan is ready, never complete',
+  );
   assert.deepEqual(
     head(info('Done: ## Shipped', '## Shipped\n\nThe parser split is live.')),
     { status: ['Complete', 'positive'], title: 'Shipped' },

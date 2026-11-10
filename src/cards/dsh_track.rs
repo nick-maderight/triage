@@ -2,7 +2,7 @@
 
 use super::{
     GOAL_CONTINUATION_GRACE, Launch, REQUEST_REPORT_TEXT, Start, TickReport, Tracker, finish_cards,
-    record_swipe, reply_turn, supersede_info_cards, trail, truncate_chars, turn_card,
+    headline_of, record_swipe, reply_turn, supersede_info_cards, trail, truncate_chars, turn_card,
 };
 use crate::db::Db;
 use crate::dsh;
@@ -200,12 +200,7 @@ fn prompt_card(
     let source = dsh_source(&item.session_id, session);
     let refs = vec![source.uri.clone()];
     if item.kind == "plan-review" {
-        let heading = item
-            .detail
-            .as_deref()
-            .and_then(|detail| detail.lines().find_map(|line| line.strip_prefix("# ")))
-            .map(str::trim)
-            .filter(|heading| !heading.is_empty());
+        let heading = item.detail.as_deref().and_then(plan_heading);
         let name = heading.map_or_else(|| dsh_name(&item.session_id, session), str::to_owned);
         return Some(Card {
             id: prompt_id(item),
@@ -310,6 +305,35 @@ fn last_reply(recent: &[dsh::Event]) -> Option<&str> {
         .rev()
         .filter(|event| event.kind == "assistant/message")
         .find_map(|event| event.text.as_deref().filter(|text| !text.trim().is_empty()))
+}
+
+/// The title a plan is known by. That is its first top-level Markdown heading, the form dsh
+/// asks a presented plan to start with.
+fn plan_heading(text: &str) -> Option<&str> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(str::trim)
+        .filter(|heading| !heading.is_empty())
+}
+
+/// The card title of a turn that ended while plan mode was still on. The plan names the card;
+/// a turn without one falls back to the reply's first line.
+fn plan_ready_title(name: &str) -> String {
+    match name.trim() {
+        "" => "Plan ready".to_owned(),
+        name => format!("Plan ready: {name}"),
+    }
+}
+
+/// The newest message of a turn that opens with a title, which is the plan dsh left in the
+/// transcript.
+fn plan_message<'a>(replies: &[(i64, &'a str)], turn_start: i64) -> Option<&'a str> {
+    replies
+        .iter()
+        .rev()
+        .filter(|(seq, _)| *seq > turn_start)
+        .map(|&(_, text)| text)
+        .find(|text| plan_heading(text).is_some())
 }
 
 /// Resolve the open dsh questions and plan reviews that `stale` selects. Returns false after a
@@ -432,6 +456,7 @@ fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh
         .or(replies.last())
         .map_or_else(String::new, |&(_, text)| text.to_owned());
     let reason = end.reason.as_deref().unwrap_or("completed");
+    let replied = !reply.trim().is_empty();
     let mut parts = Vec::new();
     if reason == "error" {
         parts.push(
@@ -446,7 +471,7 @@ fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh
             },
         );
     }
-    if !reply.is_empty() {
+    if replied {
         parts.push(reply);
     }
     let text = if parts.is_empty() {
@@ -462,6 +487,21 @@ fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh
     }
     if matches!(reason, "error" | "blocked" | "max-tokens") {
         turn.level = "warn";
+    }
+    // Plan mode means no work ran. The turn wrote a plan and left it for the user to approve.
+    // A report it ends with is not a finished result. The card says what waits instead.
+    let plan = plan_message(&replies, turn_start);
+    if session.plan_active && reason == "completed" && replied {
+        let name = match plan {
+            Some(plan) => plan_heading(plan).map_or_else(|| headline_of(plan), str::to_owned),
+            None => headline_of(turn.body.as_deref().unwrap_or_default()),
+        };
+        turn.title = plan_ready_title(&name);
+        if let Some(plan) = plan {
+            turn.body = Some(omp::redact_credentials(plan));
+        }
+        turn.action.clear();
+        turn.report_due = false;
     }
     let source = dsh_source(sid, Some(session));
     let refs = vec![source.uri.clone()];

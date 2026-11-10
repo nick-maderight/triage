@@ -6037,7 +6037,15 @@ fn session(cursor: i64) -> Value {
         "updatedAtMs": NOW - 60_000,
         "cursor": cursor,
         "goalPhase": null,
+        "planActive": false,
     })
+}
+
+/// A session whose plan mode is still on. Its turn writes a plan and stops.
+fn plan_session(cursor: i64) -> Value {
+    let mut session = session(cursor);
+    session["planActive"] = json!(true);
+    session
 }
 
 fn reply_event(seq: i64, text: &str) -> Value {
@@ -6138,6 +6146,97 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
     assert_eq!(bridge.reads("/v1/events"), 1);
     assert_eq!(done_cards(&db).len(), 1);
+}
+
+#[test]
+fn plan_mode_turn_reports_the_plan_ready() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let plan = "# Keep autorules sessions out\n\n## Goal\n\nNo cards.";
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(2, "Reading the tracker."),
+                reply_event(3, plan),
+                turn_end(4, "completed"),
+            ],
+        );
+    });
+    let mut tracker = Tracker::default();
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
+    let (card, swipe) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    assert!(swipe.is_none());
+    assert_eq!(card.kind, Kind::Info);
+    assert_eq!(card.title, "Plan ready: Keep autorules sessions out");
+    assert_eq!(card.body.as_deref(), Some(plan));
+    assert!(card.star.action.is_empty(), "{card:?}");
+    assert!(!card.report_due, "{card:?}");
+    assert_eq!(done_cards(&db).len(), 1);
+}
+
+#[test]
+fn plan_mode_turn_with_a_status_line_does_not_read_done() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(3, "ENVOY_STATUS: complete\nPlanned the split. No code changed."),
+                turn_end(4, "completed"),
+            ],
+        );
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    assert_eq!(card.title, "Plan ready: Planned the split. No code changed.");
+    assert!(!card.title.starts_with("Done:"), "{card:?}");
+}
+
+#[test]
+fn plan_mode_turn_without_a_heading_takes_the_reply_line() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(3, "A plan without a title\n- step one"),
+                turn_end(4, "completed"),
+            ],
+        );
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    assert_eq!(card.title, "Plan ready: A plan without a title");
+    assert_eq!(card.body.as_deref(), Some("A plan without a title\n- step one"));
+}
+
+#[test]
+fn plan_mode_error_turn_keeps_its_stop_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                json!({"seq": 4, "type": "turn/end", "reason": "error", "error": "400: bad request"}),
+            ],
+        );
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    assert!(card.title.starts_with("Stopped with error"), "{card:?}");
+    assert_eq!(card.level.as_deref(), Some("warn"));
 }
 
 #[test]

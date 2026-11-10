@@ -96,13 +96,15 @@ const S = {
       .find(Boolean)
       ?.match(/^#{1,6}\s+(.+)/)?.[1] || '';
   const titleOf = (c) => (c.kind === 'info' ? heading(c.body) || c.title : c.title);
-  // The daemon opens each session report's title with its outcome, such as `Done` or `Agent done`.
-  // The card head shows the outcome as a colored line above the title and drops it from the title.
+  // The daemon opens each session report's title with its outcome, such as `Done`, `Agent done`
+  // or `Plan ready`. The card head shows the outcome as a colored line above the title and drops
+  // it from the title.
   const REPORT_STATUS = [
     ['Done: ', 'Complete', 'positive'],
     ['Agent done: ', 'Step left open', 'warning'],
     ['Incomplete: ', 'Incomplete', 'negative'],
     ['Unreported: ', 'No final report', 'warning'],
+    ['Plan ready: ', 'Plan ready'],
   ];
   const reportStatus = (c) => {
     const title = String(c.title || ''),
