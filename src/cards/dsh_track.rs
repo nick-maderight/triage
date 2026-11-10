@@ -79,6 +79,14 @@ impl Tracker {
         };
         self.dsh.failing = false;
         self.dsh.retry_at_ms = now + POLL_MS;
+        // A session of an ignored workspace belongs to an automated producer, so it earns no
+        // ask card and no report card.
+        let ignore = &self.dsh_ignore;
+        let ignored: HashSet<String> = sessions
+            .iter()
+            .filter(|session| ignore.skips(session))
+            .map(|session| session.session_id.clone())
+            .collect();
         let answered: HashSet<&str> = pending.iter().map(|item| item.event_id.as_str()).collect();
         let gone = |card: &Card| {
             card.tool_call_id
@@ -92,7 +100,7 @@ impl Tracker {
             self.dsh.sessions.clear();
         }
         self.dsh.pid = Some(pid);
-        pending_cards(db, &client, &sessions, &pending, &mut written);
+        pending_cards(db, &client, &sessions, &pending, &ignored, &mut written);
         finish_prompts(db, "answered in dsh", gone, &mut written);
         let waiting: HashSet<&str> = pending
             .iter()
@@ -104,6 +112,7 @@ impl Tracker {
             &client,
             &sessions,
             &waiting,
+            &ignored,
             now,
             &mut written,
         ) {
@@ -128,9 +137,13 @@ fn pending_cards(
     client: &dsh::Client,
     sessions: &[dsh::Session],
     pending: &[dsh::Pending],
+    ignored: &HashSet<String>,
     written: &mut usize,
 ) {
     for item in pending {
+        if ignored.contains(&item.session_id) {
+            continue;
+        }
         if matches!(db.card(&prompt_id(item)), Ok(Some(_))) {
             continue;
         }
@@ -328,12 +341,14 @@ fn report_sessions(
     client: &dsh::Client,
     sessions: &[dsh::Session],
     waiting: &HashSet<&str>,
+    ignored: &HashSet<String>,
     now: i64,
     written: &mut usize,
 ) -> Result<(), String> {
     let mut reads = REPORT_READS;
     for session in sessions.iter().filter(|session| {
-        !session.blank
+        !ignored.contains(&session.session_id)
+            && !session.blank
             && session.parent_session_id.is_none()
             && (session.running || now - session.updated_at_ms <= WATCH_MS)
     }) {

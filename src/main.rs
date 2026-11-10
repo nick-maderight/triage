@@ -44,6 +44,14 @@ enum Commands {
         /// sessions; empty keeps each session in its own directory
         #[arg(long, default_value = "triage")]
         dsh_workspace: String,
+        /// dsh workspace whose sessions triage never tracks, so an automated producer's runs
+        /// stay out of the inbox; repeatable, and an empty value tracks every workspace
+        #[arg(long = "dsh-ignore-workspace", value_name = "NAME", default_value = "autorules")]
+        dsh_ignore_workspaces: Vec<String>,
+        /// directory dsh-host keeps one directory per workspace in
+        /// [default: ~/.dsh/workspaces]
+        #[arg(long)]
+        dsh_workspaces: Option<PathBuf>,
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
         #[arg(long = "allow-host", value_name = "HOST")]
         allow_hosts: Vec<String>,
@@ -92,10 +100,27 @@ fn main() {
 #[tokio::main]
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, allow_hosts, no_notify } => {
+        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, dsh_ignore_workspaces, dsh_workspaces, allow_hosts, no_notify } => {
             // Validate before opening the DB so a bad flag exits 1 before anything is created.
             cards::engine_flags(engine, model.as_deref(), thinking.as_deref())?;
             let dsh_workspace = dsh::workspace_name(Some(&dsh_workspace))?.map(str::to_owned);
+            let mut ignored = Vec::new();
+            for name in &dsh_ignore_workspaces {
+                if let Some(name) = dsh::workspace_name(Some(name))? {
+                    ignored.push(name.to_owned());
+                }
+            }
+            if let Some(own) = dsh_workspace.as_deref() {
+                if ignored.iter().any(|name| name == own) {
+                    return Err(format!(
+                        "dsh ignore workspace {own} is the workspace triage launches into"
+                    ));
+                }
+            }
+            let dsh_ignore = match (ignored.is_empty(), workspaces_dir(dsh_workspaces)) {
+                (false, Some(root)) => dsh::Ignore::new(root, ignored),
+                _ => dsh::Ignore::default(),
+            };
             let path = match db {
                 Some(path) => path,
                 None => default_db_path()?,
@@ -104,7 +129,8 @@ async fn run() -> Result<(), String> {
                 std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
             let db = db::Db::open(&path).map_err(|error| error.to_string())?;
-            let tracker = cards::Tracker::from_db(&db).map_err(|error| error.to_string())?;
+            let mut tracker = cards::Tracker::from_db(&db).map_err(|error| error.to_string())?;
+            tracker.set_dsh_ignore(dsh_ignore);
             let (bus, _) = tokio::sync::broadcast::channel(64);
             let push = push::Push::load(&db, &allow_hosts)?;
             let state = std::sync::Arc::new(server::AppState {
@@ -208,6 +234,27 @@ fn default_db_path_from(
     Ok(home.join(".local/share/triage/triage.db"))
 }
 
+fn workspaces_dir(flag: Option<PathBuf>) -> Option<PathBuf> {
+    workspaces_dir_from(flag, std::env::var_os("HOME").as_deref())
+}
+
+/// The directory dsh-host keeps one directory per workspace in, which the ignored-workspace
+/// comparison needs because a workspace session runs in that workspace's directory.
+/// `--dsh-workspaces` names it, else it sits at `~/.dsh/workspaces`, dsh-host's own default.
+/// `None` when neither names an absolute directory: the daemon reads no dsh host file then
+/// either, so no session can match the ignore list and every name in it is moot.
+fn workspaces_dir_from(
+    flag: Option<PathBuf>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if let Some(dir) = flag {
+        return Some(dir);
+    }
+    home.map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join(".dsh/workspaces"))
+}
+
 fn print_json(value: serde_json::Value) -> Result<(), String> {
     println!("{}", serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?);
     Ok(())
@@ -215,7 +262,7 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::default_db_path_from;
+    use super::{default_db_path_from, workspaces_dir_from};
     use std::ffi::OsStr;
     use std::path::PathBuf;
 
@@ -233,5 +280,20 @@ mod tests {
             Ok(expected)
         );
         assert!(default_db_path_from(None, Some(OsStr::new("relative-home"))).is_err());
+    }
+
+    #[test]
+    fn workspaces_dir_takes_the_flag_else_the_home_default() {
+        let flag = PathBuf::from("/var/lib/dsh/workspaces");
+        assert_eq!(
+            workspaces_dir_from(Some(flag.clone()), Some(OsStr::new("/home/triage-test"))),
+            Some(flag)
+        );
+        assert_eq!(
+            workspaces_dir_from(None, Some(OsStr::new("/home/triage-test"))),
+            Some(PathBuf::from("/home/triage-test/.dsh/workspaces"))
+        );
+        assert_eq!(workspaces_dir_from(None, Some(OsStr::new("relative-home"))), None);
+        assert_eq!(workspaces_dir_from(None, None), None);
     }
 }

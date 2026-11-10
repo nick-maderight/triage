@@ -50,6 +50,8 @@ pub struct Tracker {
     startup_panes: HashMap<String, String>,
     /// The host pid, retry time and per-session change marks of the dsh bridge poll.
     dsh: dsh_track::Memo,
+    /// The dsh workspaces whose sessions triage does not track.
+    dsh_ignore: crate::dsh::Ignore,
     #[cfg(test)]
     pending_ask_reads: usize,
     #[cfg(test)]
@@ -136,11 +138,17 @@ impl Tracker {
             startup: HashMap::new(),
             startup_panes: HashMap::new(),
             dsh: dsh_track::Memo::default(),
+            dsh_ignore: crate::dsh::Ignore::default(),
             #[cfg(test)]
             pending_ask_reads: 0,
             #[cfg(test)]
             proposal_reads: 0,
         })
+    }
+
+    /// Leave the sessions of the ignored dsh workspaces out of the inbox.
+    pub fn set_dsh_ignore(&mut self, ignore: crate::dsh::Ignore) {
+        self.dsh_ignore = ignore;
     }
 
     fn refresh_ask_cache(&mut self, pane: &tmux::Pane) {

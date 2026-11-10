@@ -51,6 +51,8 @@ The effort reaches dsh unchanged, because each model declares its own ids: `deep
 
 The tracker polls the bridge every 3 seconds and turns dsh questions, plan reviews and finished turns into the same ask, plan and report cards that omp sessions get. A card's source is `dsh://session/<id>` with the label `dsh <session title>`. Peek on a dsh card shows the session's recent messages and tool calls. Send queues a prompt in an idle session, while Open brings up the dsh web UI on the desktop in place of Jump. Answering in the dsh web UI resolves the card as `answered in dsh`. A host restart resolves the open ask and plan cards as `dsh host restarted`, because dsh does not deliver a waiting question again. Answer multi-select questions in the dsh web UI.
 
+Some dsh sessions are not triage's. An automated producer such as an autorules rule runs there and takes its result from the reply, so its sessions earn no card and would only crowd the inbox. `--dsh-ignore-workspace` names those workspaces, `autorules` by default, and the tracker skips their sessions before it reads an event. dsh creates a workspace session in the workspace's own directory, so the comparison is the session's directory against `<--dsh-workspaces>/<name>`, which defaults to `~/.dsh/workspaces` and must match the dsh-host `--workspaces`. The flag is repeatable, an empty value tracks every workspace, and the daemon refuses an ignore name that equals its own `--dsh-workspace`. Ignoring a workspace does not archive anything: the producer archives its own finished sessions, and `dsh-ask` already does.
+
 Dispatch on a dsh card preselects the dsh engine and sends the brief to the same session when it is idle. Plan into, or a busy session, starts a new session. Close archives the session, stops its activity, and resolves its cards. Request final report prompts an idle session for its report. With Plan into, dsh-host approves the first plan itself and switches the session to the execution model, the way omp's `--plan-yolo` does.
 
 A dsh launch names its Execution effort beside the model. dsh-host keeps it and applies it to the execution model when the plan is approved; empty keeps the planner's effort. Approving a dsh plan card names both too: the Execution model and the Execution effort. The effort picker lists the levels the chosen execution model declares, and follows the model when the choice changes.
@@ -101,7 +103,7 @@ For `triage.finding`, `data` may contain `title`, `star` (an object with `situat
 
 ## CLI
 
-- `triage serve [--listen 127.0.0.1:7340] [--db PATH] [--session NAME] [--engine omp|dsh] [--model SELECTOR] [--thinking LEVEL] [--allow-host HOST]... [--no-notify]` starts the server and pane tracker.
+- `triage serve [--listen 127.0.0.1:7340] [--db PATH] [--session NAME] [--engine omp|dsh] [--model SELECTOR] [--thinking LEVEL] [--dsh-workspace NAME] [--dsh-workspaces DIR] [--dsh-ignore-workspace NAME]... [--allow-host HOST]... [--no-notify]` starts the server and pane tracker.
 - `triage emit [FILE|-]` posts a CloudEvent from a JSON file or standard input.
 - `triage finding --source URI --title T [--situation TEXT] [--task TEXT] [--action TEXT] [--result TEXT] [--option LABEL]... [--ref PATH]... [--org-id ID] [--cwd DIR] [--priority N] [--id ID]` posts a finding event.
 - `deploy/finding-example.sh` shows a scheduled job posting a finding.
@@ -129,6 +131,8 @@ Settings are `triage serve` flags; there is no configuration file. Put them on t
 | `--model` | omp's own model | Default model for new windows. A request can override it in the New session or Dispatch sheet, or on a finding answer. It takes an omp selector or `@role`; omp resolves a role when each window starts. A brief sent to a waiting source pane keeps that pane's model, except Plan mode can switch it to the pane's own `plan` role. With `--engine dsh` it takes any selector from dsh's catalog; empty takes the host's default. |
 | `--thinking` | omp's own level | Thinking level for launched sessions; accepts `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `--dsh-workspace` | `triage` | dsh workspace every new dsh session joins, so the dsh web UI groups triage's sessions. It is one lowercase name; dsh-host keeps the workspace in `~/.dsh/workspaces/<name>`. Empty starts each session in its project directory, ungrouped. |
+| `--dsh-workspaces` | `~/.dsh/workspaces` | Directory dsh-host keeps one directory per workspace in, the dsh-host `--workspaces`. The ignored-workspace comparison uses it. |
+| `--dsh-ignore-workspace` | `autorules` | Repeatable. dsh workspace whose sessions never become cards, because an automated producer runs there. An empty value tracks every workspace. A name equal to `--dsh-workspace` stops the daemon at startup. |
 | `--allow-host` | none | Repeatable. Host names accepted besides `localhost`, `127.0.0.1` and `::1`. |
 | `--no-notify` | off | Turns off `notify-send` notifications on the daemon's machine. Browser push is set per device in the inbox's Notifications sheet. |
 

@@ -6179,6 +6179,99 @@ fn active_dsh_goal_holds_its_report_until_the_grace_ends() {
     assert_eq!(ids, vec![format!("done:dsh:{SID}:3")]);
 }
 
+/// A tracker that leaves the named workspaces under `root` out of the inbox.
+fn ignored_tracker(root: &Path, names: &[&str]) -> Tracker {
+    let mut tracker = Tracker::default();
+    tracker.set_dsh_ignore(crate::dsh::Ignore::new(
+        root.to_path_buf(),
+        names.iter().map(|name| (*name).to_owned()).collect(),
+    ));
+    tracker
+}
+
+/// A session in the dsh workspace `name` under `root`.
+fn workspace_session(cursor: i64, root: &Path, name: &str) -> Value {
+    let dir = root.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    let mut session = session(cursor);
+    session["cwd"] = json!(dir.display().to_string());
+    session
+}
+
+#[test]
+fn report_from_an_ignored_workspace_queues_no_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let root = scratch.path().join("workspaces");
+    let finished = workspace_session(4, &root, "autorules");
+    bridge.edit(|data| {
+        data.sessions = vec![finished];
+        data.events.insert(
+            SID.to_owned(),
+            vec![reply_event(3, "AUTORULES-VERDICT keep"), turn_end(4, "completed")],
+        );
+    });
+    let mut tracker = ignored_tracker(&root, &["autorules"]);
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 0);
+    assert!(done_cards(&db).is_empty());
+    assert_eq!(bridge.reads("/v1/events"), 0, "an ignored session is never read");
+}
+
+#[test]
+fn report_from_another_workspace_still_queues_a_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let root = scratch.path().join("workspaces");
+    let finished = workspace_session(4, &root, "triage");
+    bridge.edit(|data| {
+        data.sessions = vec![finished];
+        data.events.insert(
+            SID.to_owned(),
+            vec![reply_event(3, "ENVOY_STATUS: complete"), turn_end(4, "completed")],
+        );
+    });
+    let mut tracker = ignored_tracker(&root, &["autorules"]);
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
+    let ids: Vec<String> = done_cards(&db).into_iter().map(|card| card.id).collect();
+    assert_eq!(ids, vec![format!("done:dsh:{SID}:4")]);
+}
+
+#[test]
+fn question_in_an_ignored_workspace_queues_no_ask_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let root = scratch.path().join("workspaces");
+    let asking = workspace_session(0, &root, "autorules");
+    bridge.edit(|data| {
+        data.sessions = vec![asking];
+        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red"], false)])];
+    });
+    let mut tracker = ignored_tracker(&root, &["autorules"]);
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 0);
+    assert!(db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().is_none());
+}
+
+#[test]
+fn empty_ignore_list_tracks_every_workspace() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let root = scratch.path().join("workspaces");
+    let finished = workspace_session(4, &root, "autorules");
+    bridge.edit(|data| {
+        data.sessions = vec![finished];
+        data.events.insert(
+            SID.to_owned(),
+            vec![reply_event(3, "AUTORULES-VERDICT keep"), turn_end(4, "completed")],
+        );
+    });
+    let mut tracker = Tracker::default();
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
+}
+
 #[test]
 fn dsh_question_queues_an_ask_card_with_its_options() {
     let scratch = Scratch::new();

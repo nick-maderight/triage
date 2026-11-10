@@ -85,6 +85,42 @@ pub struct Session {
     pub goal_phase: Option<String>,
 }
 
+/// The dsh workspaces whose sessions never become cards. An automated producer such as an
+/// autorules rule runs there and reports its own result elsewhere, so its sessions are noise
+/// in the inbox. dsh creates a workspace session in the workspace's own directory, so a
+/// session's cwd names the workspace it joined.
+#[derive(Debug, Clone, Default)]
+pub struct Ignore {
+    /// The root dsh-host keeps one directory per workspace in, its `--workspaces`.
+    root: PathBuf,
+    /// The names of the workspaces to leave alone.
+    names: Vec<String>,
+}
+
+impl Ignore {
+    pub fn new(root: PathBuf, names: Vec<String>) -> Ignore {
+        Self { root, names }
+    }
+
+    /// Whether the session joined an ignored workspace.
+    pub fn skips(&self, session: &Session) -> bool {
+        let Some(cwd) = session.cwd.as_deref().map(str::trim).filter(|cwd| !cwd.is_empty()) else {
+            return false;
+        };
+        let cwd = Path::new(cwd);
+        self.names.iter().any(|name| same_path(cwd, &self.root.join(name)))
+    }
+}
+
+/// Whether two paths name the same directory. A live session's directory and its workspace
+/// exist, so the resolved paths decide; an unresolvable path falls back to its text.
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Live state of a session. Non-empty pending input means a question or plan review waits.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -412,6 +448,36 @@ mod tests {
             name: None,
             command: None,
         }
+    }
+
+    fn session_at(cwd: Option<&str>) -> Session {
+        Session {
+            session_id: "session-1".to_owned(),
+            title: None,
+            cwd: cwd.map(str::to_owned),
+            running: false,
+            blank: false,
+            parent_session_id: None,
+            updated_at_ms: 0,
+            cursor: 0,
+            goal_phase: None,
+        }
+    }
+
+    #[test]
+    fn an_ignored_workspace_matches_its_own_directory_only() {
+        let ignore = Ignore::new(PathBuf::from("/w"), vec!["autorules".to_owned()]);
+        assert!(ignore.skips(&session_at(Some("/w/autorules"))));
+        assert!(!ignore.skips(&session_at(Some("/w/autorules/sub"))));
+        assert!(!ignore.skips(&session_at(Some("/w/triage"))));
+        assert!(!ignore.skips(&session_at(Some("/home/autorules"))));
+        assert!(!ignore.skips(&session_at(None)));
+        assert!(!ignore.skips(&session_at(Some("  "))));
+    }
+
+    #[test]
+    fn an_empty_ignore_list_skips_nothing() {
+        assert!(!Ignore::default().skips(&session_at(Some("/w/autorules"))));
     }
 
     #[test]
