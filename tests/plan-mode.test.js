@@ -457,10 +457,11 @@ test('plan picker loads cycle roles without replacing the general model catalog'
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async () => data,
       refreshPicker() {},
+      setPickerValue() {},
       current: () => null,
     });
   vm.runInContext(
-    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`,
+    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\n${functionSource('refreshEfforts')}\n${functionSource('effortLevels')}\nglobalThis.loadModels = loadModels;`,
     context,
   );
   await context.loadModels();
@@ -496,10 +497,11 @@ test('each sheet lists the models of the engine its Engine field picks', async (
         return catalogs[path.endsWith('dsh') ? 'dsh' : 'omp'];
       },
       refreshPicker() {},
+      setPickerValue() {},
       current: () => null,
     });
   vm.runInContext(
-    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\nglobalThis.loadModels = loadModels;`,
+    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\n${functionSource('refreshEfforts')}\n${functionSource('effortLevels')}\nglobalThis.loadModels = loadModels;`,
     context,
   );
   await context.loadModels();

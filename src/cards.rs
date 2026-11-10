@@ -3053,15 +3053,23 @@ fn thinking_level(thinking: Option<&str>) -> Result<Option<&str>, String> {
     Ok(thinking)
 }
 
-/// Trim a dsh model selector. A blank selector means unset. Anything else must be in `dsh::MODELS`.
+/// Trim a dsh model selector. A blank selector means unset. A selector is one
+/// token, "provider/model" or a bare model id. Whether the host offers it is the
+/// bridge's check, because dsh's settings decide the catalog and a copy here
+/// would go stale.
 pub fn dsh_selector(model: Option<&str>) -> Result<Option<&str>, String> {
     let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
         return Ok(None);
     };
-    if dsh::MODELS.iter().any(|(selector, _)| *selector == model) {
-        return Ok(Some(model));
+    // A dsh selector is "provider/model" or a bare model id. An omp role (@smol)
+    // and anything with whitespace or control characters can never name one.
+    if model.starts_with('@')
+        || model.len() > 200
+        || model.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!("unknown dsh model {model}"));
     }
-    Err(format!("unknown dsh model {model}"))
+    Ok(Some(model))
 }
 
 /// Trim and check `model` for `engine`, as an omp selector or a dsh model.
@@ -3080,7 +3088,8 @@ pub fn executor_effort(engine: Engine, effort: Option<&str>) -> Result<Option<&s
         return Ok(None);
     };
     match engine {
-        Engine::Dsh if dsh::THINKING.contains(&effort) => Ok(Some(effort)),
+        // dsh reports each model's effort ids, which are the shared level names.
+        Engine::Dsh if THINKING_LEVELS.contains(&effort) => Ok(Some(effort)),
         Engine::Dsh => Err(format!("unknown execution effort {effort}")),
         Engine::Omp if THINKING_LEVELS.contains(&effort) => Ok(Some(effort)),
         Engine::Omp => Err(format!("unknown execution thinking level {effort}")),

@@ -4460,9 +4460,11 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
 #[test]
 fn execution_effort_belongs_to_each_engine() {
     assert_eq!(executor_effort(Engine::Dsh, Some(" max ")), Ok(Some("max")));
+    // dsh reports each model's own effort ids, so a model may offer medium or xhigh.
+    assert_eq!(executor_effort(Engine::Dsh, Some("medium")), Ok(Some("medium")));
     assert_eq!(
-        executor_effort(Engine::Dsh, Some("medium")),
-        Err("unknown execution effort medium".to_owned())
+        executor_effort(Engine::Dsh, Some("turbo")),
+        Err("unknown execution effort turbo".to_owned())
     );
     assert_eq!(executor_effort(Engine::Omp, Some("medium")), Ok(Some("medium")));
     assert_eq!(
@@ -6448,7 +6450,7 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
 }
 
 #[test]
-fn dsh_goal_launch_without_a_model_uses_deepseek_flash() {
+fn dsh_goal_launch_without_a_model_leaves_the_host_default() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
@@ -6457,7 +6459,9 @@ fn dsh_goal_launch_without_a_model_uses_deepseek_flash() {
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["mode"], "goal");
-    assert_eq!(launches[0]["model"], "deepseek-flash");
+    // No model sent: the bridge takes the host's catalog default, so a model
+    // name that went stale in triage never reaches a selection.
+    assert!(launches[0]["model"].is_null(), "{}", launches[0]);
     assert!(launches[0]["effort"].is_null());
     assert!(launches[0]["executor"].is_null());
 }

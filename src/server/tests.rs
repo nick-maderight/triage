@@ -2586,18 +2586,62 @@ fn pane_directories_list_each_directory_once_most_shared_first() {
     );
 }
 
+/// A host file for a bridge that answers one model catalog and nothing else.
+async fn dsh_catalog_host(catalog: serde_json::Value) -> (TestDir, PathBuf) {
+    let app = axum::Router::new().route(
+        "/v1/models",
+        axum::routing::get(move || {
+            let catalog = catalog.clone();
+            async move { axum::Json(catalog) }
+        }),
+    );
+    let (address, _server) = start_http_server_with_router(app).await;
+    let dir = TestDir::new("triage-dsh-catalog");
+    let host = dir.0.join("dsh-host.json");
+    std::fs::write(
+        &host,
+        serde_json::json!({"api": format!("http://{address}"), "secret": "s3cret", "pid": 1})
+            .to_string(),
+    )
+    .unwrap();
+    (dir, host)
+}
+
+fn dsh_models_state(db: Db, host: PathBuf, model: Option<&str>) -> Arc<AppState> {
+    state_with(
+        db,
+        crate::cards::Launch {
+            engine: crate::cards::Engine::Dsh,
+            dsh_host: Some(host),
+            model: model.map(str::to_owned),
+            ..crate::cards::Launch::default()
+        },
+    )
+}
+
 #[tokio::test]
-async fn dsh_models_list_the_deepseek_models_and_thinking_levels() {
+async fn dsh_models_follow_the_host_catalog() {
+    let (_dir, host) = dsh_catalog_host(serde_json::json!({
+        "default": "opencode-go/deepseek-v4.1-flash",
+        "models": [
+            {"provider": "opencode-go", "model": "deepseek-v4.1-flash",
+             "selector": "opencode-go/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash",
+             "efforts": ["off", "low", "high", "max"]},
+            {"provider": "opencode-go", "model": "beam-free",
+             "selector": "opencode-go/beam-free", "name": "Beam Free", "efforts": []}
+        ]
+    }))
+    .await;
     let db = Db::open(Path::new(":memory:")).unwrap();
     let response = super::models(
-        axum::extract::State(state(db, None)),
+        axum::extract::State(dsh_models_state(db, host, None)),
         axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
     )
     .await;
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["engine"], "dsh");
-    assert_eq!(parsed["default"], "deepseek-flash");
+    assert_eq!(parsed["default"], "opencode-go/deepseek-v4.1-flash");
     assert_eq!(parsed["thinking"], serde_json::json!(["off", "low", "high", "max"]));
     let selectors: Vec<&str> = parsed["models"]
         .as_array()
@@ -2605,7 +2649,80 @@ async fn dsh_models_list_the_deepseek_models_and_thinking_levels() {
         .iter()
         .map(|model| model["selector"].as_str().unwrap())
         .collect();
-    assert_eq!(selectors, ["deepseek-flash", "deepseek-v4-pro"]);
+    assert_eq!(selectors, ["opencode-go/deepseek-v4.1-flash", "opencode-go/beam-free"]);
+    let names: Vec<&str> = parsed["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["DeepSeek V4.1 Flash", "Beam Free"]);
+    // The efforts ride along, so a picker never offers a level dsh would refuse.
+    assert_eq!(
+        parsed["models"][0]["efforts"],
+        serde_json::json!(["off", "low", "high", "max"])
+    );
+    assert_eq!(parsed["models"][1]["efforts"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn dsh_models_keep_a_daemon_model_the_host_offers() {
+    let (_dir, host) = dsh_catalog_host(serde_json::json!({
+        "default": "opencode-go/deepseek-v4.1-flash",
+        "models": [
+            {"provider": "opencode-go", "model": "deepseek-v4.1-flash",
+             "selector": "opencode-go/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash"},
+            {"provider": "opencode-go", "model": "beam-free",
+             "selector": "opencode-go/beam-free", "name": "Beam Free"}
+        ]
+    }))
+    .await;
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let response = super::models(
+        axum::extract::State(dsh_models_state(db, host, Some("opencode-go/beam-free"))),
+        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+    )
+    .await;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["default"], "opencode-go/beam-free");
+}
+
+#[tokio::test]
+async fn dsh_models_drop_a_daemon_model_the_host_no_longer_offers() {
+    let (_dir, host) = dsh_catalog_host(serde_json::json!({
+        "default": "opencode-go/deepseek-v4.1-flash",
+        "models": [
+            {"provider": "opencode-go", "model": "deepseek-v4.1-flash",
+             "selector": "opencode-go/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash"}
+        ]
+    }))
+    .await;
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let response = super::models(
+        axum::extract::State(dsh_models_state(db, host, Some("deepseek-official/deepseek-flash"))),
+        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+    )
+    .await;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["default"], "opencode-go/deepseek-v4.1-flash");
+}
+
+#[tokio::test]
+async fn dsh_models_are_empty_without_a_host() {
+    let dir = TestDir::new("triage-dsh-nohost");
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let response = super::models(
+        axum::extract::State(dsh_models_state(db, dir.0.join("missing.json"), None)),
+        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+    )
+    .await;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["models"], serde_json::json!([]));
+    assert!(parsed["default"].is_null());
+    assert_eq!(parsed["thinking"], serde_json::json!(["off", "low", "high", "max"]));
 }
 
 #[tokio::test]

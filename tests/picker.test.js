@@ -84,3 +84,46 @@ test('a strict field never offers typed text', () => {
   assert.deepEqual(values(high), ['high', 'xhigh']);
   assert.equal(high.active, 0);
 });
+
+const effortContext = vm.createContext({});
+vm.runInContext(
+  `${functionSource('effortLevels')}\nObject.assign(globalThis, { effortLevels });`,
+  effortContext,
+);
+
+test('a model with its own efforts offers only those levels', () => {
+  const dsh = {
+    thinking: ['off', 'low', 'high', 'max'],
+    models: [
+      { selector: 'opencode-go/deepseek-v4.1-flash', efforts: ['off', 'low', 'high', 'max'] },
+      { selector: 'opencode-go/beam-free', efforts: [] },
+    ],
+  };
+  assert.deepEqual(
+    [...effortContext.effortLevels(dsh, 'opencode-go/deepseek-v4.1-flash')],
+    ['off', 'low', 'high', 'max'],
+  );
+  assert.deepEqual([...effortContext.effortLevels(dsh, 'opencode-go/beam-free')], []);
+});
+
+test('an engine without per-model efforts keeps its whole list', () => {
+  const omp = { thinking: ['low', 'high', 'xhigh', 'max'], models: [{ selector: '@smol' }] };
+  assert.deepEqual([...effortContext.effortLevels(omp, '@smol')], ['low', 'high', 'xhigh', 'max']);
+  assert.deepEqual([...effortContext.effortLevels(omp, '')], ['low', 'high', 'xhigh', 'max']);
+});
+
+test('an unchosen model takes the default model efforts', () => {
+  const dsh = {
+    default: 'opencode-go/deepseek-v4.1-flash',
+    thinking: ['off', 'low', 'high', 'max'],
+    models: [
+      { selector: 'opencode-go/deepseek-v4.1-flash', efforts: ['low', 'high', 'max'] },
+      { selector: 'opencode-go/beam-free', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    ],
+  };
+  assert.deepEqual([...effortContext.effortLevels(dsh, '')], ['low', 'high', 'max']);
+  assert.deepEqual(
+    [...effortContext.effortLevels(dsh, 'opencode-go/beam-free')],
+    ['low', 'medium', 'high', 'xhigh', 'max'],
+  );
+});

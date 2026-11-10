@@ -757,7 +757,8 @@ pub(super) fn launch_new(
     let mut body = json!({
         "prompt": brief_prompt(brief),
         "title": title,
-        "model": launch.model.as_deref().unwrap_or(dsh::DEFAULT_MODEL),
+        // No model leaves the bridge its host's default from the dsh catalog.
+        "model": launch.model.as_deref(),
         "effort": launch.thinking,
         "mode": mode,
         "executor": executor,

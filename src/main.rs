@@ -34,7 +34,7 @@ enum Commands {
         /// Harness for launched sessions
         #[arg(long, value_enum, default_value_t = cards::Engine::Omp)]
         engine: cards::Engine,
-        /// model for launched sessions, an omp selector or a dsh model (deepseek-flash or deepseek-v4-pro) [default: the harness's own]
+        /// model for launched sessions, an omp selector or a dsh selector from the host catalog [default: the harness's own]
         #[arg(long)]
         model: Option<String>,
         /// thinking level for launched sessions [default: the harness's own]

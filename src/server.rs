@@ -902,13 +902,33 @@ async fn models(
     };
     let daemon = state.launch.engine == engine;
     if engine == crate::cards::Engine::Dsh {
-        let models: Vec<Model> = crate::dsh::MODELS
+        // dsh's own catalog decides the list: its settings add and remove model
+        // routes, and a pair triage remembered would be rejected at launch.
+        let host = state.launch.dsh_host.clone();
+        let catalog = tokio::task::spawn_blocking(move || crate::dsh::catalog(host.as_deref()))
+            .await
+            .ok()
+            .flatten();
+        // Each entry carries the efforts that model accepts, so a picker never
+        // offers a level dsh would refuse.
+        let models: Vec<serde_json::Value> = catalog
             .iter()
-            .map(|(selector, name)| Model { selector: (*selector).to_owned(), name: (*name).to_owned() })
+            .flat_map(|catalog| catalog.models.iter())
+            .map(|model| {
+                serde_json::json!({
+                    "selector": model.selector,
+                    "name": model.name.clone().unwrap_or_else(|| model.selector.clone()),
+                    "efforts": model.efforts,
+                })
+            })
             .collect();
-        let default = match (daemon, state.launch.model.as_deref()) {
-            (true, Some(model)) => model,
-            _ => crate::dsh::DEFAULT_MODEL,
+        // The daemon's own dsh model wins when the host still offers it.
+        let daemon_model = state.launch.model.as_deref().filter(|model| {
+            catalog.as_ref().is_some_and(|catalog| catalog.offers(model))
+        });
+        let default = match (daemon, daemon_model) {
+            (true, Some(model)) => Some(model.to_owned()),
+            _ => catalog.as_ref().and_then(|catalog| catalog.default_selector().map(str::to_owned)),
         };
         let default_thinking = if daemon { state.launch.thinking.clone() } else { None };
         return axum::Json(serde_json::json!({

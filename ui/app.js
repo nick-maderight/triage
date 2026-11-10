@@ -2205,6 +2205,7 @@ const S = {
     if (p.id === 'plan-executor-effort' && current()?.kind === 'plan') draft(current()).executorThinking = row.value;
     $('#picker').close();
     if (changed) clearModels(p.id.replace(/-engine$/, ''));
+    else if (/-model$|-executor$/.test(p.id)) refreshEfforts(sheetOf(p.id));
   }
   // Model selectors belong to one engine. A new engine clears its sheet's model and executor.
   function clearModels(sheet) {
@@ -2251,7 +2252,12 @@ const S = {
       // The server falls back to its default session.
     }
   }
+  // The sheet a model or executor field belongs to, for the effort list it refits.
+  function sheetOf(id) {
+    return ['compose', 'dispatch', 'plan'].find((sheet) => id.startsWith(`${sheet}-`)) || null;
+  }
   // Each sheet lists the models of the engine its Engine field picks, or the daemon's when Default.
+  // Its model field keeps the catalog data, so an effort list can follow the model picked.
   async function loadModels() {
     try {
       const base = await api('/v1/models'),
@@ -2265,19 +2271,19 @@ const S = {
           data = await load(engine),
           model = PICKERS[`${sheet}-model`],
           thinking = PICKERS[`${sheet}-thinking`],
-          executor = PICKERS[`${sheet}-executor`],
-          executorEffort = PICKERS[`${sheet}-executor-effort`];
+          executor = PICKERS[`${sheet}-executor`];
+        model.data = data;
         PICKERS[`${sheet}-engine`].fallback = daemon;
         model.options = executor.options = options(data.models);
         model.fallback = data.default
           ? model.options.find((option) => option.value === data.default)?.label || data.default
           : `${engine} default`;
-        thinking.options = data.thinking.map((level) => pickerOption(level));
         thinking.fallback = data.default_thinking ?? `${engine} default`;
         executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
-        executorEffort.options = data.thinking.map((level) => pickerOption(level));
-        executorEffort.fallback = engine === 'dsh' ? 'Planner effort' : 'Selector level';
+        PICKERS[`${sheet}-executor-effort`].fallback =
+          engine === 'dsh' ? 'Planner effort' : 'Selector level';
         if (sheet === 'compose') $('#compose-session-pair').hidden = engine === 'dsh';
+        refreshEfforts(sheet);
         for (const id of ['engine', 'model', 'thinking', 'executor', 'executor-effort'])
           refreshPicker(`${sheet}-${id}`);
       }
@@ -2286,15 +2292,50 @@ const S = {
         planEngine = plan?.kind === 'plan' ? plan.engine || 'omp' : daemon;
       planExecutorLabels(planEngine);
       const planModels = await load(planEngine);
+      PICKERS['plan-executor'].data = planModels;
       PICKERS['plan-executor'].options = options(planModels.execution_models);
-      PICKERS['plan-executor-effort'].options = planModels.thinking.map((level) => pickerOption(level));
       PICKERS['plan-executor-effort'].fallback =
         planEngine === 'dsh' ? 'Planner effort' : 'Role level';
+      refreshEfforts('plan');
       refreshPicker('plan-executor');
       refreshPicker('plan-executor-effort');
     } catch {
       // The server falls back to its launch flags or the engine's defaults.
     }
+  }
+  // A model decides which thinking levels it accepts. dsh reports them per model, an
+  // engine that names none offers its whole list, and a model with no reasoning control
+  // offers only Default, which sends no effort.
+  function refreshEfforts(sheet) {
+    const data =
+      sheet === 'plan' ? PICKERS['plan-executor'].data : PICKERS[`${sheet}-model`]?.data;
+    if (!data) return;
+    const levels = (selector) => effortLevels(data, selector);
+    const fit = (id, allowed) => {
+      const cfg = PICKERS[id];
+      if (!cfg) return;
+      cfg.options = allowed.map((level) => pickerOption(level));
+      const field = $(`#${id}`);
+      if (field?.value && !cfg.options.some((option) => option.value === field.value))
+        setPickerValue(id, '');
+      refreshPicker(id);
+    };
+    if (sheet === 'plan') {
+      fit('plan-executor-effort', levels($('#plan-executor')?.value.trim() || ''));
+      return;
+    }
+    fit(`${sheet}-thinking`, levels($(`#${sheet}-model`)?.value.trim() || ''));
+    fit(`${sheet}-executor-effort`, levels($(`#${sheet}-executor`)?.value.trim() || ''));
+  }
+  // The thinking levels a model accepts. An engine that reports none for a model means
+  // it has no reasoning control, so only Default is left; an engine that reports no
+  // per-model list at all offers its whole list.
+  function effortLevels(data, selector) {
+    const models = data?.models || [],
+      model =
+        models.find((entry) => entry.selector === selector) ||
+        models.find((entry) => entry.selector === data?.default);
+    return model && Array.isArray(model.efforts) ? model.efforts : data?.thinking || [];
   }
   async function submitCompose(e) {
     e.preventDefault();

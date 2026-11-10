@@ -26,19 +26,16 @@ pub fn workspace_name(name: Option<&str>) -> Result<Option<&str>, String> {
     Ok(name)
 }
 
-/// The models dsh offers, as (selector, display name).
-pub const MODELS: [(&str, &str); 2] = [
-    ("deepseek-flash", "DeepSeek-V4.1-Flash"),
-    ("deepseek-v4-pro", "DeepSeek-V4-Pro"),
-];
 /// The effort levels dsh shows.
 pub const THINKING: [&str; 4] = ["off", "low", "high", "max"];
-/// The model a dsh launch uses when none is chosen.
-pub const DEFAULT_MODEL: &str = "deepseek-flash";
 /// Caps a background poll, which runs under the tracker lock.
 pub const TICK_TIMEOUT: Duration = Duration::from_secs(3);
 /// Caps a card action or launch, which a person waits on.
 pub const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Caps the catalog read behind the models picker.
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a catalog read serves the pickers.
+const CATALOG_TTL: Duration = Duration::from_secs(30);
 
 /// The bridge address and secret dsh-host publishes. Never log them.
 #[derive(Deserialize)]
@@ -96,6 +93,77 @@ pub struct State {
     pub running: bool,
     #[serde(default)]
     pub pending_input: Vec<String>,
+}
+
+/// One model the host offers. `selector` is "provider/model", the value a launch
+/// echoes back.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Model {
+    pub provider: String,
+    pub model: String,
+    pub selector: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The reasoning efforts the model accepts. Empty means it has no reasoning
+    /// control, so a thinking level would be refused.
+    #[serde(default)]
+    pub efforts: Vec<String>,
+}
+
+/// The models the host offers and the selector a new session takes by default.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Catalog {
+    #[serde(default)]
+    pub default: String,
+    #[serde(default)]
+    pub models: Vec<Model>,
+}
+
+impl Catalog {
+    /// Whether the host offers this selector or this bare model id.
+    pub fn offers(&self, selector: &str) -> bool {
+        self.models
+            .iter()
+            .any(|model| model.selector == selector || model.model == selector)
+    }
+
+    /// The selector a new session takes when its caller names none.
+    pub fn default_selector(&self) -> Option<&str> {
+        if self.offers(&self.default) {
+            return Some(&self.default);
+        }
+        self.models.first().map(|model| model.selector.as_str())
+    }
+}
+
+/// The last catalog one bridge answered, and when it answered.
+static CATALOG: std::sync::Mutex<Option<(std::time::Instant, PathBuf, Catalog)>> =
+    std::sync::Mutex::new(None);
+
+/// The models the host offers, read through a short cache because dsh's settings
+/// decide them: a route a settings change removed must stop appearing here. A
+/// host that cannot answer leaves the last read of that same host in place and
+/// returns None only when it never answered.
+pub fn catalog(host: Option<&Path>) -> Option<Catalog> {
+    let key = match host.map(Path::to_owned).or_else(host_file) {
+        Some(key) => key,
+        None => return None,
+    };
+    let now = std::time::Instant::now();
+    if let Ok(slot) = CATALOG.lock() {
+        if let Some((at, cached, catalog)) = slot.as_ref() {
+            if *cached == key && now.duration_since(*at) < CATALOG_TTL {
+                return Some(catalog.clone());
+            }
+        }
+    }
+    let catalog = connect(Some(&key), CATALOG_TIMEOUT).ok()?.models().ok()?;
+    if let Ok(mut slot) = CATALOG.lock() {
+        *slot = Some((now, key, catalog.clone()));
+    }
+    Some(catalog)
 }
 
 /// A question or plan review that waits for an answer.
@@ -188,6 +256,11 @@ impl Client {
     pub fn pending(&self) -> Result<(u32, Vec<Pending>), String> {
         let listed: Listed<Pending> = self.get("/v1/pending", &[])?;
         Ok((listed.pid, listed.items))
+    }
+
+    /// The models the host offers and the selector a new session takes by default.
+    pub fn models(&self) -> Result<Catalog, String> {
+        self.get("/v1/models", &[])
     }
 
     pub fn state(&self, session_id: &str) -> Result<State, String> {
