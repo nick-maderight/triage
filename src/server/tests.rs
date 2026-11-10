@@ -464,9 +464,9 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
+async fn new_session_plan_into_applies_effort_to_default_execution_model() {
     if run_with_fake_tmux_child(
-        "server::tests::new_session_plan_into_launches_plan_yolo_with_the_execution_model",
+        "server::tests::new_session_plan_into_applies_effort_to_default_execution_model",
     ) {
         return;
     }
@@ -488,8 +488,8 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
         model: None,
         thinking: None,
         mode: Some("plan-into".to_owned()),
-        executor: Some("provider/executor".to_owned()),
-        executor_thinking: Some("high".to_owned()),
+        executor: None,
+        executor_thinking: Some("medium".to_owned()),
         engine: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
@@ -503,7 +503,7 @@ async fn new_session_plan_into_launches_plan_yolo_with_the_execution_model() {
         .unwrap()
         .to_owned();
     assert!(
-            launch.contains(" --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=provider/executor:high @'"),
+            launch.contains(" --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=@smol:medium @'"),
             "{launch}"
         );
     assert!(!launch.contains("--config"), "{launch}");
@@ -1723,15 +1723,15 @@ async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
         http_request(address, "POST", &path, r#"{"mode":"act","executor_thinking":"low"}"#).await;
     assert_eq!(effort_outside.status, StatusCode::BAD_REQUEST);
     assert_eq!(effort_outside.body["error"], "executor thinking needs mode plan-into");
-    let effort_alone = http_request(
+    let dsh_effort_alone = http_request(
         address,
         "POST",
         &path,
-        r#"{"mode":"plan-into","executor_thinking":"low"}"#,
+        r#"{"mode":"plan-into","engine":"dsh","executor_thinking":"low"}"#,
     )
     .await;
-    assert_eq!(effort_alone.status, StatusCode::BAD_REQUEST);
-    assert_eq!(effort_alone.body["error"], "execution effort needs an execution model");
+    assert_eq!(dsh_effort_alone.status, StatusCode::BAD_REQUEST);
+    assert_eq!(dsh_effort_alone.body["error"], "execution effort needs an execution model");
     let bad_effort = http_request(
         address,
         "POST",

@@ -4445,6 +4445,11 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
     );
     let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "), None)).unwrap();
     assert_eq!(blank, "omp --plan-yolo @'/tmp/b.md'");
+    let default_with_effort = omp_command(brief, None, None, Start::PlanInto(None, Some("medium"))).unwrap();
+    assert_eq!(
+        default_with_effort,
+        "omp --plan-yolo --plan-yolo-into=@smol:medium @'/tmp/b.md'"
+    );
     assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None)).is_err());
     let leveled = omp_command(brief, None, None, Start::PlanInto(Some("@smol"), Some("low"))).unwrap();
     assert_eq!(leveled, "omp --plan-yolo --plan-yolo-into=@smol:low @'/tmp/b.md'");
@@ -4466,6 +4471,11 @@ fn execution_effort_belongs_to_each_engine() {
     );
     assert_eq!(executor_effort(Engine::Omp, None), Ok(None));
     assert_eq!(executor_effort(Engine::Dsh, Some("  ")), Ok(None));
+    assert_eq!(plan_into_choices(Engine::Omp, None, Some("medium")), Ok(()));
+    assert_eq!(
+        plan_into_choices(Engine::Dsh, None, Some("low")),
+        Err("execution effort needs an execution model".to_owned())
+    );
 }
 
 #[test]

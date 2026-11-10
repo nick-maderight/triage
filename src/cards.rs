@@ -3087,14 +3087,15 @@ pub fn executor_effort(engine: Engine, effort: Option<&str>) -> Result<Option<&s
     }
 }
 
-/// Check a plan-into launch's execution model and effort, which needs the model it modifies.
-fn plan_into_choices(
+/// Check a plan-into launch's execution model and effort. dsh requires a named executor for effort. omp uses its default smol role.
+pub(crate) fn plan_into_choices(
     engine: Engine,
     executor: Option<&str>,
     effort: Option<&str>,
 ) -> Result<(), String> {
     engine_selector(engine, executor)?;
-    if executor_effort(engine, effort)?.is_some() && executor.is_none() {
+    let effort = executor_effort(engine, effort)?;
+    if engine == Engine::Dsh && effort.is_some() && executor.is_none() {
         return Err("execution effort needs an execution model".to_owned());
     }
     Ok(())
@@ -3103,8 +3104,10 @@ fn plan_into_choices(
 /// omp's execution model selector with `effort` as its thinking level. A selector that names
 /// its own level keeps it, because omp takes the last `:<level>` suffix.
 fn omp_execution_model(executor: Option<&str>, effort: Option<&str>) -> Result<Option<String>, String> {
-    let Some(executor) = model_selector(executor)? else {
-        return Ok(None);
+    let executor = match (model_selector(executor)?, effort) {
+        (None, None) => return Ok(None),
+        (None, Some(_)) => "@smol",
+        (Some(executor), _) => executor,
     };
     let named = executor
         .rsplit_once(':')

@@ -453,10 +453,7 @@ async fn answer(
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     if request.mode.as_deref() == Some("plan-into") {
-        if let Err(error) = crate::cards::engine_selector(launch.engine, request.executor.as_deref()) {
-            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-        }
-        if let Err(error) = execution_effort(
+        if let Err(error) = crate::cards::plan_into_choices(
             launch.engine,
             request.executor.as_deref(),
             request.executor_thinking.as_deref(),
@@ -465,17 +462,6 @@ async fn answer(
         }
     }
     card_action(state, id, move |db, card| crate::cards::answer(db, &card, &request, &launch)).await
-}
-/// Check an execution effort, which needs the execution model it belongs to.
-fn execution_effort(
-    engine: crate::cards::Engine,
-    executor: Option<&str>,
-    effort: Option<&str>,
-) -> Result<(), String> {
-    if crate::cards::executor_effort(engine, effort)?.is_some() && executor.is_none() {
-        return Err("execution effort needs an execution model".to_owned());
-    }
-    Ok(())
 }
 
 /// A new engine drops the daemon's model and thinking level, which belong to the old engine.
@@ -600,10 +586,7 @@ async fn dispatch(
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     if plan_into {
-        if let Err(error) = crate::cards::engine_selector(launch.engine, request.executor.as_deref()) {
-            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-        }
-        if let Err(error) = execution_effort(
+        if let Err(error) = crate::cards::plan_into_choices(
             launch.engine,
             request.executor.as_deref(),
             request.executor_thinking.as_deref(),
