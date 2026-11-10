@@ -2134,3 +2134,34 @@ dialog.picker::backdrop {
     transition: none !important;
   }
 }
+
+/* Images a report's turn read, under its final reply. The strip scrolls, so the page never
+   widens on a phone. */
+.card-images {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 0 6px;
+  scrollbar-width: thin;
+}
+.card-images a {
+  flex: 0 0 auto;
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+  background: var(--ground);
+}
+.card-images img {
+  display: block;
+  height: 120px;
+  width: auto;
+  max-width: 240px;
+  object-fit: contain;
+}
+@media (max-width: 639px) {
+  .card-images img {
+    height: 96px;
+    max-width: 180px;
+  }
+}

@@ -78,6 +78,28 @@ pub struct CardOption {
     pub recommended: bool,
 }
 
+/// One image a card's turn read. The bytes stay in the harness store and are served on demand.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardImage {
+    /// Content hash: an omp blob name or a dsh attachment id without its `sha256:` prefix.
+    pub id: String,
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+/// The most images one card shows. A long turn may read more; it keeps the newest.
+pub const MAX_CARD_IMAGES: usize = 12;
+
+/// Whether `id` is a lowercase SHA-256 hex digest, the only form a card image may name.
+pub fn image_hash(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// What the inbox shows. Serialized as-is by `GET /v1/queue`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
@@ -101,6 +123,9 @@ pub struct Card {
     /// Info cards: the final reply text of an agent turn, or a report body.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// The images the turn read, oldest first. The daemon serves each one by card and index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<CardImage>,
     #[serde(default)]
     pub refs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

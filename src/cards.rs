@@ -3,7 +3,7 @@
 
 use crate::db::Db;
 use crate::dsh;
-use crate::events::{self, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star, Swipe};
+use crate::events::{self, AnswerReq, Card, CardImage, CardOption, CardQuestion, Kind, Source, Star, Swipe};
 use crate::omp::{self, PaneState};
 use crate::tmux;
 use std::collections::{HashMap, HashSet};
@@ -1246,6 +1246,7 @@ fn add_ask_card(
         level: None,
         tool_call_id: Some(call.tool_call_id.clone()),
         report_due: false,
+        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {
@@ -1424,6 +1425,7 @@ fn queue_startup_card(db: &Db, pane: &tmux::Pane, entry: &Startup, written: &mut
         level: Some("error".to_owned()),
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {
@@ -1490,6 +1492,7 @@ fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<
         level: Some("error".to_owned()),
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {
@@ -1526,11 +1529,26 @@ fn queue_turn_card(
                 format!("Stopped with error: {headline}")
             };
             let body = (!message.trim().is_empty()).then_some(message);
-            (entry_id, Turn { title, body, level: "error", action: String::new(), report_due: false })
+            let turn = Turn {
+                title,
+                body,
+                images: Vec::new(),
+                level: "error",
+                action: String::new(),
+                report_due: false,
+            };
+            (entry_id, turn)
         }
-        omp::TurnEnd::Reply { entry_id, text, report } => {
-            (entry_id, reply_turn(text, report, !trail.situation.is_empty(), investigation))
-        }
+        omp::TurnEnd::Reply { entry_id, text, report } => (
+            entry_id,
+            reply_turn(
+                text,
+                report,
+                !trail.situation.is_empty(),
+                investigation,
+                omp::turn_images(path).unwrap_or_default(),
+            ),
+        ),
     };
     let card = turn_card(
         format!("done:{}:{entry_id}", pane.id),
@@ -1571,6 +1589,8 @@ fn headline_of(source: &str) -> String {
 struct Turn {
     title: String,
     body: Option<String>,
+    /// The images the turn read, oldest first.
+    images: Vec<CardImage>,
     level: &'static str,
     action: String,
     report_due: bool,
@@ -1597,6 +1617,7 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
         allow_other: false,
         questions: Vec::new(),
         body: turn.body,
+        images: turn.images,
         refs,
         level: Some(turn.level.to_owned()),
         tool_call_id: None,
@@ -1607,7 +1628,13 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
 
 /// The card parts for a reply. `report` is the latest status-line report earlier in the run,
 /// which a closing reply follows.
-fn reply_turn(text: String, report: Option<String>, has_trail: bool, investigation: bool) -> Turn {
+fn reply_turn(
+    text: String,
+    report: Option<String>,
+    has_trail: bool,
+    investigation: bool,
+    images: Vec<CardImage>,
+) -> Turn {
     let text = omp::redact_credentials(&text);
     let report = report.map(|report| omp::redact_credentials(&report));
     // A status-line report written before a background wait still names the
@@ -1665,7 +1692,7 @@ fn reply_turn(text: String, report: Option<String>, has_trail: bool, investigati
         Some((omp::FinalStatus::Complete, _)) if !missing_report => "info",
         Some(_) => "warn",
     };
-    Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail }
+    Turn { title, body: Some(body), images, level, action, report_due: reported.is_none() && has_trail }
 }
 
 /// Hand an investigation's recommended step back to its pane as a plan. The pane must still
@@ -1898,6 +1925,7 @@ fn queue_ended_card(
         level: Some("warn".to_owned()),
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     };
     if entry != "-" {
@@ -1969,6 +1997,7 @@ fn add_plan_card(
         level: None,
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {

@@ -20,6 +20,8 @@ pub struct AppState {
     pub push: crate::push::Push,
     /// Host names accepted besides loopback, from `serve --allow-host`.
     pub allowed_hosts: Vec<String>,
+    /// Roots of the session stores that keep card images.
+    pub media: crate::media::Roots,
 }
 
 #[cfg(test)]
@@ -185,6 +187,7 @@ fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> 
         .route("/v1/cards/{id}/restore", axum::routing::post(restore))
         .route("/v1/cards/{id}/close", axum::routing::post(close))
         .route("/v1/cards/{id}/reload", axum::routing::post(reload))
+        .route("/v1/cards/{id}/image/{index}", axum::routing::get(card_image))
         .route("/v1/sessions", axum::routing::post(start_session))
         .route("/v1/tmux-sessions", axum::routing::get(tmux_sessions))
         .route("/v1/models", axum::routing::get(models))
@@ -1148,6 +1151,39 @@ async fn write_swipe(
     }
 }
 
+/// Serve one image a card's turn read, from the store that keeps it. The card names the bytes;
+/// the request only picks the card and the index, so no path ever comes from the client.
+async fn card_image(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((id, index)): axum::extract::Path<(String, usize)>,
+) -> axum::response::Response {
+    use axum::http::header;
+    let found = tokio::task::spawn_blocking(move || {
+        state
+            .db
+            .card(&id)
+            .ok()
+            .flatten()
+            .and_then(|(card, _)| crate::media::image(&state.media, &card, index))
+    })
+    .await;
+    let Ok(Some((media_type, bytes))) = found else {
+        return error_response(axum::http::StatusCode::NOT_FOUND, "image not found");
+    };
+    (
+        [
+            (header::CONTENT_TYPE, media_type),
+            (
+                header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable".to_owned(),
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 async fn history(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
@@ -1594,6 +1630,7 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
         level,
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     })
 }

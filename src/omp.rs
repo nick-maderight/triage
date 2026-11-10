@@ -1,6 +1,7 @@
 //! omp harness knowledge: title states, transcript reading, dialog parsing.
 //! Owner: tmux worker. Pure functions over strings and files, unit tested.
 
+use crate::events::{CardImage, MAX_CARD_IMAGES};
 use crate::tmux;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -333,6 +334,74 @@ pub fn last_assistant_text(transcript: &std::path::Path) -> std::io::Result<Opti
         true
     })?;
     Ok(last)
+}
+
+/// The images the transcript's last turn read, oldest first. A turn starts at the last user
+/// message, and the bytes stay in omp's blob store so the card can serve them later.
+pub fn turn_images(transcript: &Path) -> io::Result<Vec<CardImage>> {
+    let mut images: Vec<CardImage> = Vec::new();
+    scan_jsonl(transcript, |value| {
+        let Some(message) = message(&value) else {
+            return true;
+        };
+        if message.get("role").and_then(Value::as_str) == Some("user") {
+            images.clear();
+            return true;
+        }
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            return true;
+        };
+        for block in content
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+        {
+            let Some(image) = card_image(message, block) else {
+                continue;
+            };
+            if !images.iter().any(|seen| seen.id == image.id) {
+                images.push(image);
+            }
+        }
+        true
+    })?;
+    if images.len() > MAX_CARD_IMAGES {
+        images.drain(..images.len() - MAX_CARD_IMAGES);
+    }
+    Ok(images)
+}
+
+/// One image block of a message as a card image, when its bytes live in omp's blob store.
+/// An inline block carries its base64 in the block itself, which a card never stores.
+fn card_image(message: &Value, block: &Value) -> Option<CardImage> {
+    let hash = block
+        .get("data")
+        .and_then(Value::as_str)
+        .and_then(|data| data.strip_prefix("blob:sha256:"))
+        .filter(|hash| crate::events::image_hash(hash))?;
+    let media_type = block
+        .get("mimeType")
+        .and_then(Value::as_str)?
+        .to_ascii_lowercase();
+    if !matches!(
+        media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) {
+        return None;
+    }
+    let name = message
+        .get("details")
+        .and_then(|details| details.get("meta"))
+        .and_then(|meta| meta.get("source"))
+        .and_then(|source| source.get("value"))
+        .and_then(Value::as_str)
+        .and_then(|path| Path::new(path).file_name())
+        .map(|name| name.to_string_lossy().into_owned());
+    Some(CardImage {
+        id: hash.to_owned(),
+        media_type,
+        name,
+        ..CardImage::default()
+    })
 }
 
 /// How the transcript's last assistant message ended.
@@ -1431,6 +1500,89 @@ mod tests {
         );
         assert_eq!(recommended_action("Recommended actions differ by host."), None);
         assert_eq!(recommended_action("No step named."), None);
+    }
+
+    fn image_line(data: &str, mime: Option<&str>, name: Option<&str>) -> String {
+        let mut block = serde_json::json!({"type": "image", "data": data});
+        if let Some(mime) = mime {
+            block["mimeType"] = serde_json::json!(mime);
+        }
+        let mut message = serde_json::json!({
+            "type": "message",
+            "message": {"role": "toolResult", "content": [block]}
+        });
+        if let Some(name) = name {
+            message["message"]["details"] =
+                serde_json::json!({"meta": {"source": {"type": "path", "value": name}}});
+        }
+        message.to_string()
+    }
+
+    fn user_line(text: &str) -> String {
+        serde_json::json!({
+            "type": "message",
+            "id": "u",
+            "message": {"role": "user", "content": [{"type": "text", "text": text}]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn turn_images_keep_the_last_turn_only() {
+        let path = std::env::temp_dir().join(format!("triage-omp-images-{}.jsonl", uuid::Uuid::new_v4()));
+        let hash = |n: u32| format!("{n:064x}");
+        let lines = [
+            user_line("first"),
+            image_line(&format!("blob:sha256:{}", hash(1)), Some("image/png"), Some("/tmp/old.png")),
+            user_line("second"),
+            image_line(&format!("blob:sha256:{}", hash(2)), Some("image/webp"), Some("/tmp/new.webp")),
+            r#"{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"ENVOY_STATUS: complete"}]}}"#.to_owned(),
+        ];
+        fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let images = turn_images(&path).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].id, hash(2));
+        assert_eq!(images[0].media_type, "image/webp");
+        assert_eq!(images[0].name.as_deref(), Some("new.webp"));
+    }
+
+    #[test]
+    fn turn_images_dedup_and_keep_the_newest_twelve() {
+        let path = std::env::temp_dir().join(format!("triage-omp-images-{}.jsonl", uuid::Uuid::new_v4()));
+        let mut lines = vec![user_line("go")];
+        for n in 1..=15u32 {
+            lines.push(image_line(
+                &format!("blob:sha256:{:064x}", n),
+                Some("image/jpeg"),
+                Some(&format!("/tmp/shot-{n}.jpg")),
+            ));
+        }
+        // A repeated image stays one entry, in the place it first appeared.
+        lines.push(image_line(&format!("blob:sha256:{:064x}", 14), Some("image/jpeg"), None));
+        fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let images = turn_images(&path).unwrap();
+        assert_eq!(images.len(), MAX_CARD_IMAGES);
+        assert_eq!(images[0].id, format!("{:064x}", 4));
+        assert_eq!(images[11].id, format!("{:064x}", 15));
+    }
+
+    #[test]
+    fn turn_images_ignore_inline_and_malformed_blocks() {
+        let path = std::env::temp_dir().join(format!("triage-omp-images-{}.jsonl", uuid::Uuid::new_v4()));
+        let lines = [
+            user_line("go"),
+            image_line("iVBORw0KGgo=", Some("image/png"), Some("/tmp/inline.png")),
+            image_line(&format!("blob:sha256:{}", "A".repeat(64)), Some("image/png"), None),
+            image_line(&format!("blob:sha256:{}", "a".repeat(63)), Some("image/png"), None),
+            image_line(&format!("blob:sha256:{}", "b".repeat(64)), Some("image/svg+xml"), None),
+            image_line(&format!("blob:sha256:{}", "c".repeat(64)), None, None),
+            image_line(&format!("blob:sha256:{}", "d".repeat(64)), Some("image/png"), None),
+        ];
+        fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let images = turn_images(&path).unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].id, "d".repeat(64));
+        assert_eq!(images[0].name, None);
     }
 
     #[test]

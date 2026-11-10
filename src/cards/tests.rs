@@ -309,6 +309,7 @@ fn ask_card(pane: &str, call_id: &str) -> Card {
         level: None,
         tool_call_id: Some(call_id.to_owned()),
         report_due: false,
+        images: Vec::new(),
         engine: None,
     }
 }
@@ -331,6 +332,7 @@ fn finding_card(root: &Path) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     }
 }
@@ -356,6 +358,7 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     }
 }
@@ -394,6 +397,7 @@ fn info_card(id: &str, pane: &str) -> Card {
         level: Some("info".to_owned()),
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     }
 }
@@ -1663,6 +1667,7 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
                 None,
                 true,
                 true,
+                Vec::new(),
             )
             .action,
             "Run the investigation follow-up."
@@ -1715,6 +1720,7 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
             None,
             true,
             false,
+            Vec::new(),
         );
         assert_eq!(none.body.as_deref(), Some("Shipped."));
         assert!(none.action.is_empty());
@@ -1896,6 +1902,72 @@ fn waiting_pane_without_status_line_queues_an_info_card() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "waiting_pane_without_status_line_queues_an_info_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn omp_reply_card_carries_its_turn_images() {
+    if let Some(root) = child_root("omp_reply_card_carries_its_turn_images") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        let hash = "a".repeat(64);
+        let old = "b".repeat(64);
+        let user = serde_json::json!({
+            "type": "message",
+            "id": "u1",
+            "message": {"role": "user", "content": [{"type": "text", "text": "look"}]}
+        })
+        .to_string();
+        let image = |hash: &str, path: &str| {
+            serde_json::json!({
+                "type": "message",
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": "read-1",
+                    "content": [
+                        {"type": "text", "text": "Read image file [image/png]"},
+                        {"type": "image", "data": format!("blob:sha256:{hash}"), "mimeType": "image/png"}
+                    ],
+                    "details": {"meta": {"source": {"type": "path", "value": path}}}
+                }
+            })
+            .to_string()
+        };
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[
+                user.clone(),
+                image(&old, "/tmp/old.png"),
+                user,
+                image(&hash, "/tmp/shots/new.png"),
+                assistant_entry(
+                    "assistant-report",
+                    "stop",
+                    Some("ENVOY_STATUS: complete\n\nShipped."),
+                    None,
+                ),
+            ],
+        );
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        assert_eq!(Tracker::default().tick(&db).written, 1);
+        let (card, _) = db.card("done:%12:assistant-report").unwrap().unwrap();
+        assert_eq!(card.images.len(), 1, "{card:?}");
+        assert_eq!(card.images[0].id, hash);
+        assert_eq!(card.images[0].media_type, "image/png");
+        assert_eq!(card.images[0].name.as_deref(), Some("new.png"));
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "omp_reply_card_carries_its_turn_images",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -6056,6 +6128,17 @@ fn turn_end(seq: i64, reason: &str) -> Value {
     json!({"seq": seq, "type": "turn/end", "reason": reason})
 }
 
+fn image_event(seq: i64, id: &str, media: &str, name: &str) -> Value {
+    json!({"seq": seq, "type": "tool/result", "images": [{
+        "attachmentId": format!("sha256:{id}"),
+        "mediaType": media,
+        "bytes": 10,
+        "width": 640,
+        "height": 360,
+        "name": name,
+    }]})
+}
+
 fn question(id: &str, header: &str, text: &str, labels: &[&str], multi_select: bool) -> Value {
     let options: Vec<Value> = labels.iter().map(|label| json!({"label": label})).collect();
     json!({"id": id, "header": header, "question": text, "options": options, "multiSelect": multi_select})
@@ -6106,6 +6189,7 @@ fn dsh_card(db: &Db, id: &str, kind: Kind) -> Card {
         level: Some("info".to_owned()),
         tool_call_id: None,
         report_due: true,
+        images: Vec::new(),
         engine: Some("dsh".to_owned()),
     };
     db.insert_card(&card).unwrap();
@@ -6149,6 +6233,36 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
 }
 
 #[test]
+fn dsh_report_card_carries_its_turn_images() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let hash = "c".repeat(64);
+    let old = "d".repeat(64);
+    bridge.edit(|data| {
+        data.sessions = vec![session(5)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                image_event(1, &old, "image/png", "old.png"),
+                turn_end(2, "completed"),
+                reply_event(3, "Writing the file."),
+                image_event(4, &hash, "image/webp", "shot.webp"),
+                turn_end(5, "completed"),
+            ],
+        );
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let (card, _) = db.card(&format!("done:dsh:{SID}:5")).unwrap().unwrap();
+    assert_eq!(card.images.len(), 1, "{card:?}");
+    assert_eq!(card.images[0].id, hash);
+    assert_eq!(card.images[0].media_type, "image/webp");
+    assert_eq!(card.images[0].name.as_deref(), Some("shot.webp"));
+    assert_eq!(card.images[0].width, Some(640));
+    assert_eq!(card.images[0].height, Some(360));
+}
+
+#[test]
 fn plan_mode_turn_reports_the_plan_ready() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
@@ -6156,24 +6270,27 @@ fn plan_mode_turn_reports_the_plan_ready() {
     let plan = "# Keep autorules sessions out\n\n## Goal\n\nNo cards.";
     bridge.edit(|data| {
         data.sessions = vec![plan_session(4)];
+        let hash = "e".repeat(64);
         data.events.insert(
             SID.to_owned(),
             vec![
                 reply_event(2, "Reading the tracker."),
-                reply_event(3, plan),
-                turn_end(4, "completed"),
+                image_event(3, &hash, "image/png", "plan.png"),
+                reply_event(4, plan),
+                turn_end(5, "completed"),
             ],
         );
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
-    let (card, swipe) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    let (card, swipe) = db.card(&format!("done:dsh:{SID}:5")).unwrap().unwrap();
     assert!(swipe.is_none());
     assert_eq!(card.kind, Kind::Info);
     assert_eq!(card.title, "Plan ready: Keep autorules sessions out");
     assert_eq!(card.body.as_deref(), Some(plan));
     assert!(card.star.action.is_empty(), "{card:?}");
     assert!(!card.report_due, "{card:?}");
+    assert_eq!(card.images.len(), 1, "{card:?}");
     assert_eq!(done_cards(&db).len(), 1);
 }
 
@@ -6803,6 +6920,7 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
         level: None,
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     };
     db.insert_card(&finding).unwrap();

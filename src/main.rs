@@ -6,6 +6,7 @@ mod client;
 mod db;
 mod dsh;
 mod events;
+mod media;
 mod omp;
 mod push;
 mod server;
@@ -133,6 +134,17 @@ async fn run() -> Result<(), String> {
             tracker.set_dsh_ignore(dsh_ignore);
             let (bus, _) = tokio::sync::broadcast::channel(64);
             let push = push::Push::load(&db, &allow_hosts)?;
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let dsh_home = std::env::var_os("DSH_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".dsh"));
+            let media = media::Roots {
+                omp_blobs: home.join(".omp/agent/blobs"),
+                dsh_objects: dsh_home.join("attachments/v1/objects"),
+            };
             let state = std::sync::Arc::new(server::AppState {
                 db,
                 bus,
@@ -147,6 +159,7 @@ async fn run() -> Result<(), String> {
                 },
                 push,
                 allowed_hosts: allow_hosts,
+                media,
             });
             server::serve(state, listen, !no_notify)
                 .await

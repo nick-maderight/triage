@@ -6,7 +6,7 @@ use super::{
 };
 use crate::db::Db;
 use crate::dsh;
-use crate::events::{self, Answer, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star};
+use crate::events::{self, Answer, AnswerReq, Card, CardImage, CardOption, CardQuestion, Kind, Source, Star, MAX_CARD_IMAGES};
 use crate::omp;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -229,6 +229,7 @@ fn prompt_card(
             level: None,
             tool_call_id: Some(item.event_id.clone()),
             report_due: false,
+            images: Vec::new(),
             engine: Some("dsh".to_owned()),
         });
     }
@@ -263,6 +264,7 @@ fn prompt_card(
         level: None,
         tool_call_id: Some(item.event_id.clone()),
         report_due: false,
+        images: Vec::new(),
         engine: Some("dsh".to_owned()),
     })
 }
@@ -428,6 +430,45 @@ fn report_sessions(
     Ok(())
 }
 
+/// The images the turn that ended at `end` read, oldest first. dsh keeps the bytes in its
+/// attachment store, so the card names the attachment and the daemon serves it on demand.
+fn turn_images(recent: &[dsh::Event], turn_start: i64, end: i64) -> Vec<CardImage> {
+    let mut images: Vec<CardImage> = Vec::new();
+    for image in recent
+        .iter()
+        .filter(|event| event.kind == "tool/result" && event.seq > turn_start && event.seq < end)
+        .flat_map(|event| event.images.iter())
+    {
+        let Some(id) = image
+            .attachment_id
+            .strip_prefix("sha256:")
+            .filter(|id| events::image_hash(id))
+        else {
+            continue;
+        };
+        let media_type = image.media_type.to_ascii_lowercase();
+        if !matches!(
+            media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        ) {
+            continue;
+        }
+        images.push(CardImage {
+            id: id.to_owned(),
+            media_type,
+            name: image.name.clone(),
+            width: (image.width > 0).then_some(image.width),
+            height: (image.height > 0).then_some(image.height),
+        });
+    }
+    let mut seen = HashSet::new();
+    images.retain(|image| seen.insert(image.id.clone()));
+    if images.len() > MAX_CARD_IMAGES {
+        images.drain(..images.len() - MAX_CARD_IMAGES);
+    }
+    images
+}
+
 /// The info card for the turn that ended at `end`. Its body is the newest reply with a status
 /// line in that turn, else the newest reply.
 fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh::Event) -> Card {
@@ -480,7 +521,8 @@ fn report_card(db: &Db, session: &dsh::Session, recent: &[dsh::Event], end: &dsh
         parts.join("\n\n")
     };
     let (star, investigation) = trail(db, &format!("dsh:{sid}"), 0);
-    let mut turn = reply_turn(text, None, !star.situation.is_empty(), investigation);
+    let images = turn_images(recent, turn_start, end.seq);
+    let mut turn = reply_turn(text, None, !star.situation.is_empty(), investigation, images);
     if reason == "error" {
         turn.report_due = false;
         turn.action.clear();

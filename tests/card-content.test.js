@@ -122,6 +122,37 @@ test('an info card shows its final reply once, under Result, and never as a Plan
   assert.equal(findNodes(view, (item) => item.children.includes(body)).length, 1, 'the reply renders once');
 });
 
+test('a report card shows the images its turn read under Result', () => {
+  const context = cardContext({}, { enc: encodeURIComponent }, ['cardView', 'imageStrip']),
+    card = {
+      id: 'done:%12:a1',
+      kind: 'info',
+      title: 'Done: parser split',
+      body: 'Shipped.',
+      star: {},
+      images: [
+        { id: 'a'.repeat(64), media_type: 'image/png', name: 'shot.png' },
+        { id: 'b'.repeat(64), media_type: 'image/webp' },
+      ],
+    },
+    view = context.cardView(card, false),
+    images = findNodes(view, (item) => item.tag === 'img'),
+    links = findNodes(view, (item) => item.tag === 'a'),
+    result = findNodes(view, (item) => item.tag === 'section' && textOf(item.children[0]) === 'Result')[0];
+
+  assert.equal(images.length, 2);
+  assert.equal(links.length, 2);
+  assert.equal(links[0].props.href, '/v1/cards/done%3A%2512%3Aa1/image/0');
+  assert.equal(links[0].props.target, '_blank');
+  assert.equal(links[0].props.rel, 'noreferrer');
+  assert.equal(images[0].props.src, links[0].props.href);
+  assert.equal(images[0].props.alt, 'shot.png');
+  assert.equal(images[0].props.loading, 'lazy');
+  assert.equal(images[1].props.alt, 'Image 2');
+  assert.ok(result, 'the images sit under Result');
+  assert.equal(findNodes(context.cardView({ ...card, images: [] }, false), (item) => item.tag === 'img').length, 0);
+});
+
 test('a session report states its outcome above a title without the status prefix', () => {
   const { titleRow } = cardContext({}, { stepTitle: () => '' }, ['titleRow']),
     head = (card) => {

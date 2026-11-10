@@ -250,6 +250,24 @@ pub struct Event {
     pub error: Option<String>,
     pub name: Option<String>,
     pub command: Option<String>,
+    /// Images a tool result carried, from dsh's durable attachment store.
+    #[serde(default)]
+    pub images: Vec<EventImage>,
+}
+
+/// One image a tool result carried. `attachment_id` is `sha256:<hex>` in the store.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventImage {
+    pub attachment_id: String,
+    pub media_type: String,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    pub name: Option<String>,
 }
 
 /// Bridge connection. Errors carry the bridge's text, never the secret.
@@ -450,6 +468,7 @@ mod tests {
             error: None,
             name: None,
             command: None,
+            images: Vec::new(),
         }
     }
 
@@ -493,6 +512,28 @@ mod tests {
         for name in ["Triage", "a/b", "..", ".", "a b", &long] {
             assert!(workspace_name(Some(name)).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn events_carry_tool_result_image_refs() {
+        let event: Event = serde_json::from_str(
+            r#"{"seq":7,"type":"tool/result","images":[{"attachmentId":"sha256:ab","mediaType":"image/png","bytes":123,"width":10,"height":20,"name":"shot.png"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event.images,
+            vec![EventImage {
+                attachment_id: "sha256:ab".to_owned(),
+                media_type: "image/png".to_owned(),
+                bytes: 123,
+                width: 10,
+                height: 20,
+                name: Some("shot.png".to_owned()),
+            }]
+        );
+        let plain: Event = serde_json::from_str(r#"{"seq":8,"type":"assistant/message","text":"x"}"#)
+            .unwrap();
+        assert!(plain.images.is_empty());
     }
 
     #[test]

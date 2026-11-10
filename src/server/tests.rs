@@ -152,6 +152,7 @@ fn test_plan_card(pane: &str) -> crate::events::Card {
         level: None,
         tool_call_id: None,
         report_due: false,
+        images: Vec::new(),
         engine: None,
     }
 }
@@ -165,6 +166,7 @@ fn state_with(db: Db, launch: crate::cards::Launch) -> Arc<AppState> {
         launch,
         push,
         allowed_hosts: Vec::new(),
+        media: crate::media::Roots::default(),
     })
 }
 
@@ -842,6 +844,61 @@ async fn serves_pwa_assets() {
         icon.raw_body
             .starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'])
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn serves_a_card_image_from_the_store() {
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    let directory = TestDir::new("triage-image-route");
+    let blobs = directory.0.join("blobs");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let hash = "a".repeat(64);
+    std::fs::write(blobs.join(&hash), PNG).unwrap();
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let mut card = test_plan_card("%9");
+    card.id = "done:test:1".to_owned();
+    card.kind = Kind::Info;
+    card.images = vec![crate::events::CardImage {
+        id: hash,
+        media_type: "image/png".to_owned(),
+        ..crate::events::CardImage::default()
+    }];
+    db.insert_card(&card).unwrap();
+    let push = crate::push::Push::load(&db, &[]).unwrap();
+    let state = Arc::new(AppState {
+        db,
+        bus: tokio::sync::broadcast::channel(8).0,
+        tracker: Mutex::new(crate::cards::Tracker::default()),
+        launch: crate::cards::Launch::default(),
+        push,
+        allowed_hosts: Vec::new(),
+        media: crate::media::Roots {
+            omp_blobs: blobs,
+            dsh_objects: directory.0.join("objects"),
+        },
+    });
+    let (address, server) = start_http_server(state).await;
+
+    let card_image = http_request(address, "GET", "/v1/cards/done:test:1/image/0", "").await;
+    assert_eq!(card_image.status, StatusCode::OK);
+    assert_eq!(card_image.content_type.as_deref(), Some("image/png"));
+    assert_eq!(card_image.cache_control.as_deref(), Some("private, max-age=31536000, immutable"));
+    assert_eq!(card_image.raw_body, PNG);
+
+    for path in [
+        "/v1/cards/done:test:1/image/1",
+        "/v1/cards/done:test:2/image/0",
+    ] {
+        let missing = http_request(address, "GET", path, "").await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{path}");
+    }
     server.abort();
 }
 
@@ -2150,6 +2207,7 @@ async fn poll_broadcasts_when_deferred_card_becomes_due() {
         launch: crate::cards::Launch::default(),
         push,
         allowed_hosts: Vec::new(),
+        media: crate::media::Roots::default(),
     });
     let server = tokio::spawn(super::serve(
         state.clone(),
