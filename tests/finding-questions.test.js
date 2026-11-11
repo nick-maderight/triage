@@ -80,6 +80,30 @@ test('finding question review allows per-question Other and opens Act dispatch',
   dispatchButton.props.onClick();
   assert.deepEqual(calls, [[card, 'act', true, null, [{ option: 0 }]]]);
 });
+test('finding question without Other hides custom text', () => {
+  const card = {
+      id: 'finding-no-other',
+      kind: 'finding',
+      allow_other: true,
+      questions: [{ label: 'q', question: 'Select one', allow_other: false, options: [{ label: 'Keep' }] }],
+    },
+    state = { drafts: new Map([[card.id, { step: 0, answers: [] }]]) },
+    context = vm.createContext({
+      S: state,
+      draft: (current) => state.drafts.get(current.id),
+      answerable: () => true,
+      ident: (name, current) => `${name}-${current.id}`,
+      h: node,
+      el: (tag, props, ...children) => node(tag, props || {}, ...children),
+      button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
+      mdInline: (text) => text,
+    });
+  vm.runInContext(
+    `${functionSource('otherAllowed')}\n${functionSource('otherRow')}\n${functionSource('questionView')}\nglobalThis.ui = { questionView };`,
+    context,
+  );
+  assert.equal(findNodes(context.ui.questionView(card, 0), (item) => item.props?.id === 'other-btn').length, 0);
+});
 
 test('finding answer dispatch forwards answers, image, mode and plan-into effort', async () => {
   const card = { id: 'finding-dispatch', kind: 'finding' },
