@@ -4986,6 +4986,25 @@ fn goal_command_makes_the_brief_the_objective() {
     assert!(omp_command(&directory.join("missing.md"), None, None, Start::Goal, None).is_err());
     fs::remove_dir_all(&directory).unwrap();
 }
+#[test]
+fn goal_command_points_a_long_brief_at_its_file() {
+    let directory =
+        std::env::temp_dir().join(format!("triage-goal-long-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let brief = directory.join("brief.md");
+    // About 25 KB once quoted, like the caller-review briefs tmux refused as too long.
+    let body = "Nick's finding detail runs long.\n".repeat(700);
+    fs::write(&brief, format!("# Caller review 2026-11-10, 6 findings\n\n{body}")).unwrap();
+    let command = omp_command(&brief, None, None, Start::Goal, None).unwrap();
+    assert_eq!(
+        command,
+        format!(
+            "omp --goal '# Caller review 2026-11-10, 6 findings\n\nRead the whole brief before you act, then follow it. The brief is saved at {}.'",
+            brief.display()
+        )
+    );
+    fs::remove_dir_all(&directory).unwrap();
+}
 
 #[test]
 fn an_image_rides_the_omp_command() {
