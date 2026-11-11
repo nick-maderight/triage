@@ -387,6 +387,10 @@ async fn ingest(
     axum::Json(event): axum::Json<crate::events::CloudEvent>,
 ) -> axum::response::Response {
     let card = card_from_event(&event);
+    // Only malformed questions leave a finding without a card.
+    if card.is_none() && event.r#type == crate::events::T_FINDING {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, "invalid finding questions");
+    }
     let notification_title = if notify { card.as_ref().map(|card| card.title.clone()) } else { None };
     let pushed = card.clone();
     let db = Arc::clone(&state);
@@ -1628,6 +1632,13 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
 
     let source = source_for_event(ev);
     let data = &ev.data;
+    // A finding's malformed questions reject the event. Other events and absent fields have none.
+    let questions = match data.get("questions") {
+        Some(value) if ev.r#type == crate::events::T_FINDING => {
+            serde_json::from_value::<Vec<crate::events::CardQuestion>>(value.clone()).ok()?
+        }
+        _ => Vec::new(),
+    };
     let (kind, priority, title, star, options, answerable, allow_other, body, refs, level) =
         if ev.r#type == crate::events::T_FINDING {
             let mut options = data
@@ -1698,7 +1709,7 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
         options,
         answerable,
         allow_other,
-        questions: Vec::new(),
+        questions,
         body,
         refs,
         level,

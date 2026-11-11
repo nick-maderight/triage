@@ -1240,6 +1240,14 @@ pub(crate) fn blocked_command_prefix(text: &str) -> bool {
     (text.starts_with('/') && !text.starts_with("/skill:")) || text.starts_with('!') || text.starts_with('$')
 }
 
+/// Whether question `index` of an ask offers custom text. Legacy asks always do.
+fn ask_allows_other(call: &omp::AskCall, index: usize) -> bool {
+    call.form
+        .as_ref()
+        .and_then(|form| form.controls.get(index))
+        .is_none_or(omp::HtmlControl::allows_other)
+}
+
 fn add_ask_card(
     db: &Db,
     pane: &tmux::Pane,
@@ -1250,31 +1258,48 @@ fn add_ask_card(
     let Some(question) = call.questions.first() else {
         return false;
     };
-    let situation = omp::last_assistant_text(path)
-        .ok()
-        .flatten()
-        .map(|(_, text)| truncate_chars(omp::redact_credentials(&text), 1200))
-        .unwrap_or_default();
+    let situation = match &call.form {
+        Some(form) => truncate_chars(omp::redact_credentials(&form.context), 1200),
+        None => omp::last_assistant_text(path)
+            .ok()
+            .flatten()
+            .map(|(_, text)| truncate_chars(omp::redact_credentials(&text), 1200))
+            .unwrap_or_default(),
+    };
+    // An HTML ask titles its card by its first fieldset legend.
+    let title = match question.header.as_deref().map(str::trim).filter(|header| !header.is_empty()) {
+        Some(header) if call.form.is_some() => header.to_owned(),
+        _ => question.question.clone(),
+    };
+    let allow_other: Vec<bool> = (0..call.questions.len())
+        .map(|index| ask_allows_other(call, index))
+        .collect();
+    let unsupported = call.form.as_ref().is_some_and(|form| {
+        form.controls
+            .iter()
+            .any(|control| matches!(control, omp::HtmlControl::Unsupported))
+    });
     let card = Card {
         id: format!("ask:{}:{}", pane.id, call.tool_call_id),
         kind: Kind::Ask,
         priority: 1,
         created_ms: events::now_ms(),
         source: pane_source(pane),
-        title: question.question.clone(),
+        title,
         star: Star {
             situation,
             task: question.question.clone(),
             ..Star::default()
         },
         options: card_options(question),
-        answerable: call.questions.iter().all(|question| !question.multi),
-        allow_other: true,
+        answerable: !unsupported && call.questions.iter().all(|question| !question.multi),
+        allow_other: allow_other.iter().any(|allowed| *allowed),
         questions: (call.questions.len() > 1)
             .then(|| {
                 call.questions
                     .iter()
-                    .map(|question| CardQuestion {
+                    .zip(&allow_other)
+                    .map(|(question, allowed)| CardQuestion {
                         label: question
                             .header
                             .as_deref()
@@ -1284,6 +1309,7 @@ fn add_ask_card(
                             .to_owned(),
                         question: question.question.clone(),
                         options: card_options(question),
+                        allow_other: *allowed,
                     })
                     .collect()
             })
@@ -2341,6 +2367,9 @@ fn answer_ask(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result<
     if card.tool_call_id.as_deref() != Some(active_call.tool_call_id.as_str()) {
         return Err("ask card no longer matches active dialog".to_owned());
     }
+    if let Some(form) = &active_call.form {
+        return answer_html_form(db, card, req, pane, form);
+    }
     if !card.questions.is_empty() {
         return answer_questions(db, card, req, pane);
     }
@@ -2412,6 +2441,170 @@ fn type_row(pane: &str, cursor: usize, row: usize, text: Option<&str>) -> Result
         tmux::send_text(pane, text).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// One key press, or text pasted into the focused field, while answering an HTML ask.
+#[derive(Debug, Clone, Copy)]
+enum FormStep<'a> {
+    Key(&'static str),
+    Paste(&'a str),
+}
+
+/// Keys that answer one HTML control. `row` is its validated option row; `row == options` is the
+/// custom-text row and `text` is that text. Every key starts from the control's first stop.
+fn html_steps<'a>(
+    control: &omp::HtmlControl,
+    options: usize,
+    row: usize,
+    text: Option<&'a str>,
+) -> Result<Vec<FormStep<'a>>, String> {
+    use FormStep::{Key, Paste};
+    let custom = row == options;
+    let mut steps = Vec::new();
+    match *control {
+        omp::HtmlControl::Radio { enabled, other, .. } if custom => {
+            if !other {
+                return Err("question does not accept Other".to_owned());
+            }
+            steps.extend(std::iter::repeat_n(Key("Down"), enabled));
+            steps.extend([Key("C-u"), Key("C-k"), Paste(text.unwrap_or_default()), Key("Enter")]);
+        }
+        omp::HtmlControl::Radio { leave_unselected: true, .. } if row == 0 => steps.push(Key("Tab")),
+        omp::HtmlControl::Radio { leave_unselected, .. } => {
+            steps.extend(std::iter::repeat_n(Key("Down"), row - usize::from(leave_unselected)));
+            steps.push(Key("Enter"));
+        }
+        omp::HtmlControl::Select { .. } if custom => {
+            return Err("select does not accept Other".to_owned());
+        }
+        omp::HtmlControl::Select { leave_unselected: true, .. } if row == 0 => steps.push(Key("Enter")),
+        omp::HtmlControl::Select { enabled, leave_unselected } => {
+            steps.push(Key("Space"));
+            steps.extend(std::iter::repeat_n(Key("Up"), enabled));
+            steps.extend(std::iter::repeat_n(Key("Down"), row - usize::from(leave_unselected)));
+            steps.extend([Key("Enter"), Key("Enter")]);
+        }
+        omp::HtmlControl::Checkbox if custom => {
+            return Err("checkbox does not accept Other".to_owned());
+        }
+        omp::HtmlControl::Checkbox => {
+            if row == 1 {
+                steps.push(Key("Space"));
+            }
+            steps.push(Key("Enter"));
+        }
+        omp::HtmlControl::Text { multiline, initial_lines } if custom => {
+            if multiline {
+                steps.extend(std::iter::repeat_n(Key("C-u"), 2 * initial_lines));
+                steps.push(Key("C-a"));
+                steps.extend(std::iter::repeat_n(Key("C-k"), 2 * initial_lines));
+            } else {
+                steps.extend([Key("C-u"), Key("C-k")]);
+            }
+            steps.extend([Paste(text.unwrap_or_default()), Key("Enter")]);
+        }
+        omp::HtmlControl::Text { .. } => steps.push(Key("Enter")),
+        omp::HtmlControl::Unsupported => {
+            return Err("question is read-only; answer in the pane".to_owned());
+        }
+    }
+    Ok(steps)
+}
+
+/// Answer an HTML ask (`ask.arguments.html`) field by field. Validate every answer before the first
+/// key. Then Down releases the composer guard, one BTab per field returns to the first field, each
+/// field's keys run with a settle, and Enter submits. A dialog still open leaves the card queued.
+fn answer_html_form(
+    db: &Db,
+    card: &Card,
+    req: &AnswerReq,
+    pane: &str,
+    form: &omp::HtmlAskForm,
+) -> Result<(), String> {
+    let (counts, answers): (Vec<usize>, Vec<events::Answer>) = if card.questions.is_empty() {
+        (
+            vec![card.options.len()],
+            vec![events::Answer {
+                option: req.option,
+                text: req.text.clone(),
+            }],
+        )
+    } else {
+        (
+            card.questions.iter().map(|question| question.options.len()).collect(),
+            req.answers.clone(),
+        )
+    };
+    if counts.len() != form.controls.len() || answers.len() != form.controls.len() {
+        return Err("ask answer needs one answer per question".to_owned());
+    }
+    let mut rows = Vec::with_capacity(answers.len());
+    let mut fields = Vec::with_capacity(answers.len());
+    for ((control, count), answer) in form.controls.iter().zip(&counts).zip(&answers) {
+        let row = answer_row(*count, answer.option, answer.text.as_deref())?;
+        fields.push(html_steps(control, *count, row, answer.text.as_deref())?);
+        rows.push(row);
+    }
+    let screen = tmux::capture(pane, 60).map_err(|error| error.to_string())?;
+    if !screen.contains("╭─ Ask") {
+        return Err("ask dialog not found".to_owned());
+    }
+    tmux::send_keys(pane, &["Down"]).map_err(|error| error.to_string())?;
+    for _ in &form.controls {
+        tmux::send_keys(pane, &["BTab"]).map_err(|error| error.to_string())?;
+    }
+    thread::sleep(DIALOG_SETTLE);
+    for steps in fields {
+        for step in steps {
+            let sent = match step {
+                FormStep::Key(key) => tmux::send_keys(pane, &[key]),
+                FormStep::Paste(text) => tmux::paste_text(pane, text),
+            };
+            sent.map_err(|error| error.to_string())?;
+        }
+        thread::sleep(DIALOG_SETTLE);
+    }
+    tmux::send_keys(pane, &["Enter"]).map_err(|error| error.to_string())?;
+    thread::sleep(DIALOG_SETTLE);
+    if tmux::capture(pane, 60)
+        .map_err(|error| error.to_string())?
+        .contains("╭─ Ask")
+    {
+        return Err("dialog still open".to_owned());
+    }
+    let (option, text) = if card.questions.is_empty() {
+        ((rows[0] < counts[0]).then_some(rows[0]), req.text.clone())
+    } else {
+        let summary = card
+            .questions
+            .iter()
+            .zip(&answers)
+            .map(|(question, answer)| {
+                let shown = answer
+                    .option
+                    .and_then(|index| question.options.get(index))
+                    .map(|option| option.label.clone())
+                    .or_else(|| answer.text.clone())
+                    .unwrap_or_default();
+                format!("{}: {}", question.label, shown)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        (None, Some(summary))
+    };
+    if record_swipe(
+        db,
+        &card.id,
+        "done",
+        option,
+        text,
+        req.note.clone(),
+        Some("typed".to_owned()),
+    ) {
+        Ok(())
+    } else {
+        Err("could not record swipe".to_owned())
+    }
 }
 
 /// Answer a multi-question ask card in its pane: walk to the review tab, enter
@@ -2678,6 +2871,9 @@ fn answer_finding(
     if !queued_for_answer(swipe.as_ref()) {
         return Err("card is not queued".to_owned());
     }
+    if !card.questions.is_empty() {
+        return answer_finding_questions(db, card, req, launch, image, swipe.as_ref());
+    }
     let index = req
         .option
         .ok_or_else(|| "finding answer needs an option".to_owned())?;
@@ -2687,15 +2883,54 @@ fn answer_finding(
         .ok_or_else(|| "finding option is out of range".to_owned())?;
     let chosen = req.mode.as_deref().and_then(DispatchMode::parse);
     let mode = chosen.unwrap_or_else(|| option_mode(option));
+    let pane = finding_pane_for_answer(
+        db,
+        card,
+        launch,
+        image,
+        swipe.as_ref(),
+        req,
+        (index, req.note.as_deref(), mode),
+        || finding_brief(card, option, req.note.as_deref(), mode),
+    )?;
+    if record_swipe(
+        db,
+        &card.id,
+        "done",
+        Some(index),
+        chosen.map(|mode| mode.swipe_text().to_owned()),
+        req.note.clone(),
+        Some(format!("launched {pane}")),
+    ) {
+        Ok(())
+    } else {
+        Err("could not record swipe".to_owned())
+    }
+}
+
+/// The pane a finding answer runs in: the pane already tagged with this answer, else a launch
+/// an earlier attempt left pending, else a new session. A new session is recorded as pending
+/// before it is tagged, so a retry after a failed tag finds it.
+#[allow(clippy::too_many_arguments)]
+fn finding_pane_for_answer(
+    db: &Db,
+    card: &Card,
+    launch: &Launch,
+    image: Option<&Upload>,
+    swipe: Option<&Swipe>,
+    req: &AnswerReq,
+    (option, note, mode): (usize, Option<&str>, DispatchMode),
+    brief: impl FnOnce() -> String,
+) -> Result<String, String> {
     // dsh sessions have no tmux pane to find or tag.
     let is_dsh = launch.engine == Engine::Dsh;
     let tagged_pane = if is_dsh {
         None
     } else {
-        tmux::finding_pane(&card.id, index, req.note.as_deref(), mode).map_err(|error| error.to_string())?
+        tmux::finding_pane(&card.id, option, note, mode).map_err(|error| error.to_string())?
     };
     let pending_pane = if tagged_pane.is_none() {
-        recover_pending_finding_pane(launch, swipe.as_ref(), index, req.note.as_deref(), mode)?
+        recover_pending_finding_pane(launch, swipe, option, note, mode)?
     } else {
         None
     };
@@ -2711,33 +2946,189 @@ fn answer_finding(
     } else if let Some(pane) = pending_pane {
         (pane, true)
     } else {
-        let path = write_brief(db, finding_brief(card, option, req.note.as_deref(), mode))?;
+        let path = write_brief(db, brief())?;
         let pane = launch_brief(card, launch, &path, start, image)?;
-        let pending = record_pending_finding_pane(db, &card.id, index, req.note.as_deref(), &pane, mode);
+        let pending = record_pending_finding_pane(db, &card.id, option, note, &pane, mode);
         if !is_dsh {
-            tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
+            tmux::tag_finding_pane(&pane, &card.id, option, note, mode)
                 .map_err(|error| error.to_string())?;
         }
         pending?;
         (pane, false)
     };
     if needs_tag && !is_dsh {
-        tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
+        tmux::tag_finding_pane(&pane, &card.id, option, note, mode)
             .map_err(|error| error.to_string())?;
     }
-    if record_swipe(
-        db,
-        &card.id,
-        "done",
-        Some(index),
-        chosen.map(|mode| mode.swipe_text().to_owned()),
-        req.note.clone(),
-        Some(format!("launched {pane}")),
-    ) {
+    Ok(pane)
+}
+
+/// Answer a finding with native questions. One session takes every decision in its brief.
+/// When every decision is Skip or Keep, the finding is recorded done without a launch.
+fn answer_finding_questions(
+    db: &Db,
+    card: &Card,
+    req: &AnswerReq,
+    launch: &Launch,
+    image: Option<&Upload>,
+    swipe: Option<&Swipe>,
+) -> Result<(), String> {
+    if req.option.is_some() || req.text.is_some() {
+        return Err("finding questions take answers, not a top-level option or text".to_owned());
+    }
+    if req.answers.len() != card.questions.len() {
+        return Err("finding answer needs one answer per question".to_owned());
+    }
+    let mode = match req.mode.as_deref() {
+        None => DispatchMode::Act,
+        Some(value) => match DispatchMode::parse(value) {
+            Some(DispatchMode::Investigate) | None => {
+                return Err("finding questions run act, plan, or plan-into".to_owned());
+            }
+            Some(mode) => mode,
+        },
+    };
+    let decisions = card
+        .questions
+        .iter()
+        .zip(&req.answers)
+        .map(|(question, answer)| {
+            finding_decision(question, answer).map(|decision| (question, decision))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let summary = decisions
+        .iter()
+        .enumerate()
+        .map(|(index, (question, decision))| {
+            format!("{}. {}: {}", index + 1, question.label, decision.label())
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let recorded = if decisions.iter().all(|(_, decision)| decision.takes_no_action()) {
+        record_swipe(
+            db,
+            &card.id,
+            "done",
+            None,
+            Some(summary),
+            req.note.clone(),
+            Some("answered".to_owned()),
+        )
+    } else {
+        // The identity names every answer and the note, so a retry must repeat both exactly.
+        let identity = format!("{summary}\n{}", req.note.as_deref().unwrap_or_default());
+        // One past the last option, so no real option matches the tag.
+        let pane = finding_pane_for_answer(
+            db,
+            card,
+            launch,
+            image,
+            swipe,
+            req,
+            (card.options.len(), Some(identity.as_str()), mode),
+            || finding_answers_brief(card, &decisions, req.note.as_deref(), mode),
+        )?;
+        record_swipe(
+            db,
+            &card.id,
+            "done",
+            None,
+            Some(format!("{}: {summary}", mode.swipe_text())),
+            req.note.clone(),
+            Some(format!("launched {pane}")),
+        )
+    };
+    if recorded {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
+}
+
+/// What one answer chose: one of the question's options, or the custom text for Other.
+enum FindingDecision<'a> {
+    Authored(&'a CardOption),
+    Other(&'a str),
+}
+
+impl FindingDecision<'_> {
+    /// The decision as the summary names it.
+    fn label(&self) -> String {
+        match self {
+            Self::Authored(option) => option.label.clone(),
+            Self::Other(text) => format!("Other: {text}"),
+        }
+    }
+
+    /// Skip and Keep leave the finding untouched.
+    fn takes_no_action(&self) -> bool {
+        match self {
+            Self::Authored(option) => {
+                option.label.eq_ignore_ascii_case("skip") || option.label.eq_ignore_ascii_case("keep")
+            }
+            Self::Other(_) => false,
+        }
+    }
+}
+
+/// Check one answer against its question and resolve it to the decision it names.
+fn finding_decision<'a>(
+    question: &'a CardQuestion,
+    answer: &'a events::Answer,
+) -> Result<FindingDecision<'a>, String> {
+    let row = answer_row(question.options.len(), answer.option, answer.text.as_deref())?;
+    if let Some(option) = question.options.get(row) {
+        return Ok(FindingDecision::Authored(option));
+    }
+    if !question.allow_other {
+        return Err(format!("{} does not take custom text", question.label));
+    }
+    Ok(FindingDecision::Other(answer.text.as_deref().unwrap_or_default().trim()))
+}
+
+const FINDING_ANSWER_RULES: &str = "Honor every decision independently. Do as recommended executes that finding's action. Other is Nick's direction for that finding. Investigate first is read-only for that finding: confirm its claims and report evidence, changing nothing for it. Skip and Keep take no action. Do not ask these questions again. Finish investigations before accepted changes, then report the outcome and evidence for every finding.";
+
+/// The brief for a finding answered question by question: each question's full text with its
+/// decision, then the rules for all of them, then the mode's usual sections.
+fn finding_answers_brief(
+    card: &Card,
+    decisions: &[(&CardQuestion, FindingDecision<'_>)],
+    note: Option<&str>,
+    mode: DispatchMode,
+) -> String {
+    let mut brief = format!(
+        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Finding decisions\n",
+        card.title,
+        card.star.situation,
+        card.star.task,
+        action_heading(mode),
+        card.star.action,
+        card.star.result,
+    );
+    for (number, (question, decision)) in decisions.iter().enumerate() {
+        let (chosen, direction) = match decision {
+            FindingDecision::Authored(option) => (option.label.as_str(), ""),
+            FindingDecision::Other(text) => ("Other", *text),
+        };
+        brief.push_str(&format!(
+            "\n### {}. {}\n{}\nDecision: {chosen}\nDirection: {direction}\n",
+            number + 1,
+            question.label,
+            question.question,
+        ));
+    }
+    brief.push_str(&format!(
+        "\n## Direction from the user\n{}\n\n## References\n",
+        note.unwrap_or_default()
+    ));
+    push_refs(&mut brief, card);
+    brief.push_str(&format!("\n## Rules for these decisions\n{FINDING_ANSWER_RULES}\n"));
+    push_instructions(&mut brief, mode);
+    brief.push_str(REPORT_STEP);
+    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
+        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
+    }
+    brief
 }
 
 fn recover_pending_finding_pane(

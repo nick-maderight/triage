@@ -88,6 +88,7 @@ test('multi-question asks are answered step by step and sent from the review', a
     requests = [],
     toasts = [],
     functions = [
+      'otherAllowed',
       'applyQueue',
       'countsFrom',
       'refresh',

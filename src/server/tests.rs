@@ -906,6 +906,59 @@ fn unknown_event_makes_no_card() {
     assert!(card_from_event(&event("custom.notice", "tool://watcher", data)).is_none());
 }
 
+#[test]
+fn finding_questions_become_card_questions_with_custom_text_allowed_by_default() {
+    let card = card_from_event(&event(
+        crate::events::T_FINDING,
+        "urn:test:finding-questions",
+        serde_json::json!({
+            "title": "Two decisions",
+            "questions": [
+                {"label": "Supplier", "question": "Delete the supplier?", "options": [
+                    {"label": "Do as recommended", "recommended": true},
+                    {"label": "Skip"}
+                ]},
+                {"label": "Stock", "question": "Disable the stock?", "allow_other": false, "options": [
+                    {"label": "Keep"}
+                ]}
+            ]
+        }),
+    ))
+    .unwrap();
+    assert_eq!(card.questions.len(), 2);
+    assert_eq!(card.questions[0].label, "Supplier");
+    assert_eq!(card.questions[0].question, "Delete the supplier?");
+    assert_eq!(card.questions[0].options[0].label, "Do as recommended");
+    assert!(card.questions[0].options[0].recommended);
+    assert!(card.questions[0].allow_other);
+    assert!(!card.questions[1].allow_other);
+}
+
+#[test]
+fn finding_questions_are_optional_and_malformed_ones_make_no_card() {
+    let plain = card_from_event(&event(
+        crate::events::T_FINDING,
+        "urn:test:finding-plain",
+        serde_json::json!({"title": "Plain"}),
+    ))
+    .unwrap();
+    assert!(plain.questions.is_empty());
+    for questions in [
+        serde_json::json!("not a list"),
+        serde_json::json!([{"label": 3, "question": "Label is not text"}]),
+    ] {
+        let data = serde_json::json!({"title": "Broken", "questions": questions});
+        assert!(card_from_event(&event(crate::events::T_FINDING, "urn:test:finding-broken", data)).is_none());
+    }
+    let info = card_from_event(&event(
+        crate::events::T_INFO,
+        "urn:test:info-questions",
+        serde_json::json!({"title": "Report", "questions": "not a list"}),
+    ))
+    .unwrap();
+    assert!(info.questions.is_empty());
+}
+
 #[tokio::test]
 async fn serves_pwa_assets() {
     let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
@@ -1121,6 +1174,27 @@ async fn ingest_rejects_empty_event_id() {
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
     assert_eq!(response.body["error"], "event ID must not be empty");
     assert_eq!(state.db.version().unwrap(), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn ingest_rejects_malformed_finding_questions_and_stores_unknown_events() {
+    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
+    let (address, server) = start_http_server(state.clone()).await;
+    let malformed = event(
+        crate::events::T_FINDING,
+        "urn:test:malformed-questions",
+        serde_json::json!({"title": "Broken", "questions": "not a list"}),
+    );
+    let rejected = http_request(address, "POST", "/v1/ingest", &serde_json::to_string(&malformed).unwrap()).await;
+    assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+    assert_eq!(rejected.body["error"], "invalid finding questions");
+    assert_eq!(state.db.version().unwrap(), 0);
+    let unknown = event("custom.notice", "urn:test:unknown-questions", serde_json::json!({"questions": "not a list"}));
+    let stored = http_request(address, "POST", "/v1/ingest", &serde_json::to_string(&unknown).unwrap()).await;
+    assert_eq!(stored.status, StatusCode::ACCEPTED);
+    assert_eq!(stored.body["stored"], true);
+    assert!(state.db.queue(crate::events::now_ms()).unwrap().is_empty());
     server.abort();
 }
 

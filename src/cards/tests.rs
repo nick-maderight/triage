@@ -489,6 +489,41 @@ fn install_swipe_failure(path: &Path, name: &str, action: &str) -> Connection {
     connection
 }
 
+/// A finding with three questions. Stock disallows custom text.
+#[cfg(unix)]
+fn question_finding_card(root: &Path) -> Card {
+    let option = |label: &str| CardOption { label: label.to_owned(), ..CardOption::default() };
+    let question = |label: &str, options: Vec<CardOption>, allow_other: bool| CardQuestion {
+        label: label.to_owned(),
+        question: format!("{label}?"),
+        options,
+        allow_other,
+    };
+    Card {
+        questions: vec![
+            question("Supplier", vec![option("Do as recommended"), option("Skip")], true),
+            question("Stock", vec![option("Investigate first"), option("Keep")], false),
+            question("Note", vec![option("skip")], true),
+        ],
+        ..finding_card(root)
+    }
+}
+
+#[cfg(unix)]
+fn picked(option: usize) -> events::Answer {
+    events::Answer { option: Some(option), ..events::Answer::default() }
+}
+
+#[cfg(unix)]
+fn typed(text: &str) -> events::Answer {
+    events::Answer { text: Some(text.to_owned()), ..events::Answer::default() }
+}
+
+#[cfg(unix)]
+fn question_req(answers: Vec<events::Answer>, note: Option<&str>) -> AnswerReq {
+    AnswerReq { answers, note: note.map(str::to_owned), ..AnswerReq::default() }
+}
+
 #[test]
 fn finding_brief_includes_agent_done_status_contract() {
     let card = finding_card(Path::new("/tmp"));
@@ -1016,6 +1051,226 @@ fn multi_select_ask_is_rejected_without_tmux_input() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "multi_select_ask_is_rejected_without_tmux_input",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+const HTML_RADIO_FORM: &str = "<form><fieldset id='finding-001'><legend>Rotate the deploy key</legend><p>Task: Decide whether to rotate it now.</p><label><input type='radio' name='finding-001' value='do' checked> Do as recommended</label><label><input type='radio' name='finding-001' value='investigate'> Investigate first</label></fieldset></form>";
+const HTML_TWO_FIELD_FORM: &str = "<form><fieldset><legend>Rotate the deploy key</legend><label><input type='radio' name='finding-001' value='do' checked> Do as recommended</label><label><input type='radio' name='finding-001' value='investigate'> Investigate first</label></fieldset><fieldset><legend>Reason</legend><label>Reason <input type='text' name='reason' value=''></label></fieldset></form>";
+const HTML_SELECT_FORM: &str = "<form><fieldset><legend>Pick a tier</legend><label>Tier <select name='tier'><option>Basic</option><option>Pro</option></select></label></fieldset></form>";
+const HTML_CHECKBOX_FORM: &str = "<form><fieldset><legend>Pick features</legend><label><input type='checkbox' name='f' value='a'> A</label><label><input type='checkbox' name='f' value='b'> B</label></fieldset></form>";
+
+fn html_ask_call(html: &str) -> String {
+    json!({
+        "type": "message",
+        "id": "assistant-html-call",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "toolCall",
+                "id": "html-call",
+                "name": "ask",
+                "arguments": {"html": html}
+            }]
+        }
+    })
+    .to_string()
+}
+
+fn write_html_screens(root: &Path, screens: &[(&str, &str)]) {
+    let directory = root.join("tmux-screens");
+    fs::create_dir_all(&directory).unwrap();
+    for (name, screen) in screens {
+        fs::write(directory.join(name), screen).unwrap();
+    }
+}
+
+fn queue_html_ask(root: &Path, html: &str) -> (Db, usize, Card) {
+    let transcript = root.join("transcript.jsonl");
+    write_transcript(root, "/dev/pts/12", &transcript, &[html_ask_call(html)]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let mut tracker = Tracker::default();
+    let written = tracker.tick(&db).written;
+    let card = db.queue(events::now_ms()).unwrap().into_iter().next().unwrap();
+    (db, written, card)
+}
+
+#[cfg(unix)]
+#[test]
+fn html_radio_other_types_custom_text_then_submits_once() {
+    if let Some(root) = child_root("html_radio_other_types_custom_text_then_submits_once") {
+        write_html_screens(&root, &[("0", include_str!("../../tests/fixtures/ask_dialog.txt"))]);
+        let (db, written, card) = queue_html_ask(&root, HTML_RADIO_FORM);
+        let request = AnswerReq {
+            text: Some("Rotate it Tuesday".to_owned()),
+            ..AnswerReq::default()
+        };
+        let result = answer(&db, &card, &request, &Launch::default(), None);
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        let swipe = db.card(&card.id).unwrap().unwrap().1;
+        let expected = concat!(
+            "send-keys -t %12 Down\n",
+            "send-keys -t %12 BTab\n",
+            "send-keys -t %12 Down\n",
+            "send-keys -t %12 Down\n",
+            "send-keys -t %12 C-u\n",
+            "send-keys -t %12 C-k\n",
+            "send-keys -t %12 -l -- \x1b[200~Rotate it Tuesday\x1b[201~\n",
+            "send-keys -t %12 Enter\n",
+            "send-keys -t %12 Enter\n",
+        );
+        let typed = result.is_ok()
+            && written == 1
+            && keys == expected
+            && swipe.as_ref().is_some_and(|swipe| {
+                swipe.action == "done"
+                    && swipe.option.is_none()
+                    && swipe.reason.as_deref() == Some("typed")
+                    && swipe.text.as_deref() == Some("Rotate it Tuesday")
+            });
+        assert!(typed, "result: {result:?}\nswipe: {swipe:?}\nkeys:\n{keys}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "html_radio_other_types_custom_text_then_submits_once",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn html_two_fields_answer_in_form_order_then_submit_once() {
+    if let Some(root) = child_root("html_two_fields_answer_in_form_order_then_submit_once") {
+        write_html_screens(&root, &[("0", include_str!("../../tests/fixtures/ask_dialog.txt"))]);
+        let (db, written, card) = queue_html_ask(&root, HTML_TWO_FIELD_FORM);
+        let request = AnswerReq {
+            answers: vec![
+                events::Answer {
+                    option: Some(1),
+                    ..events::Answer::default()
+                },
+                events::Answer {
+                    text: Some("Old key, rotated Tuesday".to_owned()),
+                    ..events::Answer::default()
+                },
+            ],
+            ..AnswerReq::default()
+        };
+        let result = answer(&db, &card, &request, &Launch::default(), None);
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        let swipe = db.card(&card.id).unwrap().unwrap().1;
+        let expected = concat!(
+            "send-keys -t %12 Down\n",
+            "send-keys -t %12 BTab\n",
+            "send-keys -t %12 BTab\n",
+            "send-keys -t %12 Down\n",
+            "send-keys -t %12 Enter\n",
+            "send-keys -t %12 C-u\n",
+            "send-keys -t %12 C-k\n",
+            "send-keys -t %12 -l -- \x1b[200~Old key, rotated Tuesday\x1b[201~\n",
+            "send-keys -t %12 Enter\n",
+            "send-keys -t %12 Enter\n",
+        );
+        let typed_both = result.is_ok()
+            && written == 1
+            && keys == expected
+            && swipe.as_ref().is_some_and(|swipe| {
+                swipe.action == "done"
+                    && swipe.option.is_none()
+                    && swipe.reason.as_deref() == Some("typed")
+                    && swipe.text.as_deref()
+                        == Some("Rotate the deploy key: Investigate first; Reason: Old key, rotated Tuesday")
+            });
+        assert!(typed_both, "result: {result:?}\nswipe: {swipe:?}\nkeys:\n{keys}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "html_two_fields_answer_in_form_order_then_submit_once",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn html_select_rejects_custom_text_before_any_key() {
+    if let Some(root) = child_root("html_select_rejects_custom_text_before_any_key") {
+        let (db, written, card) = queue_html_ask(&root, HTML_SELECT_FORM);
+        let request = AnswerReq {
+            text: Some("Enterprise".to_owned()),
+            ..AnswerReq::default()
+        };
+        let result = answer(&db, &card, &request, &Launch::default(), None);
+        let rejected = result.as_ref().err().map(String::as_str) == Some("select does not accept Other");
+        let no_key_sent = !root.join("tmux-keys.log").exists();
+        let unanswered = db.card(&card.id).unwrap().unwrap().1.is_none();
+        assert!(written == 1 && rejected && no_key_sent && unanswered, "result: {result:?}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "html_select_rejects_custom_text_before_any_key",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn html_checkbox_group_is_unanswerable_without_tmux_input() {
+    if let Some(root) = child_root("html_checkbox_group_is_unanswerable_without_tmux_input") {
+        let (db, written, card) = queue_html_ask(&root, HTML_CHECKBOX_FORM);
+        let unanswerable = !card.answerable;
+        let result = answer(&db, &card, &answer_req(0, None), &Launch::default(), None);
+        let rejected = result.as_ref().err().map(String::as_str) == Some("ask card is not answerable");
+        let no_key_sent = !root.join("tmux-keys.log").exists();
+        assert!(written == 1 && unanswerable && rejected && no_key_sent, "result: {result:?}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "html_checkbox_group_is_unanswerable_without_tmux_input",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn html_ask_stays_queued_when_native_dialog_stays_open() {
+    if let Some(root) = child_root("html_ask_stays_queued_when_native_dialog_stays_open") {
+        let dialog = include_str!("../../tests/fixtures/ask_dialog.txt");
+        write_html_screens(&root, &[("0", dialog), ("5", dialog)]);
+        let (db, _, card) = queue_html_ask(&root, HTML_RADIO_FORM);
+        let result = answer(&db, &card, &answer_req(1, None), &Launch::default(), None);
+        let swipe = db.card(&card.id).unwrap().unwrap().1;
+        let kept_queued = result.as_ref().err().map(String::as_str) == Some("dialog still open")
+            && swipe.is_none();
+        assert!(kept_queued, "result: {result:?}\nswipe: {swipe:?}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "html_ask_stays_queued_when_native_dialog_stays_open",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -5286,6 +5541,188 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
     let bin = fake_tmux(scratch.path());
     run_child(
         "finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choice",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn finding_questions_skip_and_keep_record_done_without_a_launch() {
+    if let Some(root) = child_root("finding_questions_skip_and_keep_record_done_without_a_launch") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let card = question_finding_card(&root);
+        db.insert_card(&card).unwrap();
+        let request = question_req(vec![picked(1), picked(1), picked(0)], Some("review"));
+        let result = answer(&db, &card, &request, &in_session("session"), None);
+        let swipe = current_swipe(&db, &card.id);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(swipe.action, "done");
+        assert_eq!(swipe.option, None);
+        assert_eq!(swipe.text.as_deref(), Some("1. Supplier: Skip; 2. Stock: Keep; 3. Note: skip"));
+        assert_eq!(swipe.note.as_deref(), Some("review"));
+        assert_eq!(swipe.reason.as_deref(), Some("answered"));
+        assert_eq!(new_window_count(&root), 0);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "finding_questions_skip_and_keep_record_done_without_a_launch",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn finding_question_answers_are_validated_before_anything_is_recorded() {
+    if let Some(root) = child_root("finding_question_answers_are_validated_before_anything_is_recorded") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let card = question_finding_card(&root);
+        db.insert_card(&card).unwrap();
+        let rejected = [
+            (
+                AnswerReq {
+                    option: Some(0),
+                    answers: vec![picked(0), picked(0), picked(0)],
+                    ..AnswerReq::default()
+                },
+                "finding questions take answers, not a top-level option or text",
+            ),
+            (question_req(vec![picked(0)], None), "finding answer needs one answer per question"),
+            (
+                question_req(vec![picked(2), picked(0), picked(0)], None),
+                "option is out of range or selects Other",
+            ),
+            (
+                question_req(vec![picked(0), typed("custom"), picked(0)], None),
+                "Stock does not take custom text",
+            ),
+            (
+                question_req(vec![picked(0), picked(0), typed("   ")], None),
+                "Other requires nonempty text",
+            ),
+            (
+                AnswerReq {
+                    mode: Some("investigate".to_owned()),
+                    ..question_req(vec![picked(0), picked(0), picked(0)], None)
+                },
+                "finding questions run act, plan, or plan-into",
+            ),
+        ];
+        for (request, message) in rejected {
+            assert_eq!(answer(&db, &card, &request, &in_session("session"), None).unwrap_err(), message);
+        }
+        assert!(db.card(&card.id).unwrap().unwrap().1.is_none(), "a rejected answer leaves the card queued");
+        assert_eq!(new_window_count(&root), 0);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "finding_question_answers_are_validated_before_anything_is_recorded",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_image() {
+    if let Some(root) = child_root("finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_image") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let card = question_finding_card(&root);
+        db.insert_card(&card).unwrap();
+        let image_path = root.join("shot.png");
+        fs::write(&image_path, b"png").unwrap();
+        let image = crate::uploads::Upload {
+            path: fs::canonicalize(&image_path).unwrap(),
+            base64: "iVBORw0KGgo=".to_owned(),
+            media_type: "image/png".to_owned(),
+            name: "shot.png".to_owned(),
+        };
+        let request = question_req(vec![picked(0), picked(0), typed("Keep the audit log")], Some("review all"));
+        let result = answer(&db, &card, &request, &in_session("session"), Some(&image));
+        let swipe = current_swipe(&db, &card.id);
+        let briefs: Vec<PathBuf> = fs::read_dir(root.join("briefs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(swipe.action, "done");
+        assert_eq!(swipe.option, None);
+        assert_eq!(
+            swipe.text.as_deref(),
+            Some("Act: 1. Supplier: Do as recommended; 2. Stock: Investigate first; 3. Note: Other: Keep the audit log")
+        );
+        assert_eq!(swipe.note.as_deref(), Some("review all"));
+        assert_eq!(swipe.reason.as_deref(), Some("launched %42"));
+        assert_eq!(new_window_count(&root), 1);
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+        assert!(log.contains(&format!("Attached image: @{}", image.path.display())), "{log}");
+        assert_eq!(briefs.len(), 1);
+        let brief = fs::read_to_string(&briefs[0]).unwrap();
+        assert!(brief.contains("### 1. Supplier\nSupplier?\nDecision: Do as recommended\nDirection: \n"), "{brief}");
+        assert!(brief.contains("### 2. Stock\nStock?\nDecision: Investigate first\nDirection: \n"), "{brief}");
+        assert!(brief.contains("### 3. Note\nNote?\nDecision: Other\nDirection: Keep the audit log\n"), "{brief}");
+        assert!(brief.contains(FINDING_ANSWER_RULES) && brief.contains(ACT_INSTRUCTION), "{brief}");
+        assert!(brief.contains("## Direction from the user\nreview all\n"), "{brief}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_image",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn finding_question_retry_reuses_the_launch_only_for_the_same_answers() {
+    if let Some(root) = child_root("finding_question_retry_reuses_the_launch_only_for_the_same_answers") {
+        fs::write(root.join("tmux-fail-first-tag"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let card = question_finding_card(&root);
+        db.insert_card(&card).unwrap();
+        let launch = in_session("session");
+        let original = question_req(vec![picked(0), picked(0), typed("Keep the audit log")], Some("review all"));
+        let other_decision = question_req(vec![picked(0), picked(1), typed("Keep the audit log")], Some("review all"));
+        let other_note = question_req(vec![picked(0), picked(0), typed("Keep the audit log")], Some("changed"));
+        let first = answer(&db, &card, &original, &launch, None);
+        let pending = current_swipe(&db, &card.id);
+        let changed_decision = answer(&db, &card, &other_decision, &launch, None);
+        let changed_note = answer(&db, &card, &other_note, &launch, None);
+        let launches_before_retry = new_window_count(&root);
+        let retry = answer(&db, &card, &original, &launch, None);
+        let completed = current_swipe(&db, &card.id);
+        assert!(first.is_err(), "{first:?}");
+        assert_eq!(pending.reason.as_deref(), Some("launching %42"));
+        assert_eq!(changed_decision.unwrap_err(), "finding pane was launched with a different answer");
+        assert_eq!(changed_note.unwrap_err(), "finding pane was launched with a different answer");
+        assert_eq!(launches_before_retry, 1);
+        assert!(retry.is_ok(), "{retry:?}");
+        assert_eq!(completed.action, "done");
+        assert_eq!(completed.option, None);
+        assert_eq!(completed.reason.as_deref(), Some("launched %42"));
+        assert_eq!(new_window_count(&root), 1);
+        assert_eq!(tag_call_count(&root), 2);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "finding_question_retry_reuses_the_launch_only_for_the_same_answers",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),

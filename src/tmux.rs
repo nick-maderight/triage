@@ -221,6 +221,18 @@ pub fn send_keys(pane: &str, keys: &[&str]) -> io::Result<()> {
 
 /// `tmux send-keys -t pane -l -- text` followed by `Enter`.
 pub fn send_text(pane: &str, text: &str) -> io::Result<()> {
+    send_literal(pane, text)?;
+    tmux_run(&["send-keys", "-t", pane, "Enter"])?;
+    Ok(())
+}
+
+/// Paste `text` as one bracketed paste with no `Enter`, so the focused form field keeps it verbatim.
+pub fn paste_text(pane: &str, text: &str) -> io::Result<()> {
+    send_literal(pane, &format!("\x1b[200~{text}\x1b[201~"))
+}
+
+/// `send-keys -l` in UTF-8-safe 64 KiB chunks.
+fn send_literal(pane: &str, text: &str) -> io::Result<()> {
     const CHUNK_BYTES: usize = 64 * 1024;
     let mut start = 0;
     while start < text.len() {
@@ -231,7 +243,6 @@ pub fn send_text(pane: &str, text: &str) -> io::Result<()> {
         tmux_run(&["send-keys", "-t", pane, "-l", "--", &text[start..end]])?;
         start = end;
     }
-    tmux_run(&["send-keys", "-t", pane, "Enter"])?;
     Ok(())
 }
 

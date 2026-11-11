@@ -154,6 +154,7 @@ const S = {
         dispatch: '',
         dispatchMode: 'investigate',
         dispatchOption: null,
+        dispatchAnswers: null,
         step: 0,
         answers: [],
         executor: '',
@@ -990,6 +991,10 @@ const S = {
     cfg.fallback = engine === 'dsh' ? 'current model' : 'current Plan Review role';
   }
 
+  function otherAllowed(c) {
+    const question = c.questions?.length ? c.questions[draft(c).step] : null;
+    return Boolean(c.allow_other && question?.allow_other !== false && (c.kind === 'ask' || c.kind === 'plan' || (c.kind === 'finding' && c.questions?.length)));
+  }
   function optionsView(c) {
     if (c.kind === 'info') return null;
     const live = answerable(c),
@@ -1035,7 +1040,7 @@ const S = {
           : el('div', `${cls} readonly`, ...kids),
       );
     });
-    if ((c.kind === 'ask' || c.kind === 'plan') && c.allow_other && live) rows.push(otherRow(c));
+    if (live && otherAllowed(c)) rows.push(otherRow(c));
     const out = [
       c.kind === 'plan' && live && planExecutorView(c),
       h('ol', { class: 'options', 'aria-label': live ? 'Options' : 'Options, read only' }, ...rows),
@@ -1092,7 +1097,7 @@ const S = {
             ),
           );
         });
-    if (c.allow_other) rows.push(otherRow(c));
+    if (otherAllowed(c)) rows.push(otherRow(c));
     return [
       el('p', 'question-step', `Question ${step + 1} of ${c.questions.length}`),
       h('ol', { class: 'options', 'aria-label': 'Options' }, ...rows),
@@ -1140,7 +1145,7 @@ const S = {
           'btn primary',
           { id: 'send-answers', 'data-primary': 'true', disabled: !answered },
           () => sendAnswers(c),
-          'Send answers',
+          c.kind === 'finding' ? 'Dispatch answers' : 'Send answers',
           h('kbd', { class: 'hint', 'aria-hidden': 'true' }, '⏎'),
         ),
       ),
@@ -1183,7 +1188,8 @@ const S = {
   function sendAnswers(c) {
     const d = draft(c);
     if (c.questions.some((_, i) => d.answers[i] == null)) return;
-    act(c, 'answer', { answers: d.answers, note: noteValue(c) }, 'send');
+    if (c.kind === 'finding') openDispatch(c, 'act', true, null, d.answers);
+    else act(c, 'answer', { answers: d.answers, note: noteValue(c) }, 'send');
   }
   function primaryStep(c) {
     const d = draft(c);
@@ -1581,8 +1587,7 @@ const S = {
   }
   function resultMessage(c, verb, body, choice) {
     if (verb === 'skip') return `Skipped · ${c.title}`;
-    if (verb === 'later') return `Later ${choice.label} · ${c.title}`;
-    if (verb === 'dispatch')
+    if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
       return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
     if (verb === 'close') return `Closed pane · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
@@ -1665,9 +1670,7 @@ const S = {
     act(c, 'answer', body, `option-${i}`);
   }
   function toggleOther(c) {
-    if (Date.now() < S.remoteSwapUntil) return;
-    if ((c.kind !== 'ask' && c.kind !== 'plan') || !answerable(c) || !c.allow_other || S.pending) return;
-    if (c.questions?.length && draft(c).step >= c.questions.length) return;
+    if (Date.now() < S.remoteSwapUntil || !answerable(c) || !otherAllowed(c) || S.pending) return;
     const d = draft(c);
     d.open = !d.open;
     render();
@@ -1675,7 +1678,7 @@ const S = {
   }
   function sendOther(c) {
     const text = draft(c).other.trim();
-    if (text && (c.kind === 'ask' || c.kind === 'plan') && answerable(c) && c.allow_other) {
+    if (text && otherAllowed(c) && answerable(c)) {
       if (c.questions?.length) answerStep(c, { text });
       else act(c, 'answer', { option: null, text, note: noteValue(c) }, 'other');
     }
@@ -2516,7 +2519,11 @@ const S = {
     $('#compose-models').hidden = mode !== 'plan-into';
   }
   function setDispatchMode(mode) {
+    const d = S.drafts.get(S.dispatchId);
+    if (d?.dispatchAnswers && mode === 'investigate') mode = 'act';
     selectSegment($('#dispatch-mode'), mode);
+    const investigate = $('#dispatch-mode-investigate');
+    if (investigate) investigate.hidden = Boolean(d?.dispatchAnswers);
     $('#dispatch-mode-help').textContent = {
       investigate: 'Read-only. The session looks into it and reports back.',
       act: 'The session carries out the action end to end.',
@@ -2525,14 +2532,13 @@ const S = {
         'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out in a new session at the execution effort chosen below.',
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
-    const d = S.drafts.get(S.dispatchId);
-    if (d) d.dispatchMode = mode;
   }
-  function openDispatch(c, mode, fromCard = false, option = null) {
+  function openDispatch(c, mode, fromCard = false, option = null, answers = null) {
     if (!c || S.pending || Date.now() < S.remoteSwapUntil) return;
     const d = draft(c);
     S.dispatchId = c.id;
     d.dispatchOption = option;
+    d.dispatchAnswers = answers;
     d.dispatchMode = mode || d.dispatchMode || 'investigate';
     if (fromCard) d.dispatch = d.note;
     if (dshOf(c) && $('#dispatch-engine').value !== 'dsh') {
@@ -2579,11 +2585,23 @@ const S = {
       body.executor_thinking = $('#dispatch-executor-effort').value.trim() || null;
     }
     let ok;
-    if (d.dispatchOption != null) {
+    if (d.dispatchAnswers) {
+      d.note = $('#dispatch-note').value;
+      const answer = { answers: d.dispatchAnswers, note, mode, engine, model, thinking };
+      if (image) answer.image = image;
+      if (mode === 'plan-into') {
+        answer.executor = body.executor;
+        answer.executor_thinking = body.executor_thinking;
+      }
+      ok = await act(c, 'answer', answer, 'send');
+    } else if (d.dispatchOption != null) {
       d.note = $('#dispatch-note').value;
       const answer = { option: d.dispatchOption, text: null, note, mode, engine, model, thinking };
       if (image) answer.image = image;
-      if (mode === 'plan-into') answer.executor = body.executor;
+      if (mode === 'plan-into') {
+        answer.executor = body.executor;
+        answer.executor_thinking = body.executor_thinking;
+      }
       ok = await act(c, 'answer', answer, `option-${d.dispatchOption}`);
     } else {
       ok = await act(c, 'dispatch', body, 'dispatch');
@@ -2903,11 +2921,11 @@ const S = {
     if (key === 'a') return run(() => primary(c));
     switch (key) {
       case 'Escape':
-        if (c.allow_other && draft(c).open) toggleOther(c);
+        if (otherAllowed(c) && draft(c).open) toggleOther(c);
         else closeLater(true);
         break;
       case 'o':
-        run(() => toggleOther(c));
+        if (otherAllowed(c)) run(() => toggleOther(c));
         break;
       case 'n':
         run(() => $('#note')?.focus());

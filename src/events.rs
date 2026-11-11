@@ -148,6 +148,13 @@ pub struct CardQuestion {
     pub question: String,
     #[serde(default)]
     pub options: Vec<CardOption>,
+    /// Whether the dialog offers custom text ("Other"). Legacy and dsh asks always do.
+    #[serde(default = "default_allow_other")]
+    pub allow_other: bool,
+}
+
+fn default_allow_other() -> bool {
+    true
 }
 
 /// The user's verdict on a card. Stored as an event of type `swipe`.

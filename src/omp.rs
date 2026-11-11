@@ -3,6 +3,7 @@
 
 use crate::events::{CardImage, MAX_CARD_IMAGES};
 use crate::tmux;
+use scraper::{ElementRef, Html, Selector};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -164,6 +165,42 @@ pub struct Question {
 pub struct AskCall {
     pub tool_call_id: String,
     pub questions: Vec<Question>,
+    /// The HTML form behind `questions`, when omp asked with `html`.
+    pub form: Option<HtmlAskForm>,
+}
+
+/// An HTML ask's form: its normalized text and one control per question, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HtmlAskForm {
+    pub context: String,
+    pub controls: Vec<HtmlControl>,
+}
+
+/// How a question's control takes an answer. Radio and select options are picked by row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlControl {
+    /// `enabled` counts the pickable authored options; the Other row, when `other`, follows them.
+    Radio { enabled: usize, leave_unselected: bool, other: bool },
+    /// A single select; `enabled` counts its pickable authored options.
+    Select { enabled: usize, leave_unselected: bool },
+    /// A lone checkbox: option 0 is its current state, option 1 the other state.
+    Checkbox,
+    /// A text input or textarea holding `initial_lines` lines.
+    Text { multiline: bool, initial_lines: usize },
+    /// Read-only; the card says to answer in the pane.
+    Unsupported,
+}
+
+impl HtmlControl {
+    /// Whether the card may take custom text for this control.
+    pub fn allows_other(&self) -> bool {
+        matches!(self, Self::Radio { other: true, .. } | Self::Text { .. })
+    }
+}
+
+/// Parse a `selector` literal; the callers pass only constant CSS.
+fn selector(css: &str) -> Selector {
+    Selector::parse(css).expect("constant CSS selector")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,18 +231,30 @@ pub fn pending_ask(transcript: &std::path::Path) -> std::io::Result<Option<AskCa
                     {
                         continue;
                     }
-                    let (Some(id), Some(questions)) = (
+                    let (Some(id), Some(arguments)) = (
                         item.get("id").and_then(Value::as_str),
-                        item.get("arguments").and_then(|args| args.get("questions")),
+                        item.get("arguments"),
                     ) else {
                         continue;
                     };
-                    let Ok(questions) = serde_json::from_value::<Vec<Question>>(questions.clone()) else {
+                    // omp 18.18+ asks with an HTML form; older omp asks with `questions`.
+                    let parsed = arguments
+                        .get("html")
+                        .and_then(Value::as_str)
+                        .and_then(parse_html_ask)
+                        .map(|(questions, form)| (questions, Some(form)))
+                        .or_else(|| {
+                            let questions = arguments.get("questions")?.clone();
+                            let questions = serde_json::from_value::<Vec<Question>>(questions).ok()?;
+                            Some((questions, None))
+                        });
+                    let Some((questions, form)) = parsed else {
                         continue;
                     };
                     calls.push(AskCall {
                         tool_call_id: id.to_owned(),
                         questions,
+                        form,
                     });
                 }
             }
@@ -222,6 +271,280 @@ pub fn pending_ask(transcript: &std::path::Path) -> std::io::Result<Option<AskCa
         .into_iter()
         .rev()
         .find(|call| !results.contains(&call.tool_call_id)))
+}
+
+/// Parse omp's native HTML ask (`ask.arguments.html`) from its first `<form>`, or from the whole
+/// document. One question and control per field, in document order; radios and checkboxes group by
+/// `(type, name)`. None when no control is named, so the caller falls back to `questions`.
+pub fn parse_html_ask(html: &str) -> Option<(Vec<Question>, HtmlAskForm)> {
+    let document = Html::parse_document(html);
+    let root = document
+        .select(&selector("form"))
+        .next()
+        .unwrap_or_else(|| document.root_element());
+    let labels: HashMap<String, String> = root
+        .select(&selector("label[for]"))
+        .filter_map(|label| Some((label.value().attr("for")?.to_owned(), squash(label.text()))))
+        .collect();
+    let mut fields: Vec<HtmlField> = Vec::new();
+    let mut paragraph = String::new();
+    for node in root.descendants() {
+        let Some(element) = ElementRef::wrap(node) else {
+            continue;
+        };
+        match element.value().name() {
+            "p" => paragraph = squash(element.text()),
+            "input" | "select" | "textarea" => {
+                let kind = control_kind(element);
+                if matches!(kind.as_str(), "hidden" | "button" | "file" | "image" | "reset" | "submit") {
+                    continue;
+                }
+                let name = element.value().attr("name").unwrap_or_default();
+                let group = (matches!(kind.as_str(), "radio" | "checkbox") && !name.is_empty())
+                    .then(|| (kind, name.to_owned()));
+                let position = group
+                    .as_ref()
+                    .and_then(|_| fields.iter().position(|field| field.group == group));
+                match position {
+                    Some(index) => fields[index].members.push(element),
+                    None => fields.push(HtmlField {
+                        group,
+                        members: vec![element],
+                        paragraph: paragraph.clone(),
+                    }),
+                }
+            }
+            _ => {}
+        }
+    }
+    if !fields.iter().any(|field| field.members[0].value().attr("name").is_some_and(|name| !name.is_empty())) {
+        return None;
+    }
+    let (questions, controls): (Vec<Question>, Vec<HtmlControl>) = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| html_question(index, field, &labels))
+        .unzip();
+    Some((questions, HtmlAskForm { context: squash(root.text()), controls }))
+}
+
+/// A control, or a radio/checkbox group, in document order with the paragraph before it.
+struct HtmlField<'a> {
+    /// `(type, name)` of a named radio or checkbox group.
+    group: Option<(String, String)>,
+    members: Vec<ElementRef<'a>>,
+    paragraph: String,
+}
+
+/// The input type, or the tag for `select` and `textarea`, lowercased.
+fn control_kind(control: ElementRef) -> String {
+    match control.value().name() {
+        "input" => control.value().attr("type").unwrap_or("text").to_ascii_lowercase(),
+        tag => tag.to_owned(),
+    }
+}
+
+/// Text with whitespace runs collapsed to single spaces.
+fn squash<'a>(text: impl Iterator<Item = &'a str>) -> String {
+    text.flat_map(|part| part.split_whitespace()).collect::<Vec<_>>().join(" ")
+}
+
+/// The closest ancestor element named `tag`.
+fn nearest<'a>(element: ElementRef<'a>, tag: &str) -> Option<ElementRef<'a>> {
+    element
+        .ancestors()
+        .find_map(|node| ElementRef::wrap(node).filter(|ancestor| ancestor.value().name() == tag))
+}
+
+/// Text of the `<label>` wrapping `control`.
+fn wrapping_label(control: ElementRef) -> Option<String> {
+    nearest(control, "label")
+        .map(|label| squash(label.text()))
+        .filter(|text| !text.is_empty())
+}
+
+/// Text of the `<label for>` naming `control`'s id.
+fn label_for(control: ElementRef, labels: &HashMap<String, String>) -> Option<String> {
+    control
+        .value()
+        .attr("id")
+        .and_then(|id| labels.get(id))
+        .filter(|text| !text.is_empty())
+        .cloned()
+}
+
+/// A radio's label: its wrapping `<label>`, then its `<label for>`, then its value.
+fn option_label(option: ElementRef, labels: &HashMap<String, String>) -> String {
+    wrapping_label(option)
+        .or_else(|| label_for(option, labels))
+        .or_else(|| option.value().attr("value").map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Labels, recommended index, enabled count, and leave flag of a radio group or select. An optional
+/// choice with nothing selected leads with `Leave unselected`. None when no option is enabled.
+fn choice_options(
+    authored: &[(String, bool, bool)],
+    required: bool,
+) -> Option<(Vec<String>, Option<usize>, usize, bool)> {
+    let enabled: Vec<&(String, bool, bool)> = authored.iter().filter(|(_, _, disabled)| !disabled).collect();
+    if enabled.is_empty() {
+        return None;
+    }
+    let leave_unselected = !required && !authored.iter().any(|(_, checked, disabled)| *checked && !disabled);
+    let mut options = Vec::new();
+    let mut recommended: Option<usize> = None;
+    if leave_unselected {
+        options.push("Leave unselected".to_owned());
+        recommended = Some(0);
+    }
+    for (label, checked, _) in &enabled {
+        options.push(label.clone());
+        if *checked {
+            recommended = Some(options.len() - 1);
+        }
+    }
+    Some((options, recommended, enabled.len(), leave_unselected))
+}
+
+/// Options, recommended index, multi flag, and control of one field. A field that cannot be
+/// answered in place is `Unsupported` with no options.
+fn html_control(
+    kind: &str,
+    members: &[ElementRef],
+    labels: &HashMap<String, String>,
+) -> (Vec<String>, Option<usize>, bool, HtmlControl) {
+    let control = members[0];
+    let required = members.iter().any(|member| member.value().attr("required").is_some());
+    match kind {
+        "radio" => {
+            let authored: Vec<(String, bool, bool)> = members
+                .iter()
+                .map(|member| {
+                    (
+                        option_label(*member, labels),
+                        member.value().attr("checked").is_some(),
+                        member.value().attr("disabled").is_some(),
+                    )
+                })
+                .collect();
+            match choice_options(&authored, required) {
+                Some((options, recommended, enabled, leave_unselected)) => {
+                    let other = authored.len() >= 2
+                        && !authored
+                            .iter()
+                            .any(|(label, _, _)| label.trim().to_ascii_lowercase().starts_with("other"));
+                    (options, recommended, false, HtmlControl::Radio { enabled, leave_unselected, other })
+                }
+                None => (Vec::new(), None, false, HtmlControl::Unsupported),
+            }
+        }
+        "checkbox" => {
+            if members.len() > 1 || control.value().attr("disabled").is_some() {
+                return (Vec::new(), None, members.len() > 1, HtmlControl::Unsupported);
+            }
+            let options = if control.value().attr("checked").is_some() {
+                vec!["Checked".to_owned(), "Unchecked".to_owned()]
+            } else {
+                vec!["Unchecked".to_owned(), "Checked".to_owned()]
+            };
+            (options, Some(0), false, HtmlControl::Checkbox)
+        }
+        "select" => {
+            if control.value().attr("multiple").is_some() {
+                return (Vec::new(), None, true, HtmlControl::Unsupported);
+            }
+            let authored: Vec<(String, bool, bool)> = control
+                .select(&selector("option"))
+                .map(|option| {
+                    let text = squash(option.text());
+                    let label = if text.is_empty() {
+                        option.value().attr("value").unwrap_or_default().to_owned()
+                    } else {
+                        text
+                    };
+                    (
+                        label,
+                        option.value().attr("selected").is_some(),
+                        option.value().attr("disabled").is_some(),
+                    )
+                })
+                .collect();
+            match choice_options(&authored, required) {
+                Some((options, recommended, enabled, leave_unselected)) => {
+                    (options, recommended, false, HtmlControl::Select { enabled, leave_unselected })
+                }
+                None => (Vec::new(), None, false, HtmlControl::Unsupported),
+            }
+        }
+        _ => {
+            let multiline = kind == "textarea";
+            let value = if multiline {
+                let raw: String = control.text().collect();
+                raw.strip_prefix("\r\n").or_else(|| raw.strip_prefix('\n')).unwrap_or(raw.as_str()).to_owned()
+            } else {
+                control.value().attr("value").unwrap_or_default().to_owned()
+            };
+            let initial_lines = if multiline { value.split('\n').count() } else { 1 };
+            let (options, recommended) = if !value.trim().is_empty() {
+                (vec!["Keep current value".to_owned()], Some(0))
+            } else if !required {
+                (vec!["Leave blank".to_owned()], Some(0))
+            } else {
+                (Vec::new(), None)
+            };
+            (options, recommended, false, HtmlControl::Text { multiline, initial_lines })
+        }
+    }
+}
+
+/// One question for a field: its text, options, recommended option, and the control that answers it.
+fn html_question(index: usize, field: &HtmlField, labels: &HashMap<String, String>) -> (Question, HtmlControl) {
+    let control = field.members[0];
+    let kind = control_kind(control);
+    let name = control.value().attr("name").unwrap_or_default().to_owned();
+    let fieldset = nearest(control, "fieldset");
+    let header = fieldset
+        .as_ref()
+        .and_then(|fieldset| {
+            fieldset
+                .children()
+                .find_map(|node| ElementRef::wrap(node).filter(|child| child.value().name() == "legend"))
+        })
+        .map(|legend| squash(legend.text()))
+        .filter(|text| !text.is_empty());
+    // A radio's label is one option, so its question comes from context instead.
+    let own_label = if kind == "radio" {
+        None
+    } else {
+        wrapping_label(control).or_else(|| label_for(control, labels))
+    };
+    let text = match &fieldset {
+        Some(fieldset) => squash(fieldset.text()),
+        None => own_label.unwrap_or_else(|| field.paragraph.clone()),
+    };
+    let text = if text.is_empty() { name.clone() } else { text };
+    let id = if name.is_empty() { format!("field-{}", index + 1) } else { name.clone() };
+    let (options, recommended, multi, answering) = if name.is_empty() {
+        (Vec::new(), None, false, HtmlControl::Unsupported)
+    } else {
+        html_control(&kind, &field.members, labels)
+    };
+    let question = Question {
+        id,
+        question: text,
+        options: options
+            .into_iter()
+            .map(|label| AskOption {
+                label,
+                description: None,
+            })
+            .collect(),
+        recommended,
+        multi,
+        header,
+    };
+    (question, answering)
 }
 
 /// Read plan proposals and matching results from an omp JSONL transcript.
@@ -573,8 +896,8 @@ pub fn ask_result(transcript: &std::path::Path, tool_call_id: &str) -> std::io::
         if message.get("role").and_then(Value::as_str) == Some("toolResult")
             && message.get("toolCallId").and_then(Value::as_str) == Some(tool_call_id)
         {
-            selected = message
-                .get("details")
+            let result_details = message.get("details");
+            selected = result_details
                 .and_then(|details| details.get("selectedOptions"))
                 .and_then(Value::as_array)
                 .map(|options| {
@@ -582,7 +905,12 @@ pub fn ask_result(transcript: &std::path::Path, tool_call_id: &str) -> std::io::
                         .iter()
                         .filter_map(Value::as_str)
                         .map(str::to_owned)
-                        .collect()
+                        .collect::<Vec<String>>()
+                })
+                .or_else(|| {
+                    // HTML asks answer with `details.answers[].answer`, in form order.
+                    let answers = result_details?.get("answers")?.as_array()?;
+                    Some(answers.iter().filter_map(|answer| answer.get("answer")?.as_str().map(str::to_owned)).collect::<Vec<String>>())
                 });
         }
         true
@@ -1342,6 +1670,133 @@ mod tests {
         fs::remove_file(pending).unwrap();
 
         assert!(pending_ask(&transcript()).unwrap().is_none());
+    }
+
+    fn html_ask_fixture_html() -> String {
+        let line = include_str!("../tests/fixtures/transcript_ask_html.jsonl")
+            .lines()
+            .nth(1)
+            .unwrap();
+        let value: Value = serde_json::from_str(line).unwrap();
+        value["message"]["content"][0]["arguments"]["html"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn option_labels(question: &Question) -> Vec<String> {
+        question.options.iter().map(|option| option.label.clone()).collect()
+    }
+
+    #[test]
+    fn finds_pending_html_ask_with_its_form() {
+        let prefix = include_str!("../tests/fixtures/transcript_ask_html.jsonl")
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pending = std::env::temp_dir().join(format!("triage-omp-html-pending-{}.jsonl", std::process::id()));
+        fs::write(&pending, prefix).unwrap();
+        let call = pending_ask(&pending).unwrap().unwrap();
+        fs::remove_file(pending).unwrap();
+        assert_eq!(call.tool_call_id, "call_ask_html");
+        assert_eq!(call.questions.len(), 2);
+        assert!(call.form.as_ref().is_some_and(|form| form.controls.len() == 2));
+    }
+
+    #[test]
+    fn html_ask_turns_each_fieldset_into_a_question_and_control() {
+        let (questions, form) = parse_html_ask(&html_ask_fixture_html()).unwrap();
+        assert_eq!(questions.len(), form.controls.len());
+        let finding = &questions[0];
+        assert_eq!(finding.id, "finding-001");
+        assert_eq!(finding.header.as_deref(), Some("Rotate the deploy key"));
+        assert!(finding.question.contains("Situation: The deploy key is 120 days old."));
+        assert_eq!(
+            option_labels(finding),
+            [
+                "Do as recommended (recommended) — Execute the action shown in this finding",
+                "Investigate first",
+                "Skip",
+            ]
+        );
+        assert_eq!(finding.recommended, Some(0));
+        assert_eq!(
+            form.controls[0],
+            HtmlControl::Radio { enabled: 3, leave_unselected: false, other: true }
+        );
+        let reason = &questions[1];
+        assert_eq!(reason.header.as_deref(), Some("Reason"));
+        assert_eq!(option_labels(reason), ["Leave blank"]);
+        assert_eq!(reason.recommended, Some(0));
+        assert_eq!(form.controls[1], HtmlControl::Text { multiline: false, initial_lines: 1 });
+        assert!(form.context.contains("Rotate the deploy key"));
+    }
+
+    #[test]
+    fn html_text_select_and_required_fields_keep_their_defaults() {
+        let html = "<form>\
+            <fieldset><legend>Pick a tier</legend><label>Tier <select name='tier'><option>Basic</option><option>Pro</option></select></label></fieldset>\
+            <fieldset><legend>Notes</legend><textarea name='notes'>Line one\nLine two</textarea></fieldset>\
+            <fieldset><legend>Owner</legend><input name='owner' value='Nick' required></fieldset>\
+            <fieldset><legend>Ticket</legend><input name='ticket' required></fieldset>\
+            </form>";
+        let (questions, form) = parse_html_ask(html).unwrap();
+        assert_eq!(option_labels(&questions[0]), ["Leave unselected", "Basic", "Pro"]);
+        assert_eq!(questions[0].recommended, Some(0));
+        assert_eq!(form.controls[0], HtmlControl::Select { enabled: 2, leave_unselected: true });
+        assert_eq!(option_labels(&questions[1]), ["Keep current value"]);
+        assert_eq!(form.controls[1], HtmlControl::Text { multiline: true, initial_lines: 2 });
+        assert_eq!(option_labels(&questions[2]), ["Keep current value"]);
+        assert_eq!(form.controls[2], HtmlControl::Text { multiline: false, initial_lines: 1 });
+        assert!(questions[3].options.is_empty());
+        assert_eq!(questions[3].recommended, None);
+        assert_eq!(form.controls[3], HtmlControl::Text { multiline: false, initial_lines: 1 });
+    }
+
+    #[test]
+    fn html_radio_rules_cover_leave_unselected_other_and_suppression() {
+        let html = "<form>\
+            <fieldset><legend>Optional</legend><label><input type='radio' name='a' value='1'> Alpha</label><label><input type='radio' name='a' value='2'> Beta</label></fieldset>\
+            <fieldset><legend>Wording</legend><label><input type='radio' name='b' value='x' checked> Yes</label><label><input type='radio' name='b' value='y'> Other, later</label></fieldset>\
+            <fieldset><legend>Disabled</legend><label><input type='radio' name='c' value='p' checked> Keep</label><label><input type='radio' name='c' value='q' disabled> Gone</label></fieldset>\
+            </form>";
+        let (questions, form) = parse_html_ask(html).unwrap();
+        assert_eq!(option_labels(&questions[0]), ["Leave unselected", "Alpha", "Beta"]);
+        assert_eq!(form.controls[0], HtmlControl::Radio { enabled: 2, leave_unselected: true, other: true });
+        assert_eq!(option_labels(&questions[1]), ["Yes", "Other, later"]);
+        assert_eq!(form.controls[1], HtmlControl::Radio { enabled: 2, leave_unselected: false, other: false });
+        assert_eq!(option_labels(&questions[2]), ["Keep"]);
+        assert_eq!(questions[2].recommended, Some(0));
+        assert_eq!(form.controls[2], HtmlControl::Radio { enabled: 1, leave_unselected: false, other: true });
+    }
+
+    #[test]
+    fn html_checkbox_groups_unnamed_and_multi_selects_are_read_only() {
+        let html = "<form>\
+            <fieldset><legend>Features</legend><label><input type='checkbox' name='f' value='a'> A</label><label><input type='checkbox' name='f' value='b'> B</label></fieldset>\
+            <fieldset><legend>Loose</legend><input type='text'></fieldset>\
+            <fieldset><legend>Many</legend><select name='m' multiple><option>X</option></select></fieldset>\
+            </form>";
+        let (questions, form) = parse_html_ask(html).unwrap();
+        assert_eq!(questions.len(), 3);
+        assert!(form.controls.iter().all(|control| *control == HtmlControl::Unsupported));
+    }
+
+    #[test]
+    fn html_without_named_controls_makes_no_form() {
+        assert!(parse_html_ask("<form><p>Nothing to answer.</p></form>").is_none());
+        assert!(parse_html_ask("<form><input type='hidden' name='token' value='x'><button>Go</button></form>").is_none());
+    }
+
+    #[test]
+    fn html_ask_result_returns_answers_in_form_order() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcript_ask_html.jsonl");
+        assert_eq!(
+            ask_result(&fixture, "call_ask_html").unwrap(),
+            Some(vec!["Investigate first".to_owned(), "Old key, rotated Tuesday".to_owned()])
+        );
+        assert_eq!(ask_result(&transcript(), "call_ask_1").unwrap(), Some(vec!["Blue".to_owned()]));
     }
 
     #[test]

@@ -38,14 +38,14 @@ function findNodes(value, predicate, found = []) {
 test('custom answers are hidden from findings and available on ask and plan cards', () => {
   const state = { pending: null, drafts: new Map() },
     requests = [],
-    functions = ['optionsView', 'otherRow', 'toggleOther', 'sendOther', 'mdInline', 'mdNodes']
+    functions = ['otherAllowed', 'optionsView', 'questionView', 'otherRow', 'toggleOther', 'sendOther', 'answerStep', 'goStep', 'mdInline', 'mdNodes']
       .map(functionSource)
       .join('\n'),
     context = vm.createContext({
       S: state,
       answerable: (card) => card.answerable !== false,
       draft(card) {
-        if (!state.drafts.has(card.id)) state.drafts.set(card.id, { note: '', other: '', open: false });
+        if (!state.drafts.has(card.id)) state.drafts.set(card.id, { step: 0, answers: [], note: '', other: '', open: false });
         return state.drafts.get(card.id);
       },
       recIndex: () => 0,
@@ -58,6 +58,9 @@ test('custom answers are hidden from findings and available on ask and plan card
       button: (_card, _action, className, props, onClick, ...children) =>
         node('button', { ...props, class: className, onClick }, ...children),
       render() {},
+      snapshot: () => ({}),
+      announce() {},
+      focusPrimary() {},
       $: () => ({ focus() {} }),
       noteValue: (card) => state.drafts.get(card.id).note.trim() || null,
       act: (...args) => requests.push(args),
@@ -72,7 +75,14 @@ test('custom answers are hidden from findings and available on ask and plan card
       id: 'finding',
       kind: 'finding',
       options: [{ label: 'Keep current plan' }],
+      allow_other: false,
+    },
+    findingQuestion = {
+      id: 'finding-question',
+      kind: 'finding',
+      options: [],
       allow_other: true,
+      questions: [{ label: 'q', question: 'Choose', allow_other: true, options: [{ label: 'Keep' }] }],
     },
     ask = {
       id: 'ask',
@@ -86,6 +96,7 @@ test('custom answers are hidden from findings and available on ask and plan card
       options: [{ label: 'Approve' }, { label: 'Refine' }],
       allow_other: true,
     };
+  state.drafts.set(findingQuestion.id, { step: 0, answers: [], note: '', other: 'custom finding answer', open: false });
   state.drafts.set(finding.id, { note: '', other: 'finding answer', open: false });
   state.drafts.set(ask.id, { note: '', other: 'ask answer', open: false });
   state.drafts.set(plan.id, { note: 'Plan note', other: 'Plan answer', open: false });
@@ -99,6 +110,10 @@ test('custom answers are hidden from findings and available on ask and plan card
   context.sendOther(finding);
   assert.equal(state.drafts.get(finding.id).open, false);
   assert.equal(requests.length, 0, 'finding custom answer is never submitted');
+  const findingQuestionButton = findNodes(context.optionsView(findingQuestion), (item) => item.props?.id === 'other-btn')[0];
+  assert.ok(findingQuestionButton, 'finding questions expose Other');
+  context.sendOther(findingQuestion);
+  assert.equal(state.drafts.get(findingQuestion.id).answers[0].text, 'custom finding answer');
 
   const askButton = findNodes(context.optionsView(ask), (item) => item.props?.id === 'other-btn')[0];
   assert.ok(askButton, 'Ask cards retain Other');
@@ -167,8 +182,12 @@ test('plan cards from the queue render and answer through the answer route', asy
     functions = [
       'applyQueue',
       'countsFrom',
+      'setConnection',
+      'draft',
       'refresh',
       'optionsView',
+      'otherAllowed',
+      'questionView',
       'otherRow',
       'noteRow',
       'toggleOther',

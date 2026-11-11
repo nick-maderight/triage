@@ -35,9 +35,11 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       '#peek': { open: false },
       '#dispatch-mode': { children: buttons },
       '#dispatch-mode-help': { textContent: '' },
+      '#dispatch-hint': { textContent: '' },
+      '#dispatch-mode-investigate': { hidden: false },
       '#dispatch-models': { hidden: true },
       '#dispatch-note': { value: '', focus() {} },
-      '#dispatch-hint': { textContent: '' },
+      '#dispatch-executor-effort': { value: 'max' },
       '#dispatch-start': { disabled: false },
       '#dispatch': dialog,
     },
@@ -50,9 +52,9 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       remoteSwapUntil: 0,
       laterOpen: false,
       countsExpanded: false,
-      dispatchId: null,
+      dispatchId: card.id,
       composeMode: 'goal',
-      drafts: new Map([[card.id, { dispatchMode: 'investigate', dispatch: 'Review the plan' }]]),
+      drafts: new Map([[card.id, { dispatchMode: 'investigate', dispatch: 'Review the plan', dispatchAnswers: null }]]),
     },
     context = vm.createContext({
       S: state,
@@ -297,6 +299,7 @@ test('finding options open the launch sheet and answer with its choices', async 
     hint = { textContent: '' },
     elements = {
       '#dispatch-mode': { children: buttons },
+      '#dispatch-mode-investigate': { hidden: false },
       '#dispatch-mode-help': { textContent: '' },
       '#dispatch-models': { hidden: true },
       '#dispatch-note': { value: '', focus() {} },
@@ -304,6 +307,7 @@ test('finding options open the launch sheet and answer with its choices', async 
       '#dispatch-engine': { value: '' },
       '#dispatch-thinking': { value: 'xhigh' },
       '#dispatch-executor': { value: 'provider/executor' },
+      '#dispatch-executor-effort': { value: 'max' },
       '#dispatch-hint': hint,
       '#dispatch-start': start,
       '#dispatch': dialog,
@@ -323,7 +327,7 @@ test('finding options open the launch sheet and answer with its choices', async 
       $: (selector) => elements[selector] || null,
       draft: (current) => {
         if (!state.drafts.has(current.id)) state.drafts.set(current.id, {
-          note: 'Do the safe thing', dispatch: '', dispatchMode: 'investigate', dispatchOption: null,
+          note: 'Do the safe thing', dispatch: '', dispatchMode: 'investigate', dispatchOption: null, dispatchAnswers: null,
         });
         return state.drafts.get(current.id);
       },
