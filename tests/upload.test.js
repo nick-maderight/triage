@@ -76,3 +76,17 @@ test('an unreadable image stops the request with the reason', async () => {
   assert.equal(hint.textContent, 'Could not read the image.');
   assert.equal(start.disabled, false);
 });
+
+test('a second submit while the image is read starts one session', async () => {
+  const requests = [];
+  let release;
+  const reading = new Promise((resolve) => {
+    release = () => resolve({ media_type: 'image/png', data: 'iVBORw0KGgo=', name: 'shot.png' });
+  });
+  const { context } = compose(requests, () => reading);
+  const first = context.submitCompose({ preventDefault() {} }),
+    second = context.submitCompose({ preventDefault() {} });
+  release();
+  await Promise.all([first, second]);
+  assert.equal(requests.length, 1);
+});

@@ -12,7 +12,7 @@ use crate::uploads::Upload;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Gap between bridge polls after a good poll, in ms.
 const POLL_MS: i64 = 3_000;
@@ -22,6 +22,10 @@ const BACKOFF_MS: i64 = 30_000;
 const REPORT_READS: usize = 8;
 /// Sessions idle for longer than this, in ms, are watched only while they run.
 const WATCH_MS: i64 = 24 * 60 * 60 * 1000;
+/// How long a launch that errored keeps looking for the session it may have started.
+const ADOPT_WINDOW: Duration = Duration::from_secs(30);
+/// Gap between those looks.
+const ADOPT_POLL: Duration = Duration::from_millis(500);
 
 /// What the bridge poll remembers between polls.
 #[derive(Default)]
@@ -1015,6 +1019,11 @@ pub(super) fn launch_brief(
 }
 
 /// Start a dsh session on `brief` and return its `dsh:<sid>` pane id.
+///
+/// A launch that errors may still have started its session: the bridge finishes a launch
+/// after the caller gives up, and a host that is only slow created the session first. The
+/// session the launch started is adopted rather than reported as a failure, because the
+/// retry would otherwise start a second session on the same brief.
 pub(super) fn launch_new(
     launch: &Launch,
     cwd: &str,
@@ -1023,7 +1032,10 @@ pub(super) fn launch_new(
     start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
-    let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
+    let client = dsh::connect(launch.dsh_host.as_deref(), dsh::LAUNCH_TIMEOUT)?;
+    // Listing is a quick read even while a launch is slow, so it never holds a launch up.
+    let probe = dsh::connect(launch.dsh_host.as_deref(), dsh::TICK_TIMEOUT)?;
+    let title = truncate_chars(title.to_owned(), 60);
     let (mode, executor, executor_effort) = match start {
         Start::Goal => ("goal", None, None),
         Start::Plan => ("plan", None, None),
@@ -1047,6 +1059,7 @@ pub(super) fn launch_new(
     if let Some(image) = image {
         body["image"] = image.dsh_image();
     }
+    let before = listed_session_ids(&probe);
     match client.launch(&body) {
         Ok(sid) => Ok(format!("dsh:{sid}")),
         // A host older than workspaces rejects the field before it starts anything, so the
@@ -1056,8 +1069,48 @@ pub(super) fn launch_new(
                 fields.remove("workspace");
             }
             body["cwd"] = json!(cwd);
-            client.launch(&body).map(|sid| format!("dsh:{sid}"))
+            match client.launch(&body) {
+                Ok(sid) => Ok(format!("dsh:{sid}")),
+                Err(error) => adopt_started(&probe, &before, &title, error),
+            }
         }
-        Err(error) => Err(error),
+        Err(error) => adopt_started(&probe, &before, &title, error),
+    }
+}
+
+/// The ids the host lists, so a launch tells its own session from the ones already there.
+fn listed_session_ids(client: &dsh::Client) -> HashSet<String> {
+    client
+        .sessions()
+        .map(|(_, sessions, _)| sessions.into_iter().map(|session| session.session_id).collect())
+        .unwrap_or_default()
+}
+
+/// The session a launch that timed out started, or the launch's own error. The bridge
+/// keeps working on a launch after its caller gives up, so a timeout is not a failure until
+/// the host has had a while to list the session. Any other error is the bridge's own
+/// answer, and it archives the session it created before answering.
+pub(super) fn adopt_started(
+    client: &dsh::Client,
+    before: &HashSet<String>,
+    title: &str,
+    error: String,
+) -> Result<String, String> {
+    if !error.contains("timeout") {
+        return Err(error);
+    }
+    let deadline = Instant::now() + ADOPT_WINDOW;
+    loop {
+        if let Ok((_, sessions, _)) = client.sessions()
+            && let Some(session) = sessions.iter().find(|session| {
+                !before.contains(&session.session_id) && session.title.as_deref() == Some(title)
+            })
+        {
+            return Ok(format!("dsh:{}", session.session_id));
+        }
+        if Instant::now() >= deadline {
+            return Err(error);
+        }
+        std::thread::sleep(ADOPT_POLL);
     }
 }

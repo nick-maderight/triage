@@ -30,8 +30,12 @@ pub fn workspace_name(name: Option<&str>) -> Result<Option<&str>, String> {
 pub const THINKING: [&str; 4] = ["off", "low", "high", "max"];
 /// Caps a background poll, which runs under the tracker lock.
 pub const TICK_TIMEOUT: Duration = Duration::from_secs(3);
-/// Caps a card action or launch, which a person waits on.
+/// Caps a card action, which a person waits on.
 pub const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+/// Caps a launch, whose first command waits while dsh starts the turn. A loaded host
+/// takes tens of seconds for that, and a shorter cap once left a session running that
+/// triage had reported as failed, so its retry started a second one.
+pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Caps the catalog read behind the models picker.
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long a catalog read serves the pickers.
@@ -288,12 +292,6 @@ struct Listed<T> {
     plan_decisions: bool,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Launched {
-    session_id: String,
-}
-
 impl Client {
     pub fn new(host: &Host, timeout: Duration) -> Client {
         Client {
@@ -339,10 +337,32 @@ impl Client {
         Ok(listed.items)
     }
 
-    /// Start a session from a `/v1/launch` body and return its id.
+    /// Start a session from a `/v1/launch` body and return its id. A launch the bridge
+    /// answers with an error has already created its session, and the bridge names it in
+    /// that answer; the session is archived there so the retry starts no second one.
     pub fn launch(&self, body: &Value) -> Result<String, String> {
-        let launched: Launched = self.post("/v1/launch", body)?;
-        Ok(launched.session_id)
+        let request = self
+            .agent
+            .post(format!("{}/v1/launch", self.api))
+            .header("Authorization", self.bearer.as_str());
+        let mut response = request
+            .send_json(body)
+            .map_err(|error| format!("dsh bridge unreachable: {error}"))?;
+        let status = response.status();
+        let reply: Value = response.body_mut().read_json().unwrap_or(Value::Null);
+        if status.is_success() {
+            return reply["sessionId"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "dsh bridge sent no session id".to_owned());
+        }
+        if let Some(session_id) = reply["sessionId"].as_str() {
+            let _ = self.archive(session_id);
+        }
+        Err(reply["error"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("dsh bridge returned {}", status.as_u16())))
     }
 
     /// Queue text in an idle session. `image` is the encoded attachment the prompt carries.

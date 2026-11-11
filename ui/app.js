@@ -2471,11 +2471,15 @@ const S = {
       start = $('#compose-start'),
       hint = $('#compose-hint');
     if (!prompt || start.disabled) return;
+    // Disable before reading an attached image: a second submit during that read would
+    // otherwise start the same session twice.
+    start.disabled = true;
     let image;
     try {
       image = await sheetImageBody('compose');
     } catch (err) {
       hint.textContent = err.message;
+      start.disabled = false;
       return;
     }
     const body = {
@@ -2494,7 +2498,6 @@ const S = {
     }
     // The daemon does the launch, which can take it a while. The sheet closes now and the
     // toast reports the result. A busy host never holds the inbox.
-    start.disabled = true;
     hint.textContent = '';
     $('#compose-prompt').value = '';
     $('#compose').close();
@@ -2517,6 +2520,7 @@ const S = {
       start.disabled = false;
     }
   }
+
   function radioKeydown(e, select) {
     const bs = [...e.currentTarget.children],
       i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),

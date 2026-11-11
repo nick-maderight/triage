@@ -6616,6 +6616,12 @@ struct BridgeData {
     // plan_decisions says the host decides a plan the model wrote as text, the way a
     // host that carries the route does.
     plan_decisions: bool,
+    // slow_launch_started is the session the host starts before its launch answer
+    // fails. The next launch lists it and then answers the error, which is what a
+    // loaded host does: the session exists, the caller gave up.
+    slow_launch_started: Option<Value>,
+    // launch_error is the error the next launch answers, when it answers one.
+    launch_error: Option<String>,
 }
 
 impl BridgeData {
@@ -6655,6 +6661,23 @@ impl BridgeData {
                 if path == "/v1/launch" && self.refuse_workspace && !value["workspace"].is_null() {
                     self.posts.push((path.clone(), value));
                     return (StatusCode::BAD_REQUEST, json!({"error": "cwd must be an absolute path"}));
+                }
+                if path == "/v1/launch" {
+                    let started = self.slow_launch_started.take();
+                    let sid = started
+                        .as_ref()
+                        .and_then(|started| started["sessionId"].as_str())
+                        .map(str::to_owned);
+                    if let Some(started) = started {
+                        self.sessions.push(started);
+                    }
+                    if let Some(error) = self.launch_error.take() {
+                        self.posts.push((path, value));
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            json!({"error": error, "sessionId": sid}),
+                        );
+                    }
                 }
                 let reply = if path == "/v1/launch" {
                     let launched = value["sessionId"].as_str().unwrap_or(&self.launch_id).to_owned();
@@ -7637,6 +7660,74 @@ fn dsh_goal_launch_without_a_model_leaves_the_host_default() {
     assert!(launches[0]["model"].is_null(), "{}", launches[0]);
     assert!(launches[0]["effort"].is_null());
     assert!(launches[0]["executor"].is_null());
+}
+
+#[test]
+fn dsh_launch_adopts_the_session_a_timed_out_launch_started() {
+    let scratch = Scratch::new();
+    let bridge = FakeBridge::start(scratch.path());
+    let client = dsh::connect(Some(bridge.host()), dsh::TICK_TIMEOUT).unwrap();
+    let mut started = session(1);
+    started["sessionId"] = json!("session-slow");
+    started["title"] = json!("Ship it");
+    bridge.edit(|data| data.sessions.push(started));
+    // The host created the session, then took too long to answer. Reporting that as a
+    // failure made a retry start the same brief a second time, so the launch adopts it.
+    assert_eq!(
+        dsh_track::adopt_started(
+            &client,
+            &HashSet::new(),
+            "Ship it",
+            "dsh bridge unreachable: timeout: global".to_owned(),
+        ),
+        Ok("dsh:session-slow".to_owned())
+    );
+    // The bridge's own error answer is final: it archived the session it created, so
+    // adopting one would report a launch that never started.
+    let reads = bridge.reads("/v1/sessions");
+    assert_eq!(
+        dsh_track::adopt_started(&client, &HashSet::new(), "Ship it", "workspace is invalid".to_owned()),
+        Err("workspace is invalid".to_owned())
+    );
+    assert_eq!(bridge.reads("/v1/sessions"), reads);
+}
+
+#[test]
+fn dsh_launch_reports_an_error_that_started_no_session() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.launch_error = Some("workspace is invalid".to_owned());
+    });
+    assert_eq!(
+        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None),
+        Err("workspace is invalid".to_owned())
+    );
+    assert_eq!(bridge.posts("/v1/launch").len(), 1);
+}
+
+#[test]
+fn dsh_launch_archives_the_session_a_refused_launch_created() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        let mut started = session(1);
+        started["sessionId"] = json!("session-failed");
+        started["title"] = json!("Ship it");
+        data.slow_launch_started = Some(started);
+        data.launch_error = Some("session/model-unavailable: Select an available model".to_owned());
+    });
+    // The bridge names the session it created before the launch failed. Keeping it would
+    // leave a duplicate behind the retry, so the failed launch archives it.
+    assert_eq!(
+        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None),
+        Err("session/model-unavailable: Select an available model".to_owned())
+    );
+    let archived = bridge.posts("/v1/archive");
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0]["sessionId"], "session-failed");
 }
 
 #[test]
