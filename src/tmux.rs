@@ -231,9 +231,9 @@ pub fn paste_text(pane: &str, text: &str) -> io::Result<()> {
     send_literal(pane, &format!("\x1b[200~{text}\x1b[201~"))
 }
 
-/// `send-keys -l` in UTF-8-safe 64 KiB chunks.
+/// `send-keys -l` in UTF-8-safe 8 KiB chunks.
 fn send_literal(pane: &str, text: &str) -> io::Result<()> {
-    const CHUNK_BYTES: usize = 64 * 1024;
+    const CHUNK_BYTES: usize = 8 * 1024;
     let mut start = 0;
     while start < text.len() {
         let mut end = (start + CHUNK_BYTES).min(text.len());
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn send_text_chunks_utf8_input_and_skips_enter_after_chunk_failure() {
-        const CHUNK_BYTES: usize = 64 * 1024;
+        const CHUNK_BYTES: usize = 8 * 1024;
         const PREFIX: &str = "send-keys -t %1 -l -- ";
         const TMUX_SCRIPT: &str = r##"#!/bin/sh
 call=0
@@ -403,6 +403,11 @@ fi
 call=$((call + 1))
 printf '%s' "$call" > "$TRIAGE_TMUX_COUNT"
 printf '%s\n' "$*" >> "$TRIAGE_TMUX_LOG"
+all="$*"
+if [ "${#all}" -gt 16000 ]; then
+    echo 'command too long' >&2
+    exit 1
+fi
 if [ "$call" -eq "${TRIAGE_TMUX_FAIL_CALL:-0}" ]; then
     exit 1
 fi
@@ -413,6 +418,8 @@ fi
             let result = send_text("%1", &text);
             if std::env::var_os("TRIAGE_TMUX_FAIL_CALL").is_some() {
                 assert!(result.is_err());
+            } else {
+                result.unwrap();
             }
             return;
         }

@@ -27,8 +27,7 @@ Every card carries a context thread one click away: `t`, the Context control in 
 
 ### Goal mode
 
-Every new omp window triage opens for a brief through a dispatch, a finding answer or the compose sheet starts in goal mode with the brief as its objective. Finding answers can choose Investigate, Act, Plan or Plan into; Plan and Plan into start those modes instead. A plan dispatch also starts in plan mode. The objective ends with the brief file's path because omp records it as the session's first user message and the exit audit recognizes a triage dispatch by that path. A brief sent to a waiting source pane stays typed text and keeps that pane's modes, except Plan toggles its plan mode.
-An objective over 12 KiB once shell-quoted goes in as the brief's heading and an instruction to read the saved file, because tmux refuses a command over its 16 KiB message limit and the launch would fail with "command too long".
+Every new omp window triage opens for a brief through a dispatch, a finding answer or the compose sheet starts in goal mode. The objective is the brief's first line and its file path, with an instruction to read the whole brief, so the launch command stays short whatever the brief's size; tmux refuses a command longer than about 16 KiB. Finding answers can choose Investigate, Act, Plan or Plan into; Plan and Plan into start those modes instead. A plan dispatch also starts in plan mode. omp records the objective as the session's first user message, and the exit audit recognizes a triage dispatch by the brief path in it. A brief sent to a waiting source pane stays typed text and keeps that pane's modes, except Plan toggles its plan mode.
 
 ### Plan mode
 

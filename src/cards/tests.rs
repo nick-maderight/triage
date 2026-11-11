@@ -89,6 +89,11 @@ fn fake_tmux(root: &Path) -> PathBuf {
     fs::write(
             &executable,
             r##"#!/bin/sh
+all="$*"
+if [ "${#all}" -gt 16000 ]; then
+    echo 'command too long' >&2
+    exit 1
+fi
 printf '%s\n' "$*" >> "$HOME/tmux.log"
 case "$1" in
 list-panes)
@@ -3943,6 +3948,34 @@ fn finding_answer_opens_new_window_and_leaves_idle_dispatched_window_alone() {
 
 #[cfg(unix)]
 #[test]
+fn finding_answer_with_a_long_brief_launches_within_tmux_limit() {
+    if let Some(root) = child_root("finding_answer_with_a_long_brief_launches_within_tmux_limit") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut card = finding_card(&root);
+        card.star.situation = "situation ".repeat(3_000);
+        db.insert_card(&card).unwrap();
+        let result = answer(&db, &card, &answer_req(0, None), &Launch::default(), None);
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(new_window_count(&root), 1);
+        assert!(log.contains("Carry out the triage brief saved at "));
+        assert!(!log.contains("situation situation"), "the brief body reached tmux");
+        assert_eq!(current_swipe(&db, &card.id).reason.as_deref(), Some("launched %42"));
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "finding_answer_with_a_long_brief_launches_within_tmux_limit",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
     if let Some(root) = child_root("dispatch_uses_launch_settings_and_defaults_to_triage_session") {
         let db = Db::open(&root.join("triage.db")).unwrap();
@@ -4957,24 +4990,24 @@ fn start_parse_refuses_an_execution_effort_outside_plan_into() {
 }
 
 #[test]
-fn goal_command_makes_the_brief_the_objective() {
+fn goal_command_names_the_brief_in_its_objective() {
     let directory =
         std::env::temp_dir().join(format!("triage-goal-command-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&directory).unwrap();
     let brief = directory.join("brief.md");
-    fs::write(&brief, "# Act: Ship it\n\nDo the work.\n").unwrap();
+    fs::write(&brief, "\n# Act: Ship it\n\nDo the work.\n").unwrap();
     let chosen = omp_command(
         &brief,
         Some("provider/example-model"),
         Some("high"),
         Start::Goal,
-    None,
+        None,
     )
     .unwrap();
     assert_eq!(
         chosen,
         format!(
-            "omp --model=provider/example-model --plan=provider/example-model --thinking=high --goal '# Act: Ship it\n\nDo the work.\n\nThe brief is saved at {}.'",
+            "omp --model=provider/example-model --plan=provider/example-model --thinking=high --goal '# Act: Ship it\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you mark the goal complete; it holds the full task and the report format.'",
             brief.display()
         )
     );
@@ -4984,25 +5017,13 @@ fn goal_command_makes_the_brief_the_objective() {
     assert!(omp_command(&brief, None, Some("turbo"), Start::Goal, None).is_err());
     assert!(omp_command(&brief, Some("x; rm -rf ~"), None, Start::Goal, None).is_err());
     assert!(omp_command(&directory.join("missing.md"), None, None, Start::Goal, None).is_err());
-    fs::remove_dir_all(&directory).unwrap();
-}
-#[test]
-fn goal_command_points_a_long_brief_at_its_file() {
-    let directory =
-        std::env::temp_dir().join(format!("triage-goal-long-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&directory).unwrap();
-    let brief = directory.join("brief.md");
-    // About 25 KB once quoted, like the caller-review briefs tmux refused as too long.
-    let body = "Nick's finding detail runs long.\n".repeat(700);
-    fs::write(&brief, format!("# Caller review 2026-11-10, 6 findings\n\n{body}")).unwrap();
-    let command = omp_command(&brief, None, None, Start::Goal, None).unwrap();
-    assert_eq!(
-        command,
-        format!(
-            "omp --goal '# Caller review 2026-11-10, 6 findings\n\nRead the whole brief before you act, then follow it. The brief is saved at {}.'",
-            brief.display()
-        )
-    );
+
+    let heading = format!("# Act: {}", "Ship it ".repeat(50));
+    fs::write(&brief, format!("{heading}\n\n{}\n", "BODY ".repeat(20_000))).unwrap();
+    let long = omp_command(&brief, None, None, Start::Goal, None).unwrap();
+    assert!(long.len() < 1024, "{} bytes", long.len());
+    assert!(long.contains(&format!("saved at {}.", brief.display())), "{long}");
+    assert!(long.contains('…') && !long.contains("BODY"), "{long}");
     fs::remove_dir_all(&directory).unwrap();
 }
 

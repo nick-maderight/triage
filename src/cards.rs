@@ -796,7 +796,7 @@ pub fn answer(
 /// How a new omp window starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Start<'a> {
-    /// omp goal mode with the brief as the objective, or a pointer to its file when it is too long for tmux.
+    /// omp goal mode with an objective that names the brief file.
     Goal,
     /// Read-only plan mode through a per-run config overlay; the plan comes back as a card.
     Plan,
@@ -1053,8 +1053,8 @@ fn session_id(path: &str) -> Option<String> {
 /// Launch a session from free text. Returns the new omp pane id, or `dsh:<sid>` for a dsh session.
 /// The session's asks and final report reach the inbox through the tracker like any other pane.
 /// A plan launch starts in read-only plan mode and a plan-into launch hands its plan to the
-/// execution model without review. Every other session starts in goal mode with the brief as its
-/// objective.
+/// execution model without review. Every other session starts in goal mode with an objective
+/// that names the brief.
 pub fn start_session(
     db: &Db,
     prompt: &str,
@@ -1102,7 +1102,7 @@ pub fn start_session(
 /// Give the brief to the card's own pane while that pane is an omp pane waiting for input,
 /// so the work continues in the session that already has the context. Otherwise open a new
 /// window in the daemon's launch session; a window another launch left behind is never
-/// taken. A new window starts in omp goal mode with the brief as its objective, except
+/// taken. A new window starts in omp goal mode with an objective that names the brief, except
 /// a plan dispatch, which starts in read-only plan mode, and a plan-into dispatch, which
 /// runs `--plan-yolo` and hands the approved plan to the execution model. A waiting source
 /// pane keeps its own modes and receives the brief as typed text, except that a plan-into
@@ -3625,21 +3625,15 @@ pub fn engine_flags(engine: Engine, model: Option<&str>, thinking: Option<&str>)
     }
 }
 
-/// Build the omp launch line for a brief. Goal mode feeds the brief text itself as the
-/// `--goal` objective, so the session keeps working toward it between turns until it reports
-/// done; the objective ends with the brief's path because omp records it as the session's
-/// first user message and `omp::dispatch_audit` recognises a triage dispatch by that path.
-/// A brief whose quoted objective exceeds 12 KiB goes in as its heading and an instruction
-/// to read the saved file, because tmux refuses a longer command.
+/// Build the omp launch line for a brief. Goal mode starts omp with an objective made of the
+/// brief's first line and the brief's path, so the session keeps working toward the brief
+/// between turns until it reports done, and the line stays far below the 16 KiB tmux takes
+/// in one command whatever the brief's size. omp records the objective as the session's
+/// first user message, and `omp::dispatch_audit` recognises a triage dispatch by the path.
 /// Plan mode feeds the brief file as the positional prompt behind a per-run config overlay
 /// that turns read-only plan mode on. Plan into feeds the brief the same way behind
 /// `--plan-yolo`, so omp approves the first plan on its own and switches the session to the
 /// execution model.
-/// tmux sends a whole command in one message of at most 16 KiB and refuses a longer one with
-/// "command too long". A goal objective over this size names its brief file instead, which leaves
-/// room for the PATH, cwd and flags around it.
-const MAX_INLINE_GOAL_BYTES: usize = 12 * 1024;
-
 fn omp_command(
     brief: &Path,
     model: Option<&str>,
@@ -3648,8 +3642,8 @@ fn omp_command(
     image: Option<&Upload>,
 ) -> Result<String, String> {
     let flags = launch_flags(model, thinking)?;
-    // A goal takes the brief as its objective, so the image rides the objective text; plan
-    // messages carry it as one more `@` file beside the brief.
+    // A goal's objective is text, so the image rides it as an `@` mention; plan messages
+    // carry it as one more `@` file beside the brief.
     let mention = image
         .map(|image| format!(" Attached image: @{}.", image.path.display()))
         .unwrap_or_default();
@@ -3660,15 +3654,13 @@ fn omp_command(
         Start::Goal => {
             let text = fs::read_to_string(brief)
                 .map_err(|error| format!("could not read brief: {error}"))?;
-            let saved = format!("The brief is saved at {}.{mention}", brief.display());
-            let mut objective = shell_quote(&format!("{}\n\n{saved}", text.trim()));
-            if objective.len() > MAX_INLINE_GOAL_BYTES {
-                let heading = text.trim().lines().next().unwrap_or_default();
-                objective = shell_quote(&format!(
-                    "{heading}\n\nRead the whole brief before you act, then follow it. {saved}"
-                ));
-            }
-            Ok(format!("omp {flags}--goal {objective}"))
+            let heading = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+            let objective = format!(
+                "{}\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you mark the goal complete; it holds the full task and the report format.{mention}",
+                truncate_chars(heading.to_owned(), 120),
+                brief.display()
+            );
+            Ok(format!("omp {flags}--goal {}", shell_quote(&objective)))
         }
         Start::Plan => {
             let overlay = write_plan_overlay(brief)?;
