@@ -6664,10 +6664,15 @@ impl BridgeData {
                 }
                 if path == "/v1/launch" {
                     let started = self.slow_launch_started.take();
-                    let sid = started
-                        .as_ref()
-                        .and_then(|started| started["sessionId"].as_str())
-                        .map(str::to_owned);
+                    let sid = value["sessionId"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            started
+                                .as_ref()
+                                .and_then(|started| started["sessionId"].as_str())
+                                .map(str::to_owned)
+                        });
                     if let Some(started) = started {
                         self.sessions.push(started);
                     }
@@ -8217,4 +8222,25 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     assert!(brief.contains("## Working directory\n`/work/project`"), "{brief}");
     assert!(brief.contains("## References"), "{brief}");
     assert!(brief.find("## Working directory") < brief.find("## References"), "{brief}");
+}
+
+#[test]
+fn dsh_plan_on_an_existing_session_archives_nothing_when_the_launch_fails() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions.push(session(5));
+        data.launch_error = Some("plan mode did not turn on".to_owned());
+    });
+    let card = dsh_card(&db, "plan-on-live", Kind::Info);
+    let brief = scratch.path().join("brief.md");
+    fs::write(&brief, "# Plan\n").unwrap();
+    // The session was the card's before the launch. Failing to start a plan in it must
+    // not archive the session the user already had.
+    assert_eq!(
+        super::dsh_track::launch_brief(&card, &bridge.launch(), &brief, Start::Plan, None),
+        Err("plan mode did not turn on".to_owned())
+    );
+    assert!(bridge.posts("/v1/archive").is_empty());
 }

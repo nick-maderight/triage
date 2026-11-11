@@ -356,7 +356,11 @@ impl Client {
                 .map(str::to_owned)
                 .ok_or_else(|| "dsh bridge sent no session id".to_owned());
         }
-        if let Some(session_id) = reply["sessionId"].as_str() {
+        // Only a launch that created the session may archive it. A launch into a session
+        // the caller already had must leave that session alone when it fails.
+        if body.get("sessionId").is_none()
+            && let Some(session_id) = reply["sessionId"].as_str()
+        {
             let _ = self.archive(session_id);
         }
         Err(reply["error"]
