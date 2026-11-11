@@ -405,6 +405,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
         return { ok: true, json: async () => ({ pane: '%51' }) };
       },
       announce() {},
+      toast() {},
       sheetImageBody: async () => null,
     });
   vm.runInContext(

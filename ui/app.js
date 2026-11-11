@@ -167,11 +167,13 @@ const S = {
     const e = $('#announcer');
     if (e) e.textContent = t;
   }
-  // Toasts report errors only; announce() carries every successful result.
-  function toast(t, error = false) {
+  // Toasts report an error or a launch still running on the daemon; announce() carries every
+  // successful result. `keep` leaves the toast up until the caller removes it.
+  function toast(t, error = false, keep = false) {
     const e = el('div', `toast${error ? ' error' : ''}`, error && el('strong', null, '! '), t);
     e.setAttribute('role', error ? 'alert' : 'status');
     $('#toasts').append(e);
+    if (keep) return e;
     setTimeout(() => e.remove(), error ? 6000 : 2800);
   }
   function setConnection(state) {
@@ -2476,31 +2478,42 @@ const S = {
       hint.textContent = err.message;
       return;
     }
+    const body = {
+      prompt,
+      cwd: cwd || null,
+      session: $('#compose-session').value.trim() || null,
+      engine: $('#compose-engine').value || null,
+      model: $('#compose-model').value.trim() || null,
+      thinking: $('#compose-thinking').value.trim() || null,
+      mode: S.composeMode,
+    };
+    if (image) body.image = image;
+    if (S.composeMode === 'plan-into') {
+      body.executor = $('#compose-executor').value.trim() || null;
+      body.executor_thinking = $('#compose-executor-effort').value.trim() || null;
+    }
+    // The daemon does the launch, which can take it a while. The sheet closes now and the
+    // toast reports the result. A busy host never holds the inbox.
     start.disabled = true;
-    hint.textContent = 'Starting…';
+    hint.textContent = '';
+    $('#compose-prompt').value = '';
+    $('#compose').close();
+    announce('Starting a session.');
+    const pending = toast('Starting…', false, true);
     try {
-      const body = {
-        prompt,
-        cwd: cwd || null,
-        session: $('#compose-session').value.trim() || null,
-        engine: $('#compose-engine').value || null,
-        model: $('#compose-model').value.trim() || null,
-        thinking: $('#compose-thinking').value.trim() || null,
-        mode: S.composeMode,
-      };
-      if (image) body.image = image;
-      if (S.composeMode === 'plan-into') {
-        body.executor = $('#compose-executor').value.trim() || null;
-        body.executor_thinking = $('#compose-executor-effort').value.trim() || null;
-      }
       const data = await api('/v1/sessions', body);
-      $('#compose-prompt').value = '';
-      $('#compose').close();
       announce(`Started · ${data.pane}`);
       if (data.pane?.startsWith('dsh:')) toast('Started a dsh session.');
+      else toast(`Started · ${data.pane}`);
     } catch (err) {
-      hint.textContent = err.message || 'Could not start the session.';
+      // Put the draft back so a retry is one Start, unless a newer draft sits in the sheet.
+      const message = err.message || 'Could not start the session.';
+      if (!$('#compose-prompt').value.trim()) $('#compose-prompt').value = prompt;
+      hint.textContent = message;
+      if (!$('dialog[open]')) showDialog($('#compose'));
+      toast(message, true);
     } finally {
+      pending?.remove();
       start.disabled = false;
     }
   }
