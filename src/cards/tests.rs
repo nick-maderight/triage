@@ -1785,6 +1785,109 @@ fn agent_done_report_names_the_open_step() {
 
 #[cfg(unix)]
 #[test]
+fn agent_done_report_that_closes_with_none_earns_a_done_card() {
+    if let Some(root) = child_root("agent_done_report_that_closes_with_none_earns_a_done_card") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        let report = serde_json::json!({
+                "type": "message",
+                "id": "assistant-report",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": "stop",
+                    "content": [{"type": "text", "text": "ENVOY_STATUS: agent-done\n\nBlock key shipped and pushed.\n\nRecommended action: none."}]
+                }
+            })
+            .to_string();
+        write_transcript(&root, "/dev/pts/12", &transcript, &[report]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        let written = tracker.tick(&db).written;
+        let queue = db.queue(events::now_ms()).unwrap();
+        let card = queue
+            .iter()
+            .find(|card| card.id == "done:%12:assistant-report");
+        assert!(
+            written == 1
+                && card.is_some_and(|card| {
+                    card.title == "Done: Block key shipped and pushed."
+                        && card.level.as_deref() == Some("info")
+                        && card.star.action.is_empty()
+                        && card.body.as_deref() == Some("Block key shipped and pushed.")
+                }),
+            "queue: {queue:?}"
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "agent_done_report_that_closes_with_none_earns_a_done_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[test]
+fn agent_done_report_closed_by_none_reads_done() {
+    let turn = reply_turn(
+        "ENVOY_STATUS: agent-done\n\nBlock key shipped and pushed.\n\nRecommended action: none.".to_owned(),
+        None,
+        true,
+        false,
+        Vec::new(),
+    );
+    assert_eq!(turn.title, "Done: Block key shipped and pushed.");
+    assert_eq!(turn.level, "info");
+    assert!(turn.action.is_empty(), "action: {}", turn.action);
+    assert_eq!(turn.body.as_deref(), Some("Block key shipped and pushed."));
+}
+
+#[test]
+fn agent_done_report_with_an_open_step_keeps_the_warning() {
+    let turn = reply_turn(
+        "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.".to_owned(),
+        None,
+        true,
+        false,
+        Vec::new(),
+    );
+    assert_eq!(turn.title, "Agent done: Push still open.");
+    assert_eq!(turn.level, "warn");
+    assert_eq!(turn.action, "Push the release.");
+}
+
+#[test]
+fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
+    let turn = reply_turn(
+        "ENVOY_STATUS: agent-done\n\nSuite gate still red.".to_owned(),
+        None,
+        true,
+        false,
+        Vec::new(),
+    );
+    assert_eq!(turn.title, "Agent done: Suite gate still red.");
+    assert_eq!(turn.level, "warn");
+}
+
+#[test]
+fn carried_agent_done_report_takes_the_closing_step() {
+    let turn = reply_turn(
+        "Closing note.\n\nRecommended action: Publish the release.".to_owned(),
+        Some("ENVOY_STATUS: agent-done\n\nWaited on the suite.\n\nRecommended action: none.".to_owned()),
+        true,
+        false,
+        Vec::new(),
+    );
+    assert_eq!(turn.title, "Agent done: Waited on the suite.");
+    assert_eq!(turn.level, "warn");
+    assert_eq!(turn.action, "Publish the release.");
+}
+
+#[cfg(unix)]
+#[test]
 fn launched_reply_without_status_line_offers_report_request() {
     if let Some(root) = child_root("launched_reply_without_status_line_offers_report_request") {
         fs::write(root.join("tmux-waiting"), b"").unwrap();

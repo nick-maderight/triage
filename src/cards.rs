@@ -1651,13 +1651,6 @@ fn reply_turn(
         Some((_, report)) if report.is_empty() => "Missing final report".to_owned(),
         Some((_, report)) => headline_of(report),
     };
-    let title = match reported {
-        None => headline,
-        Some((_, _)) if missing_report => headline,
-        Some((omp::FinalStatus::Complete, _)) => format!("Done: {headline}"),
-        Some((omp::FinalStatus::AgentDone, _)) => format!("Agent done: {headline}"),
-        Some((omp::FinalStatus::Incomplete, _)) => format!("Incomplete: {headline}"),
-    };
     let body = match reported {
         None => source.to_owned(),
         Some((_, _)) if missing_report => "Status received without a final report.".to_owned(),
@@ -1687,9 +1680,25 @@ fn reply_turn(
             }
         }
     }
+    // An agent-done report that closes with `Recommended action: none` names no step for the
+    // user to pick up. Nothing is open, so the card reports the work as done. A report with no
+    // recommended-action line keeps the warning, because it never named its open step.
+    let closed_report = matches!(reported, Some((omp::FinalStatus::AgentDone, _)))
+        && action.is_empty()
+        && (omp::recommended_action(source).is_some()
+            || (carried.is_some() && omp::recommended_action(&text).is_some()));
+    let title = match reported {
+        None => headline,
+        Some((_, _)) if missing_report => headline,
+        Some((omp::FinalStatus::Complete, _)) => format!("Done: {headline}"),
+        Some((omp::FinalStatus::AgentDone, _)) if closed_report => format!("Done: {headline}"),
+        Some((omp::FinalStatus::AgentDone, _)) => format!("Agent done: {headline}"),
+        Some((omp::FinalStatus::Incomplete, _)) => format!("Incomplete: {headline}"),
+    };
     let level = match reported {
         None => "info",
         Some((omp::FinalStatus::Complete, _)) if !missing_report => "info",
+        Some((omp::FinalStatus::AgentDone, _)) if closed_report && !missing_report => "info",
         Some(_) => "warn",
     };
     Turn { title, body: Some(body), images, level, action, report_due: reported.is_none() && has_trail }
