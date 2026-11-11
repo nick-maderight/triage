@@ -6452,6 +6452,31 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
 }
 
 #[test]
+fn dsh_agent_done_report_closed_with_none_earns_a_done_card() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(2, "Writing the file."),
+                reply_event(3, "ENVOY_STATUS: agent-done\nBlock key shipped and pushed.\n\nRecommended action: none."),
+                turn_end(4, "completed"),
+            ],
+        );
+    });
+    let mut tracker = Tracker::default();
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
+    let (card, swipe) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    assert!(swipe.is_none());
+    assert_eq!(card.title, "Done: Block key shipped and pushed.");
+    assert_eq!(card.level.as_deref(), Some("info"));
+    assert!(card.star.action.is_empty(), "action: {}", card.star.action);
+}
+
+#[test]
 fn dsh_report_card_carries_its_turn_images() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
