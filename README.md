@@ -29,11 +29,13 @@ Every card carries a context thread one click away: `t`, the Context control in 
 
 Every new omp window triage opens for a brief through a dispatch, a finding answer or the compose sheet starts in goal mode. The objective is the brief's first line and its file path, with an instruction to read the whole brief, so the launch command stays short whatever the brief's size; tmux refuses a command longer than about 16 KiB. Finding answers can choose Investigate, Act, Plan or Plan into; Plan and Plan into start those modes instead. A plan dispatch also starts in plan mode. omp records the objective as the session's first user message, and the exit audit recognizes a triage dispatch by the brief path in it. A brief sent to a waiting source pane stays typed text and keeps that pane's modes, except Plan toggles its plan mode.
 
+
 ### Plan mode
 
 When a plan brief opens a new window, a unique per-run config overlay beside the brief starts omp in read-only plan mode. If the card's source pane is already waiting, triage checks its Plan status and sends `M-P` if needed. omp draws the status row only after it resolves the plan file and plan model, so triage polls the row for up to 2 seconds before it sends the brief. A toggle that never shows returns 422.
 
 The tracker waits for a transcript `write` to `xd://propose` and the fullscreen Plan Review overlay. Once both appear, it queues an answerable `plan` card with the redacted plan as its body. The Execution model picker lists omp's `cycleOrder` roles, and Default keeps the role shown in the overlay. Choosing a role moves the slider with Left or Right, waits for the redraw, and checks the selected role before sending Enter. An unavailable role or clipped slider leaves the card queued. The execution model takes the role's own thinking level, because omp's Plan Review slider lists roles only. Refine requires a note; triage sends Esc to close the overlay without discarding the plan, then sends the note as steering text. A new proposal supersedes the old card, and closing the overlay completes it. Every plan brief ends with a status contract because Approve can start a fresh session that sees only the plan. That session's final report then earns its Done card.
+Plan and Plan into launches pass the brief's first non-empty line before the `@file` argument. The line is capped at 120 characters, keeping the task visible in OMP's session title without putting the full brief in the command.
 
 ### Plan into
 

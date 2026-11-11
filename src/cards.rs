@@ -3241,6 +3241,11 @@ fn truncate_chars(mut text: String, limit: usize) -> String {
     }
     text
 }
+fn brief_heading(brief: &Path, limit: usize) -> Result<String, String> {
+    let text = fs::read_to_string(brief).map_err(|error| format!("could not read brief: {error}"))?;
+    let heading = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    Ok(truncate_chars(heading.to_owned(), limit))
+}
 
 /// A finding option whose label opens with "Investigate" asks for an answer, not a change.
 /// Every other option carries out the card's action.
@@ -3664,8 +3669,10 @@ fn omp_command(
         }
         Start::Plan => {
             let overlay = write_plan_overlay(brief)?;
+            let heading = brief_heading(brief, 120)?;
+            let title_arg = format!("{} ", shell_quote(&heading));
             Ok(format!(
-                "omp --config {} {flags}@{}{file}",
+                "omp --config {} {flags}{title_arg}@{}{file}",
                 shell_quote(&overlay.to_string_lossy()),
                 shell_quote(&brief.to_string_lossy())
             ))
@@ -3674,8 +3681,10 @@ fn omp_command(
             let into = omp_execution_model(executor, executor_effort(Engine::Omp, effort)?)?
                 .map(|executor| format!("--plan-yolo-into={executor} "))
                 .unwrap_or_default();
+            let heading = brief_heading(brief, 120)?;
+            let title_arg = format!("{} ", shell_quote(&heading));
             Ok(format!(
-                "omp {flags}--plan-yolo {into}@{}{file}",
+                "omp {flags}--plan-yolo {into}{title_arg}@{}{file}",
                 shell_quote(&brief.to_string_lossy())
             ))
         }

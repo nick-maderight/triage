@@ -410,7 +410,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
         .unwrap();
     assert!(
         launch.contains(&format!(
-            "--config '{}' @'{}'",
+            "--config '{}' 'Prepare a plan.' @'{}'",
             overlay.display(),
             brief.display()
         )),
@@ -463,7 +463,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
     // Without --plan, omp's plan mode moves the session onto its own plan role model.
     assert!(
         launch.contains(
-            " --model=provider/daemon-model --plan=provider/daemon-model --thinking=max @'"
+            " --model=provider/daemon-model --plan=provider/daemon-model --thinking=max 'Prepare a plan.' @'",
         ),
         "{launch}"
     );
@@ -511,7 +511,9 @@ async fn new_session_plan_into_applies_effort_to_default_execution_model() {
         .unwrap()
         .to_owned();
     assert!(
-            launch.contains(" --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=@smol:medium @'"),
+        launch.contains(
+            " --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=@smol:medium 'Prepare a plan.' @'"
+        ),
             "{launch}"
         );
     assert!(!launch.contains("--config"), "{launch}");
@@ -1912,7 +1914,7 @@ esac
         "{launch}"
     );
     assert!(
-        launch.contains("--plan-yolo --plan-yolo-into=provider/executor:high @'"),
+        launch.contains("--plan-yolo --plan-yolo-into=provider/executor:high '# Plan into: Plan into with the requested model' @'"),
         "{launch}"
     );
     assert!(!launch.contains("provider/daemon-model"), "{launch}");

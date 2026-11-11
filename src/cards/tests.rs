@@ -610,7 +610,8 @@ fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
         assert!(brief.starts_with(&format!("# {}", card.title)));
         assert!(brief.contains(PLAN_INSTRUCTION));
         assert!(brief.contains(PLAN_REPORT_STEP));
-        assert!(launch.contains(&format!("--config '{}' @'{}'", overlay_path.display(), brief_path.display())));
+        let heading = format!("# {}", card.title);
+        assert!(launch.contains(&format!("--config '{}' '{}' @'{}'", overlay_path.display(), heading, brief_path.display())));
         assert_eq!(new_window_count(&root), 1);
         return;
     }
@@ -4175,7 +4176,7 @@ fn dispatch_plan_mode_writes_reviewable_brief_and_config_overlay() {
         assert_eq!(overlay, "plan:\n  defaultOnStartup: true\n");
         assert!(
             launch.contains(&format!(
-                "--config '{}' @'{}'",
+                "--config '{}' '# Plan: Earlier result' @'{}'",
                 overlay_path.display(),
                 brief_path.display()
             )),
@@ -4255,7 +4256,7 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
         assert!(!keys.contains("Read the brief at "), "{keys}");
         assert!(
                 launch_line.contains(&format!(
-                    "--model=provider/planner --plan=provider/planner --plan-yolo --plan-yolo-into=provider/executor @'{}'",
+                    "--model=provider/planner --plan=provider/planner --plan-yolo --plan-yolo-into=provider/executor '# Plan into: Earlier result' @'{}'",
                     brief.display()
                 )),
                 "{launch_line}"
@@ -4894,7 +4895,7 @@ fn start_session_plan_mode_uses_overlay_config_before_the_prompt_brief() {
         );
         assert!(
             launch.contains(&format!(
-                "--config '{}' @'{}'",
+                "--config '{}' 'Prepare a plan.' @'{}'",
                 overlay_path.display(),
                 brief_path.display()
             )),
@@ -4927,31 +4928,49 @@ fn chosen_model_and_thinking_reach_launch_and_bad_values_are_refused() {
 
 #[test]
 fn plan_into_command_hands_the_plan_to_the_execution_model() {
-    let brief = Path::new("/tmp/b.md");
+    let directory = std::env::temp_dir().join(format!("triage-plan-command-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let brief = directory.join("brief.md");
+    fs::write(&brief, "# Ship the fix\n\nDo the work.\n").unwrap();
     let chosen = omp_command(
-        brief,
+        &brief,
         Some("provider/planner"),
         Some("high"),
         Start::PlanInto(Some("provider/executor"), None),
-    None,
+        None,
     )
     .unwrap();
     assert_eq!(
         chosen,
-        "omp --model=provider/planner --plan=provider/planner --thinking=high --plan-yolo --plan-yolo-into=provider/executor @'/tmp/b.md'"
+        format!(
+            "omp --model=provider/planner --plan=provider/planner --thinking=high --plan-yolo --plan-yolo-into=provider/executor '# Ship the fix' @'{}'",
+            brief.display()
+        )
     );
-    let blank = omp_command(brief, None, None, Start::PlanInto(Some(" "), None), None).unwrap();
-    assert_eq!(blank, "omp --plan-yolo @'/tmp/b.md'");
-    let default_with_effort = omp_command(brief, None, None, Start::PlanInto(None, Some("medium")), None).unwrap();
-    assert_eq!(
-        default_with_effort,
-        "omp --plan-yolo --plan-yolo-into=@smol:medium @'/tmp/b.md'"
-    );
-    assert!(omp_command(brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None), None).is_err());
-    let leveled = omp_command(brief, None, None, Start::PlanInto(Some("@smol"), Some("low")), None).unwrap();
-    assert_eq!(leveled, "omp --plan-yolo --plan-yolo-into=@smol:low @'/tmp/b.md'");
-    let named = omp_command(brief, None, None, Start::PlanInto(Some("provider/executor:max"), Some("low")), None).unwrap();
-    assert_eq!(named, "omp --plan-yolo --plan-yolo-into=provider/executor:max @'/tmp/b.md'");
+    let blank = omp_command(&brief, None, None, Start::PlanInto(Some(" "), None), None).unwrap();
+    assert_eq!(blank, format!("omp --plan-yolo '# Ship the fix' @'{}'", brief.display()));
+    let default_with_effort = omp_command(&brief, None, None, Start::PlanInto(None, Some("medium")), None).unwrap();
+    assert_eq!(default_with_effort, format!("omp --plan-yolo --plan-yolo-into=@smol:medium '# Ship the fix' @'{}'", brief.display()));
+    assert!(omp_command(&brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None), None).is_err());
+    let leveled = omp_command(&brief, None, None, Start::PlanInto(Some("@smol"), Some("low")), None).unwrap();
+    assert_eq!(leveled, format!("omp --plan-yolo --plan-yolo-into=@smol:low '# Ship the fix' @'{}'", brief.display()));
+    let named = omp_command(&brief, None, None, Start::PlanInto(Some("provider/executor:max"), Some("low")), None).unwrap();
+    assert_eq!(named, format!("omp --plan-yolo --plan-yolo-into=provider/executor:max '# Ship the fix' @'{}'", brief.display()));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn plan_command_prefixes_brief_heading() {
+    let directory = std::env::temp_dir().join(format!("triage-plan-heading-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&directory).unwrap();
+    let brief = directory.join("brief.md");
+    fs::write(&brief, "\n# Act: Ship it\n\nDo the work.\n").unwrap();
+
+    let command = omp_command(&brief, None, None, Start::Plan, None).unwrap();
+
+    assert!(command.contains("'# Act: Ship it' @'"), "{command}");
+    assert!(command.ends_with(&format!("@'{}'", brief.display())), "{command}");
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
