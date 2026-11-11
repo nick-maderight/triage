@@ -217,6 +217,7 @@ test('plan cards from the queue render and answer through the answer route', asy
       emptyHistory() {},
       window: { matchMedia: () => ({ matches: true }) },
       $: (selector) => (selector === '#other-text' || selector === '#other-btn' ? { focus() {} } : null),
+      reloadIfStale: () => false,
       enc: encodeURIComponent,
       draft(item) {
         if (!state.drafts.has(item.id))

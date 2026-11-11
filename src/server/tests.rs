@@ -1155,6 +1155,8 @@ async fn shell_files_revalidate_and_compress() {
     assert_eq!(revalidated.status, StatusCode::NOT_MODIFIED);
     assert!(revalidated.raw_body.is_empty());
     assert_eq!(compressed.content_encoding.as_deref(), Some("gzip"));
+    let queue = http_request(address, "GET", "/v1/queue", "").await;
+    assert_eq!(queue.body["shell"], etag.as_str(), "the queue names the shell the daemon serves");
     server.abort();
 }
 

@@ -131,6 +131,7 @@ test('multi-question asks are answered step by step and sent from the review', a
       emptyHistory() {},
       window: { matchMedia: () => ({ matches: true }) },
       $: (selector) => (selector === '#other-text' || selector === '#other-btn' ? { focus() {} } : null),
+      reloadIfStale: () => false,
       enc: encodeURIComponent,
       ident: (name, item) => `${name}-${item.id}`,
       paneButtons: () => null,

@@ -4,6 +4,7 @@ const S = {
   cards: [],
   counts: {},
   version: -1,
+  shell: null,
   initialized: false,
   actionRevision: 0,
   connection: 'connecting',
@@ -357,6 +358,18 @@ const S = {
     const target = focused && document.getElementById(focused);
     if (target && !target.disabled) target.focus({ preventScroll: true });
   }
+  // A queue from a newer shell means the daemon serves code this page does not run.
+  function reloadIfStale(q) {
+    if (S.shell == null) {
+      S.shell = q.shell ?? '';
+      return false;
+    }
+    if (q.shell === S.shell || S.inflight.size || $('dialog[open]')) return false;
+    const typed = [...S.drafts.values()].some((d) => d.note.trim() || d.other.trim() || d.dispatch.trim());
+    if (typed || $('#compose-prompt')?.value.trim()) return false;
+    location.reload();
+    return true;
+  }
   function scheduleRefreshRetry() {
     if (!S.streamOpen || S.refreshRetryTimer) return;
     const delay = S.refreshRetryDelay;
@@ -393,6 +406,7 @@ const S = {
             S.dirty = true;
             break;
           }
+          if (reloadIfStale(q)) return;
           applyQueue(q);
           S.refreshRetryDelay = 1000;
           if (S.streamOpen) setConnection('connected');

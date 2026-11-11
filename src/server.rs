@@ -232,7 +232,8 @@ const SW_JS: &str = include_str!("../ui/sw.js");
 const MANIFEST: &str = include_str!("../ui/manifest.webmanifest");
 
 /// One validator for the whole shell: any change to one file changes every tag, so a deploy
-/// revalidates everything while an unchanged load gets 304s.
+/// revalidates everything while an unchanged load gets 304s. `GET /v1/queue` names it as
+/// `shell`, so an open inbox can tell that the daemon now serves another build.
 static SHELL_ETAG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
@@ -360,7 +361,7 @@ async fn queue(State(state): State<Arc<AppState>>) -> axum::response::Response {
             counts.insert("finding".into(), serde_json::json!(cards.iter().filter(|card| card.kind == crate::events::Kind::Finding).count()));
             counts.insert("info".into(), serde_json::json!(cards.iter().filter(|card| card.kind == crate::events::Kind::Info).count()));
             counts.insert("plan".into(), serde_json::json!(cards.iter().filter(|card| card.kind == crate::events::Kind::Plan).count()));
-            axum::Json(serde_json::json!({"cards": cards, "counts": counts, "version": version})).into_response()
+            axum::Json(serde_json::json!({"cards": cards, "counts": counts, "version": version, "shell": SHELL_ETAG.as_str()})).into_response()
         }
         Ok(Err(error)) => internal_error(error),
         Err(error) => internal_error(error),

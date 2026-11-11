@@ -105,6 +105,51 @@ test('finding question without Other hides custom text', () => {
   assert.equal(findNodes(context.ui.questionView(card, 0), (item) => item.props?.id === 'other-btn').length, 0);
 });
 
+test('Other on a finding question records typed text and moves to the next question', () => {
+  const question = (action) => ({
+      label: action,
+      question: `Recommended action: ${action}`,
+      options: [{ label: 'Do as recommended', recommended: true }, { label: 'Skip' }],
+    }),
+    card = {
+      id: 'finding-other',
+      kind: 'finding',
+      allow_other: true,
+      questions: [question('rotate the key'), question('drop the rule')],
+    },
+    state = { pending: null, remoteSwapUntil: 0, drafts: new Map() },
+    context = vm.createContext({
+      S: state,
+      draft(current) {
+        if (!state.drafts.has(current.id)) state.drafts.set(current.id, { step: 0, answers: [], other: '', note: '', open: false });
+        return state.drafts.get(current.id);
+      },
+      answerable: () => true,
+      ident: (name, current) => `${name}-${current.id}`,
+      h: node,
+      el: (tag, props, ...children) => node(tag, props || {}, ...children),
+      button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
+      mdInline: (text) => text,
+      render() {},
+      $: () => ({ focus() {} }),
+      goStep: (current, step) => Object.assign(state.drafts.get(current.id), { step, open: false }),
+    });
+  vm.runInContext(
+    `${['otherAllowed', 'otherRow', 'questionView', 'toggleOther', 'sendOther', 'answerStep'].map((name) => functionSource(name)).join('\n')}\nglobalThis.ui = { questionView };`,
+    context,
+  );
+  const nodeWith = (predicate) => findNodes(context.ui.questionView(card, state.drafts.get(card.id)?.step ?? 0), predicate)[0];
+
+  nodeWith((item) => item.props?.id === 'other-btn').props.onClick();
+  const form = nodeWith((item) => item.props?.class === 'other-form');
+  assert.ok(form, 'Other opens its text field');
+  findNodes(form, (item) => item.props?.id === 'other-text')[0].props.oninput({ target: { value: 'debug and fix' } });
+  form.props.onsubmit({ preventDefault() {} });
+  const answered = state.drafts.get(card.id);
+  assert.deepEqual(JSON.parse(JSON.stringify(answered.answers)), [{ text: 'debug and fix' }]);
+  assert.equal(answered.step, 1, 'the custom answer moves to the next question');
+});
+
 test('finding answer dispatch forwards answers, image, mode and plan-into effort', async () => {
   const card = { id: 'finding-dispatch', kind: 'finding' },
     answers = [{ option: 0 }, { text: 'Use a safer key' }],
