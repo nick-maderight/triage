@@ -8,6 +8,7 @@ use crate::db::Db;
 use crate::dsh;
 use crate::events::{self, Answer, AnswerReq, Card, CardImage, CardOption, CardQuestion, Kind, Source, Star, MAX_CARD_IMAGES};
 use crate::omp;
+use crate::uploads::Upload;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -953,7 +954,7 @@ pub(super) fn request_report(
     if state.running || !state.pending_input.is_empty() {
         return Err("session is busy".to_owned());
     }
-    client.prompt(sid, REQUEST_REPORT_TEXT)?;
+    client.prompt(sid, REQUEST_REPORT_TEXT, None)?;
     if record_swipe(
         db,
         &card.id,
@@ -976,6 +977,7 @@ pub(super) fn launch_brief(
     launch: &Launch,
     brief: &Path,
     start: Start,
+    image: Option<&Upload>,
 ) -> Result<String, String> {
     if let Some(sid) = dsh::session_id(card).filter(|_| !matches!(start, Start::PlanInto(..))) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
@@ -984,17 +986,20 @@ pub(super) fn launch_brief(
             .is_ok_and(|state| !state.running && state.pending_input.is_empty())
         {
             if start == Start::Plan {
-                let body = json!({
+                let mut body = json!({
                     "sessionId": sid,
                     "cwd": card_cwd(card),
                     "prompt": brief_prompt(brief),
                     "mode": "plan",
                 });
+                if let Some(image) = image {
+                    body["image"] = image.dsh_image();
+                }
                 return client
                     .launch(&body)
                     .map(|launched| format!("dsh:{launched}"));
             }
-            client.prompt(sid, &brief_prompt(brief))?;
+            client.prompt(sid, &brief_prompt(brief), image.map(Upload::dsh_image))?;
             return Ok(format!("dsh:{sid}"));
         }
     }
@@ -1004,6 +1009,7 @@ pub(super) fn launch_brief(
         brief,
         &truncate_chars(card.title.clone(), 60),
         start,
+        image,
     )
 }
 
@@ -1014,6 +1020,7 @@ pub(super) fn launch_new(
     brief: &Path,
     title: &str,
     start: Start,
+    image: Option<&Upload>,
 ) -> Result<String, String> {
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
     let (mode, executor, executor_effort) = match start {
@@ -1035,6 +1042,9 @@ pub(super) fn launch_new(
         body["workspace"] = json!(workspace);
     } else {
         body["cwd"] = json!(cwd);
+    }
+    if let Some(image) = image {
+        body["image"] = image.dsh_image();
     }
     match client.launch(&body) {
         Ok(sid) => Ok(format!("dsh:{sid}")),

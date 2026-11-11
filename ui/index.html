@@ -88,6 +88,15 @@ try {
 <form class="compose" id="compose-form" data-od-id="compose-form">
 <label for="compose-prompt">What should the session do?</label>
 <textarea class="field" id="compose-prompt" rows="4" required autocomplete="off" placeholder="Ask a question, give a task, or start a chat" data-od-id="compose-prompt"></textarea>
+<div class="attach" data-od-id="compose-attach">
+<input type="file" class="sr-only" id="compose-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="compose-image">
+<button type="button" class="btn ghost attach-add" id="compose-image-add" aria-controls="compose-image" data-od-id="compose-image-add">Attach image</button>
+<div class="attach-preview" id="compose-image-preview" hidden data-od-id="compose-image-preview">
+<img id="compose-image-thumb" alt="" width="56" height="56" data-od-id="compose-image-thumb">
+<span id="compose-image-name" data-od-id="compose-image-name"></span>
+<button type="button" class="btn ghost" id="compose-image-remove" aria-label="Remove the attached image">Remove</button>
+</div>
+</div>
 <div class="compose-grid">
 <div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory</label>
 <button type="button" class="field picker-field" id="compose-cwd" value="" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
@@ -158,6 +167,15 @@ try {
 </div>
 <label for="dispatch-note">Instruction</label>
 <textarea class="field" id="dispatch-note" rows="4" autocomplete="off" placeholder="Optional direction for the session" data-od-id="dispatch-note"></textarea>
+<div class="attach" data-od-id="dispatch-attach">
+<input type="file" class="sr-only" id="dispatch-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="dispatch-image">
+<button type="button" class="btn ghost attach-add" id="dispatch-image-add" aria-controls="dispatch-image" data-od-id="dispatch-image-add">Attach image</button>
+<div class="attach-preview" id="dispatch-image-preview" hidden data-od-id="dispatch-image-preview">
+<img id="dispatch-image-thumb" alt="" width="56" height="56" data-od-id="dispatch-image-thumb">
+<span id="dispatch-image-name" data-od-id="dispatch-image-name"></span>
+<button type="button" class="btn ghost" id="dispatch-image-remove" aria-label="Remove the attached image">Remove</button>
+</div>
+</div>
 <button type="submit" class="btn primary" id="dispatch-start" data-od-id="dispatch-start">Launch <kbd class="hint" aria-hidden="true">Ctrl+Enter</kbd></button>
 </form>
 <p class="send-hint" id="dispatch-hint" aria-live="polite" data-od-id="dispatch-hint"></p>

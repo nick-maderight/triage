@@ -243,6 +243,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
         requests.push({ url, init });
         return { ok: true, json: async () => ({ pane: '%42' }) };
       },
+      sheetImageBody: async () => null,
       resultMessage: () => 'Planning · Launch work',
       toast() {},
       refresh() {},
@@ -337,6 +338,7 @@ test('finding options open the launch sheet and answer with its choices', async 
         requests.push({ url, init });
         return { ok: true, json: async () => ({ ok: true }) };
       },
+      sheetImageBody: async () => null,
       resultMessage: () => 'Launched Do as recommended · Launch work',
       toast() {},
       refresh() {},
@@ -399,6 +401,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
         return { ok: true, json: async () => ({ pane: '%51' }) };
       },
       announce() {},
+      sheetImageBody: async () => null,
     });
   vm.runInContext(
     `${functionSource('api', true)}\n${functionSource('submitCompose', true)}\nglobalThis.submitCompose = submitCompose;`,

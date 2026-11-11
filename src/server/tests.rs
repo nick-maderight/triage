@@ -291,6 +291,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         executor: None,
         executor_thinking: None,
         engine: None,
+        image: None,
     };
     let response = super::start_session(
         axum::extract::State(daemon_state.clone()),
@@ -311,6 +312,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         executor: None,
         executor_thinking: None,
         engine: None,
+        image: None,
     };
     let response =
         super::start_session(axum::extract::State(daemon_state), axum::Json(request)).await;
@@ -336,6 +338,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         executor: None,
         executor_thinking: None,
         engine: None,
+        image: None,
     };
     let response = super::start_session(axum::extract::State(bare), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -369,6 +372,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
         executor: None,
         executor_thinking: None,
         engine: None,
+        image: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -444,6 +448,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
         executor: None,
         executor_thinking: None,
         engine: None,
+        image: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -493,6 +498,7 @@ async fn new_session_plan_into_applies_effort_to_default_execution_model() {
         executor: None,
         executor_thinking: Some("medium".to_owned()),
         engine: None,
+        image: None,
     };
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -510,6 +516,89 @@ async fn new_session_plan_into_applies_effort_to_default_execution_model() {
         );
     assert!(!launch.contains("--config"), "{launch}");
     assert!(!launch.contains("--goal"), "{launch}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_answer_request_takes_an_image_beside_its_answer() {
+    let request: super::AnswerRequest = serde_json::from_str(
+        r#"{"option":1,"note":"look","image":{"media_type":"image/png","data":"abc","name":"shot.png"}}"#,
+    )
+    .unwrap();
+    assert_eq!(request.answer.option, Some(1));
+    assert_eq!(request.answer.note.as_deref(), Some("look"));
+    let image = request.image.unwrap();
+    assert_eq!(image.media_type, "image/png");
+    assert_eq!(image.data, "abc");
+    assert_eq!(image.name.as_deref(), Some("shot.png"));
+}
+
+#[tokio::test]
+async fn new_session_stores_an_image_and_hands_it_to_omp() {
+    if run_with_fake_tmux_child("server::tests::new_session_stores_an_image_and_hands_it_to_omp") {
+        return;
+    }
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    use base64::Engine;
+    let directory = TestDir::new("triage-session-image");
+    let daemon_state = state(Db::open(&directory.0.join("triage.sqlite")).unwrap(), None);
+    let request = super::SessionRequest {
+        prompt: "Describe this.".to_owned(),
+        cwd: Some("/tmp".to_owned()),
+        session: None,
+        engine: None,
+        model: None,
+        thinking: None,
+        mode: Some("goal".to_owned()),
+        executor: None,
+        executor_thinking: None,
+        image: Some(super::ImageRequest {
+            media_type: "image/png".to_owned(),
+            data: base64::engine::general_purpose::STANDARD.encode(PNG),
+            name: Some("shot.png".to_owned()),
+        }),
+    };
+    let response = super::start_session(axum::extract::State(daemon_state), axum::Json(request)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let uploads = std::fs::read_dir(directory.0.join("uploads"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(std::fs::read(&uploads[0]).unwrap(), PNG);
+    let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
+    args.push(".args");
+    let launch = std::fs::read_to_string(&args).unwrap();
+    assert!(launch.lines().any(|line| line.starts_with("new-window")), "{launch}");
+    assert!(launch.contains(&format!("@{}", uploads[0].display())), "{launch}");
+
+    let bad = super::SessionRequest {
+        prompt: "Describe this.".to_owned(),
+        cwd: Some("/tmp".to_owned()),
+        session: None,
+        engine: None,
+        model: None,
+        thinking: None,
+        mode: Some("goal".to_owned()),
+        executor: None,
+        executor_thinking: None,
+        image: Some(super::ImageRequest {
+            media_type: "image/png".to_owned(),
+            data: "not base64".to_owned(),
+            name: None,
+        }),
+    };
+    let bad_state = state(Db::open(&directory.0.join("second.sqlite")).unwrap(), None);
+    let rejected =
+        super::start_session(axum::extract::State(bad_state), axum::Json(bad)).await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -530,6 +619,7 @@ async fn new_session_rejects_plan_into_effort_the_engine_cannot_take() {
             mode: Some("plan-into".to_owned()),
             executor: executor.map(str::to_owned),
             executor_thinking: effort.map(str::to_owned),
+            image: None,
         })
     };
     for (engine, executor, effort) in [

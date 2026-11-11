@@ -2165,3 +2165,40 @@ dialog.picker::backdrop {
     max-width: 180px;
   }
 }
+
+/* An image attached to a prompt in the New session or Dispatch sheet. */
+.attach {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.attach-add {
+  justify-self: start;
+}
+.attach-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.attach-preview[hidden] {
+  display: none;
+}
+.attach-preview img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--ground);
+}
+.attach-preview span {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+}

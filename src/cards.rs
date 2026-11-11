@@ -6,6 +6,7 @@ use crate::dsh;
 use crate::events::{self, AnswerReq, Card, CardImage, CardOption, CardQuestion, Kind, Source, Star, Swipe};
 use crate::omp::{self, PaneState};
 use crate::tmux;
+use crate::uploads::Upload;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -752,12 +753,18 @@ fn target_lock(db: &Db, card: &Card) -> Option<std::sync::Arc<std::sync::Mutex<(
 /// - info: swipe done.
 /// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval or Esc followed by literal text for refinement and stores the choice in the swipe.
 /// `launch` names the harness, tmux session, model and thinking level a launched session uses.
-pub fn answer(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
+pub fn answer(
+    db: &Db,
+    card: &Card,
+    req: &AnswerReq,
+    launch: &Launch,
+    image: Option<&Upload>,
+) -> Result<(), String> {
     let target_mutex = target_lock(db, card);
     let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
     match card.kind {
         Kind::Ask => answer_ask(db, card, req, launch),
-        Kind::Finding => answer_finding(db, card, req, launch),
+        Kind::Finding => answer_finding(db, card, req, launch, image),
         Kind::Plan => answer_plan(db, card, req, launch),
         Kind::Info => {
             let answer_lock = db.answer_lock(&card.id);
@@ -869,6 +876,7 @@ pub fn dispatch(
     launch: &Launch,
     executor: Option<&str>,
     executor_thinking: Option<&str>,
+    image: Option<&Upload>,
 ) -> Result<(), String> {
     let target_mutex = target_lock(db, card);
     let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
@@ -887,7 +895,7 @@ pub fn dispatch(
         DispatchMode::PlanInto => Start::PlanInto(executor, executor_thinking),
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
-    let pane = launch_brief(card, launch, &path, start)?;
+    let pane = launch_brief(card, launch, &path, start, image)?;
     let recorded = if card.kind == Kind::Ask {
         let doing = match mode {
             DispatchMode::Investigate => "investigating",
@@ -1047,7 +1055,14 @@ fn session_id(path: &str) -> Option<String> {
 /// A plan launch starts in read-only plan mode and a plan-into launch hands its plan to the
 /// execution model without review. Every other session starts in goal mode with the brief as its
 /// objective.
-pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: Start) -> Result<String, String> {
+pub fn start_session(
+    db: &Db,
+    prompt: &str,
+    cwd: &str,
+    launch: &Launch,
+    start: Start,
+    image: Option<&Upload>,
+) -> Result<String, String> {
     if prompt.trim().is_empty() {
         return Err("prompt is empty".to_owned());
     }
@@ -1058,7 +1073,14 @@ pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: S
         }
         let path = write_brief(db, session_brief(prompt, start != Start::Goal, workspace_workdir(launch, cwd)))?;
         let title = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
-        return dsh_track::launch_new(launch, cwd, &path, &truncate_chars(title.to_owned(), 60), start);
+        return dsh_track::launch_new(
+            launch,
+            cwd,
+            &path,
+            &truncate_chars(title.to_owned(), 60),
+            start,
+            image,
+        );
     }
     // Validate before writing the brief so a bad choice leaves nothing behind.
     launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
@@ -1067,7 +1089,13 @@ pub fn start_session(db: &Db, prompt: &str, cwd: &str, launch: &Launch, start: S
     }
     let path = write_brief(db, session_brief(prompt, start != Start::Goal, None))?;
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
-    let command = omp_command(&path, launch.model.as_deref(), launch.thinking.as_deref(), start)?;
+    let command = omp_command(
+        &path,
+        launch.model.as_deref(),
+        launch.thinking.as_deref(),
+        start,
+        image,
+    )?;
     tmux::new_window(session, cwd, &command).map_err(|error| error.to_string())
 }
 
@@ -1084,9 +1112,10 @@ fn launch_brief(
     launch: &Launch,
     brief: &Path,
     start: Start,
+    image: Option<&Upload>,
 ) -> Result<String, String> {
     if launch.engine == Engine::Dsh {
-        return dsh_track::launch_brief(card, launch, brief, start);
+        return dsh_track::launch_brief(card, launch, brief, start, image);
     }
     // Only launch flags turn plan-yolo on, so a Plan into dispatch never reuses a running pane.
     let source = card.source.pane.as_deref().filter(|_| !matches!(start, Start::PlanInto(..)));
@@ -1098,21 +1127,39 @@ fn launch_brief(
                 candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting
             });
         if waiting {
-            type_brief(pane, brief, start)?;
+            type_brief(pane, brief, start, image)?;
             return Ok(pane.to_owned());
         }
     }
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
-    let command = omp_command(brief, launch.model.as_deref(), launch.thinking.as_deref(), start)?;
+    let command = omp_command(
+        brief,
+        launch.model.as_deref(),
+        launch.thinking.as_deref(),
+        start,
+        image,
+    )?;
     tmux::new_window(session, &card.source.cwd, &command).map_err(|error| error.to_string())
 }
 
-/// Type a brief into a waiting omp pane, turning plan mode on first for a plan brief.
-fn type_brief(pane: &str, brief: &Path, start: Start) -> Result<(), String> {
+/// Type a brief into a waiting omp pane, turning plan mode on first for a plan brief. The
+/// image rides the message as an `@` reference, which omp turns into a native attachment.
+fn type_brief(
+    pane: &str,
+    brief: &Path,
+    start: Start,
+    image: Option<&Upload>,
+) -> Result<(), String> {
     if start == Start::Plan {
         ensure_plan_mode(pane)?;
     }
-    let text = format!("Read the brief at {} and carry it out.", brief.display());
+    let mut text = format!("Read the brief at {} and carry it out.", brief.display());
+    if let Some(image) = image {
+        text.push_str(&format!(
+            " The attached image: @{}.",
+            image.path.display()
+        ));
+    }
     tmux::send_text(pane, &text).map_err(|error| error.to_string())
 }
 
@@ -1724,7 +1771,7 @@ fn plan_recommended_step(db: &Db, card: &Card, pane: &str, transcript: &Path) ->
     let Ok(brief) = write_brief(db, dispatch_brief(card, DispatchMode::Plan, None, None)) else {
         return false;
     };
-    type_brief(pane, &brief, Start::Plan).is_ok()
+    type_brief(pane, &brief, Start::Plan, None).is_ok()
         && record_swipe(
             db,
             &card.id,
@@ -2620,6 +2667,7 @@ fn answer_finding(
     card: &Card,
     req: &AnswerReq,
     launch: &Launch,
+    image: Option<&Upload>,
 ) -> Result<(), String> {
     let answer_lock = db.answer_lock(&card.id);
     let _answer_guard = answer_lock.lock().unwrap();
@@ -2664,7 +2712,7 @@ fn answer_finding(
         (pane, true)
     } else {
         let path = write_brief(db, finding_brief(card, option, req.note.as_deref(), mode))?;
-        let pane = launch_brief(card, launch, &path, start)?;
+        let pane = launch_brief(card, launch, &path, start, image)?;
         let pending = record_pending_finding_pane(db, &card.id, index, req.note.as_deref(), &pane, mode);
         if !is_dsh {
             tmux::tag_finding_pane(&pane, &card.id, index, req.note.as_deref(), mode)
@@ -3199,19 +3247,32 @@ fn omp_command(
     model: Option<&str>,
     thinking: Option<&str>,
     start: Start,
+    image: Option<&Upload>,
 ) -> Result<String, String> {
     let flags = launch_flags(model, thinking)?;
+    // A goal takes the brief as its objective, so the image rides the objective text; plan
+    // messages carry it as one more `@` file beside the brief.
+    let mention = image
+        .map(|image| format!(" Attached image: @{}.", image.path.display()))
+        .unwrap_or_default();
+    let file = image
+        .map(|image| format!(" @{}", shell_quote(&image.path.to_string_lossy())))
+        .unwrap_or_default();
     match start {
         Start::Goal => {
             let text = fs::read_to_string(brief)
                 .map_err(|error| format!("could not read brief: {error}"))?;
-            let objective = format!("{}\n\nThe brief is saved at {}.", text.trim(), brief.display());
+            let objective = format!(
+                "{}\n\nThe brief is saved at {}.{mention}",
+                text.trim(),
+                brief.display()
+            );
             Ok(format!("omp {flags}--goal {}", shell_quote(&objective)))
         }
         Start::Plan => {
             let overlay = write_plan_overlay(brief)?;
             Ok(format!(
-                "omp --config {} {flags}@{}",
+                "omp --config {} {flags}@{}{file}",
                 shell_quote(&overlay.to_string_lossy()),
                 shell_quote(&brief.to_string_lossy())
             ))
@@ -3220,7 +3281,10 @@ fn omp_command(
             let into = omp_execution_model(executor, executor_effort(Engine::Omp, effort)?)?
                 .map(|executor| format!("--plan-yolo-into={executor} "))
                 .unwrap_or_default();
-            Ok(format!("omp {flags}--plan-yolo {into}@{}", shell_quote(&brief.to_string_lossy())))
+            Ok(format!(
+                "omp {flags}--plan-yolo {into}@{}{file}",
+                shell_quote(&brief.to_string_lossy())
+            ))
         }
     }
 }
