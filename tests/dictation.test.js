@@ -11,6 +11,11 @@ const functionSource = (name, async = false) => {
   assert.ok(source, `app.js defines ${name}`);
   return source;
 };
+const constSource = (name) => {
+  const source = app.match(new RegExp(`^  const ${name} = (?:\\{[\\s\\S]*?^  \\};|\\[[^\\n]*\\];|[^\\n]*;)$`, 'm'))?.[0];
+  assert.ok(source, `app.js defines ${name}`);
+  return source;
+};
 const json = (value) => JSON.stringify(value);
 
 class Event {
@@ -87,12 +92,19 @@ const dictationContext = (window, note = field('check')) => {
     });
   vm.runInContext(
     [
+      ...['DICTATION_STATUS', 'DICTATION_READY', 'DICTATION_ERRORS', 'DICTATION_PAUSES'].map(constSource),
       ...[
-        'localSpeech',
+        'speechApi',
+        'speechEngine',
+        'speechLang',
         'speechOptions',
         'paintMic',
         'paintMics',
         'endDictation',
+        'startDictation',
+        'afterDictation',
+        'stopDictation',
+        'finishDictation',
         'placeDictation',
         'insertText',
         'parseDictionary',
@@ -105,6 +117,35 @@ const dictationContext = (window, note = field('check')) => {
   return { context, note, toasts };
 };
 const onDevice = { langs: ['en-GB'], processLocally: true };
+
+// Safari's engine: webkitSpeechRecognition with no available(), install() or processLocally. It ends a run at the
+// first pause and calls stop() itself, so a stub that keeps the run alive is not a Safari stub.
+const fakeSafari = () => {
+  const made = [];
+  class Recognition {
+    constructor() {
+      made.push(this);
+    }
+    start() {
+      if (this.running) throw new Error('The recognition has already started.');
+      this.started = (this.started ?? 0) + 1;
+      this.running = true;
+    }
+    stop() {
+      this.stopped = true;
+      this.end();
+    }
+    abort() {
+      this.aborted = true;
+      this.end();
+    }
+    end() {
+      this.running = false;
+      this.onend();
+    }
+  }
+  return { Recognition, made };
+};
 
 test('dictated words join the text at the caret with one space between words', () => {
   const { context } = dictationContext({});
@@ -200,18 +241,100 @@ test('a press before the speech model is set up installs it and does not listen'
 });
 
 test('a browser that cannot require on-device recognition never starts listening', async () => {
-  const local = fakeSpeech('available'),
-    remoteOnly = fakeSpeech('available');
+  const remoteOnly = fakeSpeech('available');
   delete remoteOnly.Recognition.prototype.processLocally;
   for (const window of [
-    { webkitSpeechRecognition: local.Recognition },
-    { SpeechRecognition: remoteOnly.Recognition },
-    { SpeechRecognition: local.Recognition, isSecureContext: false },
+    { SpeechRecognition: remoteOnly.Recognition, isSecureContext: false },
+    { webkitSpeechRecognition: remoteOnly.Recognition, isSecureContext: false },
+    {},
+    { webkitSpeechRecognition: 'SpeechRecognition' },
   ]) {
     const { context, note } = dictationContext(window);
     await context.toggleDictation('note');
     assert.equal(context.S.dictating, null);
     assert.equal(note.value, 'check');
   }
-  assert.equal(local.made.length + remoteOnly.made.length, 0);
+  assert.equal(remoteOnly.made.length, 0);
+});
+
+test('Safari starts the microphone inside the press and types the words it hears', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, note, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
+  context.S.dictionary = context.parseDictionary('forge jo = Forgejo');
+  const pressed = context.toggleDictation('note');
+  // Safari starts recognition only inside the press, so the engine starts before the promise settles.
+  assert.equal(made.length, 1, 'the recognition starts without waiting for another turn');
+  const [recognition] = made;
+  assert.deepEqual(
+    {
+      lang: recognition.lang,
+      processLocally: recognition.processLocally,
+      continuous: recognition.continuous,
+      interimResults: recognition.interimResults,
+      started: recognition.started,
+    },
+    { lang: 'en-GB', processLocally: undefined, continuous: false, interimResults: false, started: 1 },
+  );
+  await pressed;
+  assert.equal(context.S.dictating.phase, 'listening');
+  recognition.onresult({ resultIndex: 0, results: [result('then push to forge jo', true)] });
+  assert.equal(note.value, 'check then push to Forgejo');
+  // Safari ends the run at the first pause, and the run starts again so one press collects a sentence.
+  recognition.end();
+  assert.equal(made.length, 2, 'the run listens again after Safari ends it');
+  assert.equal(made[1].started, 1);
+  assert.equal(context.S.dictating.phase, 'listening');
+  made[1].onresult({ resultIndex: 0, results: [result('and tag it', true)] });
+  assert.equal(note.value, 'check then push to Forgejo and tag it');
+  await context.toggleDictation('note');
+  assert.ok(made[1].stopped, 'a second press stops the run');
+  assert.equal(context.S.dictating, null);
+  assert.equal(made.length, 2, 'a pressed stop does not listen again');
+  assert.equal(toasts.length, 0);
+});
+
+test('Safari shows the microphones and says its speech service hears the words', async () => {
+  const { Recognition } = fakeSafari(),
+    status = { textContent: '' },
+    context = vm.createContext({
+      window: { isSecureContext: true, webkitSpeechRecognition: Recognition },
+      navigator: { language: 'en-GB' },
+      document: { documentElement: { dataset: {} } },
+      $: (selector) => (selector === '#dictation-status' ? status : null),
+    });
+  vm.runInContext(
+    [
+      ...['DICTATION_STATUS', 'DICTATION_READY'].map(constSource),
+      ...['speechApi', 'speechEngine', 'speechOptions'].map((name) => functionSource(name)),
+      functionSource('checkSpeech', true),
+    ].join('\n'),
+    context,
+  );
+  await context.checkSpeech();
+  assert.equal(context.document.documentElement.dataset.dictation, 'on');
+  assert.match(status.textContent, /speech service/);
+  assert.match(status.textContent, /leave this device/);
+});
+
+test('a Safari run that heard nothing lets go at the pause', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].onerror({ error: 'no-speech' });
+  made[0].end();
+  assert.equal(made.length, 1, 'a quiet room does not keep the microphone open');
+  assert.equal(context.S.dictating, null);
+  assert.deepEqual(toasts, [['The microphone heard no speech.', true]], 'it says the microphone heard nothing');
+});
+
+test('a Safari run that hits an error says what happened and keeps the words', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, note, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].onerror({ error: 'not-allowed' });
+  made[0].end();
+  assert.equal(context.S.dictating, null);
+  assert.equal(made.length, 1, 'a failed run does not listen again');
+  assert.equal(note.value, 'check');
+  assert.deepEqual(toasts, [['Please allow the microphone for this site to dictate.', true]]);
 });

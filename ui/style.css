@@ -2169,7 +2169,7 @@ dialog.picker::backdrop {
   font-size: 13px;
 }
 
-/* Dictation puts one microphone beside each text field. It shows once the browser can recognize speech on this device. */
+/* Dictation puts one microphone beside each text field. It shows once the browser offers speech recognition on any engine. */
 :root:not([data-dictation='on']) .mic {
   display: none;
 }

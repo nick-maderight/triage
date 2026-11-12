@@ -1782,30 +1782,47 @@ const S = {
     if (prior?.isConnected) prior.focus({ preventScroll: true });
     else if (!document.querySelector('dialog[open]')) focusPrimary();
   }
-  // Dictation runs in the browser. Every recognition sets processLocally, which requires the browser to recognize
-  // the speech on this device. The daemon only stores the dictionary and the phrases.
+  // Dictation runs in the browser and the daemon only stores the dictionary and the phrases. A browser that can
+  // recognize speech on this device is told to keep the audio there. iPhone and iPad Safari offers only
+  // webkitSpeechRecognition, which sends the audio to Apple's speech service, so those microphones still work.
   const DICTATION_STATUS = {
     available:
       'Your browser turns speech into text on this device. Please press the microphone beside a text field, speak, then press it again.',
     downloadable:
       "Your browser turns speech into text on this device. The first press of a microphone sets up the browser's speech model for this site, which can take a few minutes.",
     downloading: 'Your browser is downloading its speech model. The microphones work once it finishes.',
+    online:
+      "Your browser turns speech into text with its own speech service, so the words you dictate leave this device for that service. Please press the microphone beside a text field and speak. It keeps listening across short pauses until you press it again.",
     unavailable:
-      "The microphones stay hidden because this browser cannot promise to keep your speech on this device. Any dictation your keyboard or operating system provides still types into triage's text fields.",
+      "The microphones stay hidden because this browser has no speech recognition. Any dictation your keyboard or operating system provides still types into triage's text fields.",
     insecure: 'The microphones stay hidden because dictation requires the inbox over HTTPS or on localhost.',
   };
+  const DICTATION_READY = ['available', 'downloadable', 'downloading', 'online'];
   const DICTATION_ERRORS = {
+    'audio-capture': 'The browser could not read the microphone.',
+    'language-not-supported': 'This browser cannot recognize the language of this page.',
+    network: "The browser's speech service could not be reached.",
     'no-speech': 'The microphone heard no speech.',
     'not-allowed': 'Please allow the microphone for this site to dictate.',
+    'service-not-allowed': 'Please allow the microphone for this site to dictate.',
   };
-  function localSpeech() {
-    const Recognition = window.SpeechRecognition;
-    return window.isSecureContext && typeof Recognition?.available === 'function' && 'processLocally' in Recognition.prototype
-      ? Recognition
-      : null;
+  // Safari reports its silence timeout as one of these, which ends a run without failing it.
+  const DICTATION_PAUSES = ['aborted', 'no-speech'];
+  function speechApi() {
+    return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+  }
+  // The recognition to run and whether it can keep the audio on this device. Safari names it webkitSpeechRecognition
+  // and has neither available() nor processLocally, so it takes the browser's speech service instead.
+  function speechEngine() {
+    const Recognition = speechApi();
+    if (!window.isSecureContext || typeof Recognition !== 'function') return null;
+    return { Recognition, local: typeof Recognition.available === 'function' && 'processLocally' in Recognition.prototype };
+  }
+  function speechLang() {
+    return navigator.language || 'en-US';
   }
   function speechOptions() {
-    return { langs: [navigator.language || 'en-US'], processLocally: true };
+    return { langs: [speechLang()], processLocally: true };
   }
   function micButton(id, label) {
     return paintMic(h('button', { type: 'button', class: 'btn ghost square mic', 'data-dictate': id, 'aria-label': label }));
@@ -1827,20 +1844,32 @@ const S = {
   async function toggleDictation(id) {
     const active = S.dictating;
     if (active) {
-      if (active.id === id && active.phase === 'listening') active.recognition.stop();
+      // Safari answers a press with another press, so its run ends where the words already went in.
+      if (active.id === id && active.phase === 'listening') stopDictation(active);
       return;
     }
     const field = $(`#${id}`),
-      Recognition = localSpeech();
-    if (!field || field.disabled || !Recognition) return;
-    const run = { id, card: field.closest('.card') ? current()?.id : null, phase: 'starting', recognition: null, cancelled: false, error: '' };
+      engine = speechEngine();
+    if (!field || field.disabled || !engine) return;
+    const run = { id, card: field.closest('.card') ? current()?.id : null, phase: 'starting', recognition: null, cancelled: false, stopped: false, announced: false, error: '' };
     S.dictating = run;
     paintMics();
+    // Safari starts recognition only inside the press that asked for it, so its engine starts before any await.
+    if (!engine.local) return startDictation(run, engine);
     try {
-      if ((await Recognition.available(speechOptions())) !== 'available') return await installSpeech(Recognition);
+      if ((await engine.Recognition.available(speechOptions())) !== 'available') return await installSpeech(engine.Recognition);
       if (run.cancelled) return endDictation();
-      const recognition = new Recognition();
-      Object.assign(recognition, { lang: speechOptions().langs[0], processLocally: true, continuous: true, interimResults: false });
+      startDictation(run, engine);
+    } catch (e) {
+      endDictation();
+      toast(`Dictation failed (${e.message}).`, true);
+    }
+  }
+  function startDictation(run, engine) {
+    try {
+      const recognition = new engine.Recognition();
+      Object.assign(recognition, { lang: speechLang(), interimResults: false, continuous: engine.local });
+      if (engine.local) recognition.processLocally = true;
       recognition.onresult = (e) => {
         const words = [...e.results]
           .slice(e.resultIndex)
@@ -1848,7 +1877,9 @@ const S = {
           .map((result) => result[0].transcript.trim())
           .filter(Boolean)
           .join(' ');
-        if (words && !run.cancelled && !placeDictation(run, applyDictionary(words, S.dictionary))) {
+        if (!words || run.cancelled) return;
+        if (placeDictation(run, applyDictionary(words, S.dictionary))) run.heard = true;
+        else {
           run.cancelled = true;
           recognition.abort();
         }
@@ -1856,18 +1887,42 @@ const S = {
       recognition.onerror = (e) => {
         run.error = e.error;
       };
-      recognition.onend = () => {
-        endDictation();
-        if (!run.cancelled && run.error) toast(DICTATION_ERRORS[run.error] ?? `Dictation stopped (${run.error}).`, true);
-      };
+      recognition.onend = () => afterDictation(run, engine, recognition);
       recognition.start();
-      Object.assign(run, { recognition, phase: 'listening' });
+      Object.assign(run, { recognition, heard: false, phase: 'listening' });
       paintMics();
-      announce('The microphone is listening. Please press it again to stop.');
+      // A restarted run keeps the one announcement, so Safari's pause does not repeat it.
+      if (!run.announced) {
+        run.announced = true;
+        announce('The microphone is listening. Please press it again to stop.');
+      }
     } catch (e) {
       endDictation();
       toast(`Dictation failed (${e.message}).`, true);
     }
+  }
+  // A local engine keeps listening until it is stopped. Safari ends a run at the first pause, so a run that heard
+  // words starts again and one press can collect a whole sentence. A run that heard nothing ends the press, so a
+  // quiet room cannot keep the microphone open.
+  function afterDictation(run, engine, recognition) {
+    if (S.dictating !== run || run.recognition !== recognition) return;
+    const pause = DICTATION_PAUSES.includes(run.error);
+    if (run.stopped || run.cancelled || (run.error && !pause) || engine.local || !run.heard) return finishDictation(run);
+    if (pause) run.error = '';
+    startDictation(run, engine);
+  }
+  function stopDictation(run) {
+    run.stopped = true;
+    try {
+      run.recognition?.stop();
+    } catch {
+      finishDictation(run);
+    }
+  }
+  function finishDictation(run) {
+    const error = run.error;
+    if (S.dictating === run) endDictation();
+    if (!run.cancelled && error) toast(DICTATION_ERRORS[error] ?? `Dictation stopped (${error}).`, true);
   }
   // The first press on each site installs the browser's speech model. Press again to dictate.
   async function installSpeech(Recognition) {
@@ -1942,12 +1997,15 @@ const S = {
     }
   }
   async function checkSpeech() {
+    const engine = speechEngine();
     let status = window.isSecureContext ? 'unavailable' : 'insecure';
-    try {
-      status = (await localSpeech()?.available(speechOptions())) ?? status;
-    } catch {}
+    if (engine && !engine.local) status = 'online';
+    else if (engine)
+      try {
+        status = (await engine.Recognition.available(speechOptions())) ?? status;
+      } catch {}
     if (!Object.hasOwn(DICTATION_STATUS, status)) status = 'unavailable';
-    document.documentElement.dataset.dictation = ['available', 'downloadable', 'downloading'].includes(status) ? 'on' : 'off';
+    document.documentElement.dataset.dictation = DICTATION_READY.includes(status) ? 'on' : 'off';
     $('#dictation-status').textContent = DICTATION_STATUS[status];
   }
   async function loadDictation() {
