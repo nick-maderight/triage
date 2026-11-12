@@ -1056,7 +1056,10 @@
       prompt = document.querySelector('#compose-prompt'),
       mic = document.querySelector('[data-dictate="compose-prompt"]'),
       made = [],
-      safari = [];
+      safari = [],
+      // What both browsers hand back: array-like lists with no iterator, so spreading one throws.
+      heard = (...transcripts) =>
+        Object.assign({ length: transcripts.length }, ...transcripts.map((transcript, i) => ({ [i]: { 0: { transcript }, length: 1, isFinal: true } })));
     class FakeRecognition {
       static available = async () => 'available';
       static install = async () => true;
@@ -1065,7 +1068,7 @@
       }
       start() {}
       stop() {
-        this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'dictated words' }], { isFinal: true })] });
+        this.onresult({ resultIndex: 0, results: heard('dictated words') });
         this.onend();
       }
       abort() {
@@ -1139,7 +1142,7 @@
       assert(safari.length === 1, 'the Safari recognizer starts on the press');
       assert(!('processLocally' in safari[0]), 'the Safari recognizer is not told to stay on this device');
       assert(safari[0].lang, 'the Safari recognizer is told the language');
-      safari[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'words' }], { isFinal: true })] });
+      safari[0].onresult({ resultIndex: 0, results: heard('words') });
       safari[0].end();
       await waitFor(() => prompt.value === 'Safari words', 'the Safari words in the prompt');
       assert(safari.length === 2 && mic.getAttribute('aria-pressed') === 'true', 'Safari keeps listening after its first pause');

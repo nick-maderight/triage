@@ -1804,7 +1804,7 @@ const S = {
     network: "The browser's speech service could not be reached.",
     'no-speech': 'The microphone heard no speech.',
     'not-allowed': 'Please allow the microphone for this site to dictate.',
-    'service-not-allowed': 'Please allow the microphone for this site to dictate.',
+    'service-not-allowed': "Please turn on Dictation and Siri in this device's Settings to dictate.",
   };
   // Safari reports its silence timeout as one of these, which ends a run without failing it.
   const DICTATION_PAUSES = ['aborted', 'no-speech'];
@@ -1871,17 +1871,23 @@ const S = {
       Object.assign(recognition, { lang: speechLang(), interimResults: false, continuous: engine.local });
       if (engine.local) recognition.processLocally = true;
       recognition.onresult = (e) => {
-        const words = [...e.results]
-          .slice(e.resultIndex)
-          .filter((result) => result.isFinal)
-          .map((result) => result[0].transcript.trim())
-          .filter(Boolean)
-          .join(' ');
-        if (!words || run.cancelled) return;
-        if (placeDictation(run, applyDictionary(words, S.dictionary))) run.heard = true;
-        else {
-          run.cancelled = true;
-          recognition.abort();
+        // The result list is array-like, not iterable, in Safari and in Chromium, so it is read by index.
+        // A browser that hands back something else ends the run with its message instead of a live microphone.
+        try {
+          const words = readResults(e).map((result) => result[0].transcript.trim()).filter(Boolean);
+          if (!words.length || run.cancelled) return;
+          if (placeDictation(run, applyDictionary(words.join(' '), S.dictionary))) run.heard = true;
+          else {
+            run.cancelled = true;
+            recognition.abort();
+          }
+        } catch (err) {
+          run.error = err.message;
+          try {
+            recognition.abort();
+          } catch {
+            finishDictation(run);
+          }
         }
       };
       recognition.onerror = (e) => {
@@ -1900,6 +1906,16 @@ const S = {
       endDictation();
       toast(`Dictation failed (${e.message}).`, true);
     }
+  }
+  // The final results from `resultIndex` on, read by index because the list has no iterator.
+  function readResults(e) {
+    const results = e.results,
+      finals = [];
+    for (let i = Number(e.resultIndex) || 0; i < Number(results.length); i += 1) {
+      const result = results[i];
+      if (result?.isFinal && result[0]) finals.push(result);
+    }
+    return finals;
   }
   // A local engine keeps listening until it is stopped. Safari ends a run at the first pause, so a run that heard
   // words starts again and one press can collect a whole sentence. A run that heard nothing ends the press, so a
@@ -1978,14 +1994,18 @@ const S = {
     });
     return entries.sort((a, b) => b[0].length - a[0].length);
   }
-  // Matches whole words and ignores letter case. One pass means replaced text never matches again.
+  // Matches whole words and ignores letter case. One pass means replaced text never matches again. The letter
+  // before a match comes back as a capture group because Safari before 16.4 rejects a lookbehind at construction.
   function applyDictionary(text, entries) {
     if (!entries.length) return text;
     const heard = entries.map(([form]) => form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
       written = new Map(entries.map(([form, word]) => [form.toLowerCase(), word]));
     return text.replace(
-      new RegExp(`(?<![\\p{L}\\p{N}])(?:${heard})(?![\\p{L}\\p{N}])`, 'giu'),
-      (match) => written.get(match.toLowerCase()) ?? match,
+      new RegExp(`(^|[^\\p{L}\\p{N}])(?:${heard})(?![\\p{L}\\p{N}])`, 'giu'),
+      (match, before) => {
+        const form = match.slice(before.length);
+        return before + (written.get(form.toLowerCase()) ?? form);
+      },
     );
   }
   function renderPhrases() {
@@ -2004,7 +2024,7 @@ const S = {
       try {
         status = (await engine.Recognition.available(speechOptions())) ?? status;
       } catch {}
-    if (!Object.hasOwn(DICTATION_STATUS, status)) status = 'unavailable';
+    if (!Object.prototype.hasOwnProperty.call(DICTATION_STATUS, status)) status = 'unavailable';
     document.documentElement.dataset.dictation = DICTATION_READY.includes(status) ? 'on' : 'off';
     $('#dictation-status').textContent = DICTATION_STATUS[status];
   }

@@ -72,6 +72,10 @@ const fakeSpeech = (status) => {
   return { Recognition, made, calls };
 };
 const result = (transcript, isFinal) => Object.assign([{ transcript }], { isFinal });
+// What Safari and Chromium hand back: `SpeechRecognitionResult` and its list are array-like, never iterable.
+const list = (...results) => Object.assign({ length: results.length }, results);
+const final = (...transcripts) =>
+  list(...transcripts.map((transcript) => ({ 0: { transcript }, length: 1, isFinal: true })));
 
 const dictationContext = (window, note = field('check')) => {
   const toasts = [],
@@ -102,6 +106,7 @@ const dictationContext = (window, note = field('check')) => {
         'paintMics',
         'endDictation',
         'startDictation',
+        'readResults',
         'afterDictation',
         'stopDictation',
         'finishDictation',
@@ -183,6 +188,12 @@ test('words for a field on another card or in a closed sheet go to an error toas
   assert.equal(toasts.length, 2);
 });
 
+test('the dictionary builds no lookbehind, which Safari before 16.4 rejects', () => {
+  const { context } = dictationContext({});
+  assert.ok(!app.includes('(?<!'), 'app.js has no lookbehind');
+  assert.equal(context.applyDictionary('ship red mine now', context.parseDictionary('red mine = Redmine')), 'ship Redmine now');
+});
+
 test('the dictionary swaps whole heard phrases, longest first, in one pass', () => {
   const { context } = dictationContext({}),
     entries = context.parseDictionary('red mine = Redmine\nred mine ticket = Redmine issue\n\nissue = bug\nforge jo = Forgejo\n');
@@ -223,7 +234,13 @@ test('the microphone listens only through on-device recognition and types each f
   recognition.onresult({ resultIndex: 0, results: [first] });
   recognition.onresult({ resultIndex: 1, results: [first, result('and tag it', true)] });
   recognition.onresult({ resultIndex: 2, results: [first, result('and tag it', true), result('and tag', false)] });
-  assert.equal(note.value, 'check then push to Forgejo and tag it');
+  assert.equal(note.value, 'check then push to Forgejo and tag it', 'iterable lists work');
+  note.value = 'check';
+  note.selectionStart = note.selectionEnd = 5;
+  recognition.onresult({ resultIndex: 0, results: final('then push to forge jo') });
+  recognition.onresult({ resultIndex: 1, results: final('then push to forge jo', 'and tag it') });
+  assert.equal(note.value, 'check then push to Forgejo and tag it', 'the browsers array-like lists work too');
+  assert.equal(toasts.length, 0, 'no result read fails');
   await context.toggleDictation('note');
   assert.ok(recognition.stopped);
   assert.equal(context.S.dictating, null);
@@ -277,14 +294,14 @@ test('Safari starts the microphone inside the press and types the words it hears
   );
   await pressed;
   assert.equal(context.S.dictating.phase, 'listening');
-  recognition.onresult({ resultIndex: 0, results: [result('then push to forge jo', true)] });
+  recognition.onresult({ resultIndex: 0, results: final('then push to forge jo') });
   assert.equal(note.value, 'check then push to Forgejo');
   // Safari ends the run at the first pause, and the run starts again so one press collects a sentence.
   recognition.end();
   assert.equal(made.length, 2, 'the run listens again after Safari ends it');
   assert.equal(made[1].started, 1);
   assert.equal(context.S.dictating.phase, 'listening');
-  made[1].onresult({ resultIndex: 0, results: [result('and tag it', true)] });
+  made[1].onresult({ resultIndex: 0, results: final('and tag it') });
   assert.equal(note.value, 'check then push to Forgejo and tag it');
   await context.toggleDictation('note');
   assert.ok(made[1].stopped, 'a second press stops the run');
@@ -295,13 +312,15 @@ test('Safari starts the microphone inside the press and types the words it hears
 
 test('Safari shows the microphones and says its speech service hears the words', async () => {
   const { Recognition } = fakeSafari(),
-    status = { textContent: '' },
-    context = vm.createContext({
+    status = { textContent: '' };
+  // Safari before 15.4 has no Object.hasOwn, so the sheet must read its status without one.
+  const context = vm.createContext({
       window: { isSecureContext: true, webkitSpeechRecognition: Recognition },
       navigator: { language: 'en-GB' },
       document: { documentElement: { dataset: {} } },
       $: (selector) => (selector === '#dictation-status' ? status : null),
     });
+  vm.runInContext('Object.hasOwn = undefined;', context);
   vm.runInContext(
     [
       ...['DICTATION_STATUS', 'DICTATION_READY'].map(constSource),
@@ -314,6 +333,18 @@ test('Safari shows the microphones and says its speech service hears the words',
   assert.equal(context.document.documentElement.dataset.dictation, 'on');
   assert.match(status.textContent, /speech service/);
   assert.match(status.textContent, /leave this device/);
+});
+
+test('a result list the browser cannot read ends the run with its message', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, note, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].onresult({ resultIndex: 0, results: [] });
+  assert.equal(note.value, 'check', 'an empty list adds nothing');
+  assert.equal(context.S.dictating.phase, 'listening', 'an empty list leaves the run listening');
+  made[0].onresult({ resultIndex: 0, get results() { throw new TypeError('the results threw'); } });
+  assert.equal(context.S.dictating, null, 'an unreadable list ends the run instead of listening on');
+  assert.deepEqual(toasts, [['Dictation stopped (the results threw).', true]], 'it says what the browser did');
 });
 
 test('a Safari run that heard nothing lets go at the pause', async () => {
