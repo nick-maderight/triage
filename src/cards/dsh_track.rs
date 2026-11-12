@@ -485,9 +485,9 @@ fn finish_prompts(
     finish_cards(db, cards, reason, written)
 }
 
-/// Queue a report card for the newest finished turn of each idle dsh session. A session is
-/// read only when its cursor moved. A poll reads at most `REPORT_READS` sessions. An event
-/// read that fails stops the poll.
+/// Queue a report card for the newest finished turn of each idle dsh session. A turn that wrote
+/// no reply of its own earns no card unless it failed. A session is read only when its cursor
+/// moved. A poll reads at most `REPORT_READS` sessions. An event read that fails stops the poll.
 fn report_sessions(
     memo: &mut Memo,
     db: &Db,
@@ -550,7 +550,10 @@ fn report_sessions(
             entry.reported_seq = end.seq;
             continue;
         }
-        let card = report_card(db, session, &recent, end, plan_decisions);
+        let Some(card) = report_card(db, session, &recent, end, plan_decisions) else {
+            entry.reported_seq = end.seq;
+            continue;
+        };
         if matches!(db.card(&card.id), Ok(Some(_))) {
             entry.reported_seq = end.seq;
             continue;
@@ -611,14 +614,16 @@ fn turn_images(recent: &[dsh::Event], turn_start: i64, end: i64) -> Vec<CardImag
 }
 
 /// The info card for the turn that ended at `end`. Its body is the newest reply with a status
-/// line in that turn, else the newest reply.
+/// line in that turn, else the newest reply. `None` when the turn wrote no reply of its own and
+/// did not fail: dsh ends such a turn after an archive, and carding it would repeat the reply
+/// the user just closed.
 fn report_card(
     db: &Db,
     session: &dsh::Session,
     recent: &[dsh::Event],
     end: &dsh::Event,
     plan_decisions: bool,
-) -> Card {
+) -> Option<Card> {
     let sid = session.session_id.as_str();
     let turn_start = recent
         .iter()
@@ -644,6 +649,10 @@ fn report_card(
         .or(replies.last())
         .map_or_else(String::new, |&(_, text)| text.to_owned());
     let reason = end.reason.as_deref().unwrap_or("completed");
+    let replied_now = replies.iter().any(|(seq, _)| *seq > turn_start);
+    if !replied_now && reason != "error" {
+        return None;
+    }
     let replied = !reply.trim().is_empty();
     let mut parts = Vec::new();
     if reason == "error" {
@@ -686,7 +695,7 @@ fn report_card(
         // plan mode. A host older than that route can only report, so the plan stays a report
         // that names what waits for you.
         if plan_decisions {
-            return plan_card(session, end, &name, plan, turn.body);
+            return Some(plan_card(session, end, &name, plan, turn.body));
         }
         turn.title = plan_ready_title(&name);
         if let Some(plan) = plan {
@@ -705,7 +714,7 @@ fn report_card(
         turn,
     );
     card.engine = Some("dsh".to_owned());
-    card
+    Some(card)
 }
 
 /// The name a dsh session shows on its cards. That is its title, else the first 8 characters of

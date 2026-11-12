@@ -7174,6 +7174,44 @@ fn dsh_agent_done_report_closed_with_none_earns_a_done_card() {
 }
 
 #[test]
+fn closing_a_dsh_report_does_not_raise_the_archived_turn_again() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(2, "Writing the file."),
+                reply_event(3, "ENVOY_STATUS: complete\nGoal ok\n\nRecommended action: none."),
+                turn_end(4, "completed"),
+            ],
+        );
+    });
+    let mut tracker = Tracker::default();
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
+    let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().expect("report card");
+    // Acknowledge & close archives the session. dsh finishes the archive by injecting a
+    // notice, starting a turn, and blocking it, so the transcript gains a turn end with no
+    // reply of its own.
+    close(&db, &card, None, &bridge.launch()).expect("close");
+    bridge.edit(|data| {
+        data.sessions = vec![session(5)];
+        data.events
+            .entry(SID.to_owned())
+            .or_default()
+            .push(turn_end(5, "blocked"));
+    });
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
+    assert!(done_cards(&db).is_empty(), "the closed report came back: {:?}", done_cards(&db));
+    assert!(db.card(&format!("done:dsh:{SID}:5")).unwrap().is_none());
+    // A daemon restart forgets the poll memo, so the archived turn is read again from scratch.
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW + 6_000), 0);
+    assert!(done_cards(&db).is_empty(), "a restart brought the closed report back: {:?}", done_cards(&db));
+}
+
+#[test]
 fn dsh_report_card_carries_its_turn_images() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
