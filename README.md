@@ -61,7 +61,7 @@ Some dsh sessions are not triage's. An automated producer such as an autorules r
 
 Dispatch on a dsh card preselects the dsh engine and sends the brief to the same session when it is idle. Plan into, or a busy session, starts a new session. Close archives the session, stops its activity, and resolves its cards. Request final report prompts an idle session for its report. With Plan into, dsh-host approves the first plan itself and switches the session to the execution model, the way omp's `--plan-yolo` does.
 
-A dsh launch names its Execution effort beside the model. dsh-host keeps it and applies it to the execution model when the plan is approved; empty keeps the planner's effort. Approving a dsh plan card names both too: the Execution model and the Execution effort. The effort picker lists the levels the chosen execution model declares, and follows the model when the choice changes.
+A dsh launch names its Execution effort only beside the Execution model it changes, because dsh changes a reasoning effort along a model: a dsh sheet lists no effort level until an execution model is chosen, and its Default row then reads `needs an execution model`. Once a model is chosen, the picker lists the levels that model declares and follows it when the choice changes, and a level chosen for one model is dropped when the execution model returns to Default. dsh-host keeps the effort and applies it to the execution model when the plan is approved; an empty effort keeps the planner's effort. Approving a dsh plan card names both too: the Execution model and the Execution effort. An omp launch needs no model for an effort, which becomes the level of its default smol role.
 
 ## Event input
 

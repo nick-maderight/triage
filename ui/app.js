@@ -2196,7 +2196,9 @@ const S = {
     // A short list on a touch screen needs no keyboard; a long one opens ready to type.
     if (!matchMedia('(pointer: coarse)').matches || cfg.options.length > 12 || S.picker.query)
       search.focus({ preventScroll: true });
-    if (MODEL_PICKERS.includes(id) && (!cfg.options.length || id === 'plan-executor')) void loadModels();
+    // A plan picker reads the shown card's catalog again, because the levels of the card the
+    // user just left stay in place otherwise.
+    if (MODEL_PICKERS.includes(id) && (!cfg.options.length || id.startsWith('plan-'))) void loadModels();
   }
   function renderPicker() {
     const p = S.picker,
@@ -2323,8 +2325,6 @@ const S = {
           : `${engine} default`;
         thinking.fallback = data.default_thinking ?? `${engine} default`;
         executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
-        PICKERS[`${sheet}-executor-effort`].fallback =
-          engine === 'dsh' ? 'Planner effort' : 'Selector level';
         if (sheet === 'compose') $('#compose-session-pair').hidden = engine === 'dsh';
         refreshEfforts(sheet);
         for (const id of ['engine', 'model', 'thinking', 'executor', 'executor-effort'])
@@ -2337,8 +2337,6 @@ const S = {
       const planModels = await load(planEngine);
       PICKERS['plan-executor'].data = planModels;
       PICKERS['plan-executor'].options = options(planModels.execution_models);
-      PICKERS['plan-executor-effort'].fallback =
-        planEngine === 'dsh' ? 'Planner effort' : 'Role level';
       refreshEfforts('plan');
       refreshPicker('plan-executor');
       refreshPicker('plan-executor-effort');
@@ -2349,11 +2347,15 @@ const S = {
   // A model decides which thinking levels it accepts. dsh reports them per model, an
   // engine that names none offers its whole list, and a model with no reasoning control
   // offers only Default, which sends no effort.
+  // An execution effort belongs to the model it changes. dsh changes one only along a model,
+  // so its picker waits for one and says so; omp applies an effort alone to its smol role.
   function refreshEfforts(sheet) {
     const data =
       sheet === 'plan' ? PICKERS['plan-executor'].data : PICKERS[`${sheet}-model`]?.data;
     if (!data) return;
-    const levels = (selector) => effortLevels(data, selector);
+    const dsh = data.engine === 'dsh',
+      levels = (selector) => effortLevels(data, selector),
+      value = (id) => $(`#${id}`)?.value.trim() || '';
     const fit = (id, allowed) => {
       const cfg = PICKERS[id];
       if (!cfg) return;
@@ -2363,12 +2365,19 @@ const S = {
         setPickerValue(id, '');
       refreshPicker(id);
     };
+    const fitExecutorEffort = (id, executor, ompLabel) => {
+      const cfg = PICKERS[id],
+        waiting = dsh && !executor;
+      if (!cfg) return;
+      cfg.fallback = waiting ? 'needs an execution model' : dsh ? 'Planner effort' : ompLabel;
+      fit(id, waiting ? [] : levels(executor || ''));
+    };
     if (sheet === 'plan') {
-      fit('plan-executor-effort', levels($('#plan-executor')?.value.trim() || ''));
+      fitExecutorEffort('plan-executor-effort', value('plan-executor'), 'Role level');
       return;
     }
-    fit(`${sheet}-thinking`, levels($(`#${sheet}-model`)?.value.trim() || ''));
-    fit(`${sheet}-executor-effort`, levels($(`#${sheet}-executor`)?.value.trim() || ''));
+    fit(`${sheet}-thinking`, levels(value(`${sheet}-model`)));
+    fitExecutorEffort(`${sheet}-executor-effort`, value(`${sheet}-executor`), 'Selector level');
   }
   // The thinking levels a model accepts. An engine that reports none for a model means
   // it has no reasoning control, so only Default is left; an engine that reports no

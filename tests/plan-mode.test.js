@@ -453,6 +453,7 @@ test('plan picker loads cycle roles without replacing the general model catalog'
       'plan-executor-effort': { options: [], fallback: 'Planner effort' },
     },
     data = {
+      engine: 'omp',
       models: [{ selector: 'provider/model', name: 'Concrete model' }, { selector: '@smol', name: 'smol role' }],
       execution_models: [{ selector: '@default', name: 'default role' }, { selector: '@smol', name: 'smol role' }],
       default: '@kimi',
@@ -520,6 +521,100 @@ test('each sheet lists the models of the engine its Engine field picks', async (
   assert.equal(pickers['dispatch-model'].fallback, 'dsh default');
   assert.equal(pickers['dispatch-executor'].fallback, 'planner model');
   assert.equal(pickers['dispatch-engine'].fallback, 'omp');
+  // The dsh dispatch sheet offers no execution effort until it names an execution model.
+  const values = (id) => Array.from(pickers[id].options, (option) => option.value);
+  assert.deepEqual(values('dispatch-executor-effort'), []);
+  assert.equal(pickers['dispatch-executor-effort'].fallback, 'needs an execution model');
+  // The plan card lists the levels of the model it runs on, and names the leftover omp level.
+  assert.deepEqual(values('plan-executor-effort'), ['high']);
+  assert.equal(pickers['plan-executor-effort'].fallback, 'Role level');
+});
+
+test('a dsh execution effort waits for its execution model', async () => {
+  const fields = {},
+    picked = [],
+    pickers = {
+      'compose-engine': { options: [], fallback: 'Daemon default' },
+      'compose-model': { options: [], fallback: 'Daemon default' },
+      'compose-thinking': { options: [], fallback: 'Daemon default' },
+      'compose-executor': { options: [], fallback: 'omp smol role' },
+      'compose-executor-effort': { options: [], fallback: 'Planner effort' },
+      'dispatch-engine': { options: [], fallback: 'Daemon default' },
+      'dispatch-model': { options: [], fallback: 'Daemon default' },
+      'dispatch-thinking': { options: [], fallback: 'Daemon default' },
+      'dispatch-executor': { options: [], fallback: 'omp smol role' },
+      'dispatch-executor-effort': { options: [], fallback: 'Planner effort' },
+      'plan-executor': { options: [], fallback: 'current Plan Review role' },
+      'plan-executor-effort': { options: [], fallback: 'Planner effort' },
+    },
+    dsh = {
+      engine: 'dsh',
+      models: [
+        { selector: 'p/fast', name: 'Fast', efforts: ['low', 'high'] },
+        { selector: 'p/plain', name: 'Plain', efforts: [] },
+      ],
+      execution_models: [
+        { selector: 'p/fast', name: 'Fast', efforts: ['low', 'high'] },
+        { selector: 'p/plain', name: 'Plain', efforts: [] },
+      ],
+      default: 'p/fast',
+      thinking: ['low', 'high'],
+    },
+    omp = {
+      engine: 'omp',
+      models: [{ selector: '@kimi', name: '@kimi' }],
+      execution_models: [],
+      default: '@kimi',
+      thinking: ['low', 'high', 'max'],
+    },
+    options = (id) => Array.from(pickers[id].options, (option) => option.value),
+    context = vm.createContext({
+      PICKERS: pickers,
+      $: (selector) => (fields[selector] ??= { value: '' }),
+      pickerOption: (value, label, hint) => ({ value, label, hint }),
+      api: async (path) => (path.endsWith('dsh') ? dsh : omp),
+      refreshPicker() {},
+      setPickerValue: (id, value) => {
+        picked.push([id, value]);
+        fields[`#${id}`].value = value;
+      },
+      current: () => null,
+    });
+  vm.runInContext(
+    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\n${functionSource('refreshEfforts')}\n${functionSource('effortLevels')}\nglobalThis.loadModels = loadModels;\nglobalThis.refreshEfforts = refreshEfforts;`,
+    context,
+  );
+  fields['#dispatch-engine'] = { value: 'dsh' };
+  await context.loadModels();
+  // dsh waits for an execution model and says so; omp keeps the default model's list.
+  assert.deepEqual(options('dispatch-executor-effort'), []);
+  assert.equal(pickers['dispatch-executor-effort'].fallback, 'needs an execution model');
+  assert.deepEqual(options('compose-executor-effort'), ['low', 'high', 'max']);
+  assert.equal(pickers['compose-executor-effort'].fallback, 'Selector level');
+
+  // A named model brings its own levels, and Default in the effort names the planner's level.
+  fields['#dispatch-executor'].value = 'p/fast';
+  context.refreshEfforts('dispatch');
+  assert.deepEqual(options('dispatch-executor-effort'), ['low', 'high']);
+  assert.equal(pickers['dispatch-executor-effort'].fallback, 'Planner effort');
+
+  // Back to Default drops the level that belonged to the model.
+  fields['#dispatch-executor-effort'].value = 'high';
+  fields['#dispatch-executor'].value = '';
+  context.refreshEfforts('dispatch');
+  assert.deepEqual(options('dispatch-executor-effort'), []);
+  assert.deepEqual(picked.at(-1), ['dispatch-executor-effort', '']);
+
+  // A dsh plan card follows the same rule.
+  pickers['plan-executor'].data = dsh;
+  fields['#plan-executor'] = { value: '' };
+  context.refreshEfforts('plan');
+  assert.deepEqual(options('plan-executor-effort'), []);
+  assert.equal(pickers['plan-executor-effort'].fallback, 'needs an execution model');
+  fields['#plan-executor'].value = 'p/fast';
+  context.refreshEfforts('plan');
+  assert.deepEqual(options('plan-executor-effort'), ['low', 'high']);
+  assert.equal(pickers['plan-executor-effort'].fallback, 'Planner effort');
 });
 
 test('plan approval sends chosen role while Default and Refine keep their request contracts', () => {
