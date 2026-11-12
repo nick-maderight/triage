@@ -1008,8 +1008,12 @@ const S = {
   }
 
   function otherAllowed(c) {
-    const question = c.questions?.length ? c.questions[draft(c).step] : null;
-    return Boolean(c.allow_other && question?.allow_other !== false && (c.kind === 'ask' || c.kind === 'plan' || (c.kind === 'finding' && c.questions?.length)));
+    const questions = c.questions?.length ? c.questions : null,
+      question = questions ? questions[draft(c).step] : null;
+    // A plain finding takes no custom answer, and past the last question the review step takes over.
+    if (c.kind === 'finding' && !questions) return false;
+    if (questions && !question) return false;
+    return Boolean(c.allow_other && question?.allow_other !== false && (c.kind === 'ask' || c.kind === 'plan' || c.kind === 'finding'));
   }
   function optionsView(c) {
     if (c.kind === 'info') return null;
@@ -1691,18 +1695,33 @@ const S = {
     act(c, 'answer', body, `option-${i}`);
   }
   function toggleOther(c) {
-    if (Date.now() < S.remoteSwapUntil || !answerable(c) || !otherAllowed(c) || S.pending) return;
+    if (Date.now() < S.remoteSwapUntil || !answerable(c) || !otherAllowed(c)) return;
+    // A pending action would drop the click, so say why instead of nothing.
+    if (S.pending) {
+      const message = 'An answer is already going out.';
+      toast(message, true);
+      announce(`Error: ${message}`);
+      return;
+    }
     const d = draft(c);
     d.open = !d.open;
     render();
     $(d.open ? '#other-text' : '#other-btn')?.focus({ preventScroll: true });
   }
+  // An empty Other is a slip, not a submit: keep the field open and say what it wants.
   function sendOther(c) {
     const text = draft(c).other.trim();
-    if (text && otherAllowed(c) && answerable(c)) {
-      if (c.questions?.length) answerStep(c, { text });
-      else act(c, 'answer', { option: null, text, note: noteValue(c) }, 'other');
+    if (!otherAllowed(c) || !answerable(c)) return;
+    if (!text) {
+      if (!draft(c).open) toggleOther(c);
+      else $('#other-text')?.focus({ preventScroll: true });
+      const message = 'Type an answer first.';
+      toast(message, true);
+      announce(`Error: ${message}`);
+      return;
     }
+    if (c.questions?.length) answerStep(c, { text });
+    else act(c, 'answer', { option: null, text, note: noteValue(c) }, 'other');
   }
   const acknowledge = (c) =>
       act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),

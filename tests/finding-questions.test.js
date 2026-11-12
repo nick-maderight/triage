@@ -150,6 +150,83 @@ test('Other on a finding question records typed text and moves to the next quest
   assert.equal(answered.step, 1, 'the custom answer moves to the next question');
 });
 
+test('an empty Other submit keeps the field open and says what it wants', () => {
+  const question = (action) => ({
+      label: action,
+      question: `Recommended action: ${action}`,
+      options: [{ label: 'Do as recommended', recommended: true }, { label: 'Skip' }],
+    }),
+    card = {
+      id: 'finding-other-empty',
+      kind: 'finding',
+      allow_other: true,
+      questions: [question('rotate the key'), question('drop the rule')],
+    },
+    state = { pending: null, remoteSwapUntil: 0, drafts: new Map() },
+    said = [],
+    toasts = [],
+    steps = [],
+    context = vm.createContext({
+      S: state,
+      draft(current) {
+        if (!state.drafts.has(current.id)) state.drafts.set(current.id, { step: 0, answers: [], other: '  ', note: '', open: true });
+        return state.drafts.get(current.id);
+      },
+      answerable: () => true,
+      ident: (name, current) => `${name}-${current.id}`,
+      h: node,
+      el: (tag, props, ...children) => node(tag, props || {}, ...children),
+      button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
+      mdInline: (text) => text,
+      noteValue: () => null,
+      toast: (text, error) => toasts.push([text, error]),
+      announce: (text) => said.push(text),
+      render() {},
+      $: () => ({ focus() {} }),
+      goStep: (current, step) => {
+        steps.push(step);
+        Object.assign(state.drafts.get(current.id), { step, open: false });
+      },
+    });
+  vm.runInContext(
+    `${['otherAllowed', 'otherRow', 'questionView', 'toggleOther', 'sendOther', 'answerStep'].map((name) => functionSource(name)).join('\n')}\nglobalThis.ui = { questionView };`,
+    context,
+  );
+  const form = findNodes(context.ui.questionView(card, 0), (item) => item.props?.class === 'other-form')[0];
+  form.props.onsubmit({ preventDefault() {} });
+  const draft = state.drafts.get(card.id);
+  assert.deepEqual(JSON.parse(JSON.stringify(draft.answers)), [], 'an empty custom answer records nothing');
+  assert.equal(draft.step, 0, 'an empty custom answer stays on its question');
+  assert.equal(draft.open, true, 'the field stays open');
+  assert.deepEqual(steps, [], 'no step change');
+  assert.deepEqual(toasts, [['Type an answer first.', true]]);
+  assert.deepEqual(said, ['Error: Type an answer first.']);
+});
+
+test('the review step offers no Other for a question card', () => {
+  const card = {
+      id: 'finding-other-review',
+      kind: 'finding',
+      allow_other: true,
+      questions: [{ label: 'one', question: 'q', options: [{ label: 'Do as recommended', recommended: true }] }],
+    },
+    state = { pending: null, remoteSwapUntil: 0, drafts: new Map([[card.id, { step: 1, answers: [{ option: 0 }], other: '', note: '', open: false }]]) },
+    context = vm.createContext({
+      S: state,
+      draft: (current) => state.drafts.get(current.id),
+      answerable: () => true,
+      announce() {},
+      render() {},
+      $: () => ({ focus() {} }),
+    });
+  vm.runInContext(`${functionSource('otherAllowed')}\nglobalThis.ui = { otherAllowed };`, context);
+  assert.equal(context.ui.otherAllowed(card), false, 'the review step has no Other answer');
+  card.kind = 'ask';
+  assert.equal(context.ui.otherAllowed(card), false, 'an ask review step has no Other answer either');
+  state.drafts.get(card.id).step = 0;
+  assert.equal(context.ui.otherAllowed(card), true, 'the question step still offers Other');
+});
+
 test('finding answer dispatch forwards answers, image, mode and plan-into effort', async () => {
   const card = { id: 'finding-dispatch', kind: 'finding' },
     answers = [{ option: 0 }, { text: 'Use a safer key' }],

@@ -344,26 +344,31 @@
         question = step(),
         hasOther = Boolean(card.querySelector('#other-btn'));
       try {
-        document.body.dispatchEvent(
-          new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true }),
-        );
-        const form = main.querySelector('.other-form');
-        if (form) {
+        let form = null;
+        if (question) {
+          assert(hasOther, 'finding questions offer Other');
+          card.querySelector('#other-btn').click();
+          await waitFor(() => main.querySelector('.other-form'), 'Other to open');
+          form = main.querySelector('.other-form');
+          form.querySelector('button[type="submit"]').click();
+          await waitFor(
+            () => [...document.querySelectorAll('#toasts .toast')].some((item) => item.textContent.includes('Type an answer first.')),
+            'the empty Other message',
+          );
+          assert(step() === question, 'an empty Other submit stays on its question');
           const input = form.querySelector('#other-text');
           input.value = 'ui-check';
           input.dispatchEvent(new Event('input', { bubbles: true }));
-          form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-          await waitFor(() => !main.querySelector('.card.pending'), 'intercepted answer', 1000);
-        }
-        assert(answerRequests === 0, 'Other on a finding card posts no answer');
-        if (question) {
-          assert(hasOther, 'finding questions offer Other');
-          assert(form, 'o opens Other on a finding question');
-          assert(step() !== question, 'the custom answer moves past its question');
+          form.querySelector('button[type="submit"]').click();
+          await waitFor(() => step() !== question, 'the custom answer to move past its question');
         } else {
           assert(!hasOther, 'plain finding cards do not offer Other');
-          assert(!form, 'o does not open Other on plain finding cards');
+          document.body.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true }),
+          );
+          assert(!main.querySelector('.other-form'), 'o does not open Other on plain finding cards');
         }
+        assert(answerRequests === 0, 'Other on a finding card posts no answer');
         return { scenario: 'finding-other', passed: true, question };
       } finally {
         window.fetch = nativeFetch;
