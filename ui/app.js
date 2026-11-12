@@ -1440,25 +1440,44 @@ const S = {
       ),
     );
   }
-  // The images the card's turn read. The daemon serves each by card and index; only local
-  // session images are shown, so the inbox still never loads a remote image.
+  // The images the card's turn read, folded behind a count so a report never pushes its
+  // screenshots at the reader. The daemon serves each by card and index, and only local session
+  // images are offered, so the inbox still never loads a remote image. A queue refresh keeps
+  // the fold where the reader left it.
   function imageStrip(c) {
-    return el(
-      'div',
-      { class: 'card-images', 'aria-label': 'Images from the session', 'data-od-id': ident('card-images', c) },
-      (c.images || []).map((image, index) => {
-        const src = `/v1/cards/${enc(c.id)}/image/${index}`;
-        return h(
-          'a',
-          { href: src, target: '_blank', rel: 'noreferrer', title: image.name || null },
-          h('img', {
-            src,
-            alt: image.name || `Image ${index + 1}`,
-            loading: 'lazy',
-            decoding: 'async',
-          }),
-        );
-      }),
+    const images = c.images || [],
+      count = images.length,
+      key = `${c.id}:Images`,
+      open = S.openBlocks.has(key);
+    return h(
+      'details',
+      {
+        class: 'card-images-block',
+        'data-od-id': ident('card-images', c),
+        open,
+        ontoggle: (e) => {
+          if (e.currentTarget.open) S.openBlocks.add(key);
+          else S.openBlocks.delete(key);
+        },
+      },
+      h('summary', { class: 'card-images-toggle' }, `Images (${count})`),
+      el(
+        'div',
+        { class: 'card-images', 'aria-label': 'Images from the session' },
+        images.map((image, index) => {
+          const src = `/v1/cards/${enc(c.id)}/image/${index}`;
+          return h(
+            'a',
+            { href: src, target: '_blank', rel: 'noreferrer', title: image.name || null },
+            h('img', {
+              src,
+              alt: image.name || `Image ${index + 1}`,
+              loading: 'lazy',
+              decoding: 'async',
+            }),
+          );
+        }),
+      ),
     );
   }
   function cardView(c, changed) {

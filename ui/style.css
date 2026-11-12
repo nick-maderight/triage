@@ -2128,8 +2128,26 @@ dialog.picker::backdrop {
   }
 }
 
-/* Images a report's turn read, under its final reply. The strip scrolls, so the page never
-   widens on a phone. */
+/* Images a report's turn read stay folded under its final reply; the count opens them. The
+   strip scrolls, so the page never widens on a phone. */
+.card-images-block {
+  margin: 10px 0 0;
+}
+.card-images-block > summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  list-style: none;
+  cursor: pointer;
+}
+.card-images-block > summary::-webkit-details-marker {
+  display: none;
+}
+.card-images-block > summary:hover {
+  color: var(--fg);
+}
 .card-images {
   display: flex;
   gap: 8px;
