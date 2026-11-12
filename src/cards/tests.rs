@@ -6675,6 +6675,9 @@ struct BridgeData {
     slow_launch_started: Option<Value>,
     // launch_error is the error the next launch answers, when it answers one.
     launch_error: Option<String>,
+    // prompt_refusal is the answer the next prompt gets instead of being queued, in the
+    // bridge's words, with the status it comes with.
+    prompt_refusal: Option<(u16, String)>,
     // list_fails answers GET /v1/sessions with the failure a stalled projection sweep
     // produces, while every other route keeps working.
     list_fails: bool,
@@ -6753,6 +6756,15 @@ impl BridgeData {
                             json!({"error": error, "sessionId": sid}),
                         );
                     }
+                }
+                if path == "/v1/prompt"
+                    && let Some((status, error)) = self.prompt_refusal.take()
+                {
+                    self.posts.push((path, value));
+                    return (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                        json!({"error": error}),
+                    );
                 }
                 let reply = if path == "/v1/launch" {
                     let launched = value["sessionId"].as_str().unwrap_or(&self.launch_id).to_owned();
@@ -8127,10 +8139,12 @@ fn dsh_dispatch_carries_the_image() {
         Some(&image),
     )
     .unwrap();
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    assert_eq!(launches[0]["image"]["mediaType"], "image/png");
-    assert_eq!(launches[0]["image"]["data"], "iVBORw0KGgo=");
+    let prompts = bridge.posts("/v1/prompt");
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[1]["sessionId"], SID);
+    assert_eq!(prompts[1]["image"]["mediaType"], "image/png");
+    assert_eq!(prompts[1]["image"]["data"], "iVBORw0KGgo=");
+    assert!(bridge.posts("/v1/launch").is_empty());
 }
 
 #[test]
@@ -8150,11 +8164,31 @@ fn dsh_plan_on_an_idle_session_relaunches_it_in_plan_mode() {
 }
 
 #[test]
-fn dsh_plan_into_dispatch_starts_a_new_session() {
+fn dsh_plan_into_dispatch_relaunches_an_idle_session() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None).unwrap();
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["sessionId"], SID);
+    assert_eq!(launches[0]["mode"], "plan-into");
+    assert_eq!(launches[0]["executor"], "deepseek-flash");
+    assert!(bridge.posts("/v1/prompt").is_empty());
+    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+}
+
+#[test]
+fn dsh_plan_into_dispatch_starts_a_new_session_when_the_card_session_runs() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+    });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
     dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None).unwrap();
     let launches = bridge.posts("/v1/launch");
@@ -8166,7 +8200,7 @@ fn dsh_plan_into_dispatch_starts_a_new_session() {
 }
 
 #[test]
-fn dsh_dispatch_to_a_running_session_starts_a_new_goal_session() {
+fn dsh_dispatch_to_a_running_session_queues_the_brief_in_it() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
@@ -8176,10 +8210,98 @@ fn dsh_dispatch_to_a_running_session_starts_a_new_goal_session() {
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
     dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    // dsh queues a prompt for the session's next turn, so a running session keeps the work
+    // the card came from instead of opening a second session on the same brief.
+    let prompts = bridge.posts("/v1/prompt");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["sessionId"], SID);
+    assert!(prompts[0]["text"].as_str().is_some_and(|text| text.starts_with("Read the brief at ")), "{prompts:?}");
+    assert!(bridge.posts("/v1/launch").is_empty());
+    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+}
+
+#[test]
+fn dsh_dispatch_to_a_session_waiting_for_an_answer_queues_the_brief_in_it() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": ["question"]}));
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Investigate, None, &bridge.launch(), None, None, None).unwrap();
+    let prompts = bridge.posts("/v1/prompt");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["sessionId"], SID);
+    assert!(bridge.posts("/v1/launch").is_empty());
+}
+
+#[test]
+fn dsh_dispatch_starts_a_new_session_when_the_card_session_is_gone() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    assert!(bridge.posts("/v1/prompt").is_empty());
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
     assert_eq!(launches[0]["mode"], "goal");
+}
+
+#[test]
+fn dsh_dispatch_starts_a_new_session_when_the_prompt_is_refused() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.prompt_refusal = Some((409, "session is busy".to_owned()));
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    // A refused prompt was never queued, so the brief still starts.
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
+    assert_eq!(launches[0]["mode"], "goal");
+}
+
+#[test]
+fn dsh_dispatch_reports_a_prompt_error_that_is_not_a_refusal() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.prompt_refusal = Some((502, "dsh bridge unreachable: timeout".to_owned()));
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    let error = dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None)
+        .unwrap_err();
+    assert_eq!(error, "dsh bridge unreachable: timeout");
+    // A prompt that may have been queued must not start a second session on the same brief.
+    assert!(bridge.posts("/v1/launch").is_empty());
+    assert_eq!(swipe_reason(&db, &card.id), None);
+}
+
+#[test]
+fn dsh_plan_on_a_running_session_starts_a_new_session() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None).unwrap();
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
+    assert_eq!(launches[0]["mode"], "plan");
     assert!(bridge.posts("/v1/prompt").is_empty());
 }
 

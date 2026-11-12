@@ -1035,8 +1035,10 @@ pub(super) fn request_report(
     }
 }
 
-/// Give the brief to the card's dsh session when it is idle, else start a session for it. A
-/// plan-into dispatch starts a new session. The bridge arms auto-approval only at launch.
+/// Give the brief to the card's dsh session, and start a session only when that one cannot take
+/// it. A goal brief is queued in the session whatever it is doing, and a plan brief relaunches
+/// it in plan mode while it is idle. A session the host no longer lists, or a prompt the bridge
+/// refuses, starts a session of its own.
 pub(super) fn launch_brief(
     card: &Card,
     launch: &Launch,
@@ -1044,31 +1046,54 @@ pub(super) fn launch_brief(
     start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
-    if let Some(sid) = dsh::session_id(card).filter(|_| !matches!(start, Start::PlanInto(..))) {
+    if let Some(sid) = dsh::session_id(card) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
-        if client
-            .state(sid)
-            .is_ok_and(|state| !state.running && state.pending_input.is_empty())
-        {
-            if start == Start::Plan {
-                let mut body = json!({
-                    "sessionId": sid,
-                    "cwd": card_cwd(card),
-                    "prompt": brief_prompt(brief),
-                    "mode": "plan",
-                });
-                if let Some(image) = image {
-                    body["image"] = image.dsh_image();
+        if let Ok(state) = client.state(sid) {
+            match start {
+                // A goal brief is queued in the card's session even while it runs or waits for
+                // an answer, because dsh queues a prompt for the session's next turn. The work
+                // then continues where the card came from instead of in a second session.
+                Start::Goal => {
+                    match client.prompt(sid, &brief_prompt(brief), image.map(Upload::dsh_image)) {
+                        Ok(()) => return Ok(format!("dsh:{sid}")),
+                        // A refused prompt was not taken, so the brief starts a session instead.
+                        Err(error) if prompt_refused(&error) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
-                return client
-                    .launch(&body)
-                    .map(|launched| format!("dsh:{launched}"));
+                // A plan sets the session's permission and plan mode with slash commands, which
+                // take effect between turns. A busy session cannot take one, so its brief
+                // starts a session of its own instead.
+                Start::Plan | Start::PlanInto(..) if !state.running && state.pending_input.is_empty() => {
+                    let (mode, executor, executor_effort) = match start {
+                        Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
+                        _ => ("plan", None, None),
+                    };
+                    let mut body = json!({
+                        "sessionId": sid,
+                        "cwd": card_cwd(card),
+                        "prompt": brief_prompt(brief),
+                        "mode": mode,
+                        "executor": executor,
+                        "executorEffort": executor_effort,
+                    });
+                    if let Some(image) = image {
+                        body["image"] = image.dsh_image();
+                    }
+                    return client.launch(&body).map(|launched| format!("dsh:{launched}"));
+                }
+                Start::Plan | Start::PlanInto(..) => {}
             }
-            client.prompt(sid, &brief_prompt(brief), image.map(Upload::dsh_image))?;
-            return Ok(format!("dsh:{sid}"));
         }
     }
     launch_new(launch, &card_cwd(card), brief, &card.title, start, image)
+}
+
+/// Whether the bridge refused a prompt without taking it. A timeout or an unreachable host is
+/// not a refusal: the bridge may have queued the prompt before its answer went missing, and a
+/// second session on the same brief would do the work twice.
+fn prompt_refused(error: &str) -> bool {
+    error.contains("session is busy") || error.contains("session not found")
 }
 
 /// Start a dsh session on `brief` and return its `dsh:<sid>` pane id.

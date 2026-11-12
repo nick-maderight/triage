@@ -2739,7 +2739,7 @@ const S = {
       act: 'The session carries out the action end to end.',
       plan: 'The session prepares a plan for review before acting.',
       'plan-into':
-        'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out in a new session at the execution effort chosen below.',
+        'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
   }
