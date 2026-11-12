@@ -8396,6 +8396,21 @@ fn brief_from_prompt(prompt: &Value) -> String {
 }
 
 #[test]
+fn dsh_launch_adopts_a_session_in_its_workspace_directory() {
+    let root = PathBuf::from("/dsh/workspaces");
+    let launch = Launch {
+        dsh_workspace: Some("triage".to_owned()),
+        dsh_workspaces: Some(root.clone()),
+        ..Launch::default()
+    };
+    // dsh creates a workspace session in the workspace's own directory, not the project's,
+    // so adoption has to look where the bridge put it.
+    assert_eq!(dsh_track::launch_dir(&launch, "/work/project"), root.join("triage"));
+    let plain = Launch { ..Launch::default() };
+    assert_eq!(dsh_track::launch_dir(&plain, "/work/project"), PathBuf::from("/work/project"));
+}
+
+#[test]
 fn dsh_workspace_launch_posts_the_workspace_and_briefs_the_project_directory() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);

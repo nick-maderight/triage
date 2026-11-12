@@ -1145,7 +1145,7 @@ pub(super) fn launch_new(
 
 /// The directory a new session starts in. That is the workspace's own directory when the
 /// launch joins a workspace, else the project directory.
-fn launch_dir(launch: &Launch, cwd: &str) -> PathBuf {
+pub(super) fn launch_dir(launch: &Launch, cwd: &str) -> PathBuf {
     match (launch.dsh_workspaces.as_deref(), launch.dsh_workspace.as_deref()) {
         (Some(root), Some(name)) => root.join(name),
         _ => PathBuf::from(cwd),
