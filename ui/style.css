@@ -2132,55 +2132,6 @@ dialog.picker::backdrop {
   }
 }
 
-/* Images a report's turn read stay folded under its final reply; the count opens them. The
-   strip scrolls, so the page never widens on a phone. */
-.card-images-block {
-  margin: 10px 0 0;
-}
-.card-images-block > summary {
-  width: fit-content;
-  color: var(--muted);
-  font-size: 13px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  list-style: none;
-  cursor: pointer;
-}
-.card-images-block > summary::-webkit-details-marker {
-  display: none;
-}
-.card-images-block > summary:hover {
-  color: var(--fg);
-}
-.card-images {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 2px 0 6px;
-  scrollbar-width: thin;
-}
-.card-images a {
-  flex: 0 0 auto;
-  display: block;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--r-panel);
-  background: var(--ground);
-}
-.card-images img {
-  display: block;
-  height: 120px;
-  width: auto;
-  max-width: 240px;
-  object-fit: contain;
-}
-@media (max-width: 639px) {
-  .card-images img {
-    height: 96px;
-    max-width: 180px;
-  }
-}
-
 /* An image attached to a prompt in the New session or Dispatch sheet. */
 .attach {
   display: flex;

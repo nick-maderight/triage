@@ -120,52 +120,9 @@ test('an info card shows its final reply once, under Result, and never as a Plan
   assert.equal(byLabel.Plan, undefined, 'an info body is not a plan');
   assert.ok(textOf(byLabel.Result).includes(body), 'the reply sits under Result');
   assert.equal(findNodes(view, (item) => item.children.includes(body)).length, 1, 'the reply renders once');
-});
-
-test('a report card folds the images its turn read behind a count under Result', () => {
-  const context = cardContext({}, { enc: encodeURIComponent }, ['cardView', 'imageStrip']),
-    card = {
-      id: 'done:%12:a1',
-      kind: 'info',
-      title: 'Done: parser split',
-      body: 'Shipped.',
-      star: {},
-      images: [
-        { id: 'a'.repeat(64), media_type: 'image/png', name: 'shot.png' },
-        { id: 'b'.repeat(64), media_type: 'image/webp' },
-      ],
-    },
-    view = context.cardView(card, false),
-    images = findNodes(view, (item) => item.tag === 'img'),
-    links = findNodes(view, (item) => item.tag === 'a'),
-    fold = findNodes(view, (item) => item.tag === 'details')[0],
-    result = findNodes(view, (item) => item.tag === 'section' && textOf(item.children[0]) === 'Result')[0];
-
-  assert.equal(findNodes(context.cardView({ ...card, images: [] }, false), (item) => item.tag === 'details').length, 0);
-  assert.equal(findNodes(context.cardView({ ...card, images: [] }, false), (item) => item.tag === 'img').length, 0);
-  assert.ok(result, 'the count sits under Result');
-  assert.ok(fold, 'the images are a disclosure');
-  assert.equal(fold.props.class, 'card-images-block');
-  assert.ok(!fold.props.open, 'the report opens with the images folded away');
-  assert.equal(typeof fold.props.ontoggle, 'function', 'opening the fold is remembered');
-  const opened = findNodes(
-    cardContext({ openBlocks: new Set(['done:%12:a1:Images']) }, { enc: encodeURIComponent }, [
-      'cardView',
-      'imageStrip',
-    ]).cardView(card, false),
-    (item) => item.tag === 'details',
-  )[0];
-  assert.ok(opened.props.open, 'a fold the reader opened stays open across a refresh');
-  assert.equal(textOf(fold.children[0]), 'Images (2)');
-  assert.equal(images.length, 2);
-  assert.equal(links.length, 2);
-  assert.equal(links[0].props.href, '/v1/cards/done%3A%2512%3Aa1/image/0');
-  assert.equal(links[0].props.target, '_blank');
-  assert.equal(links[0].props.rel, 'noreferrer');
-  assert.equal(images[0].props.src, links[0].props.href);
-  assert.equal(images[0].props.alt, 'shot.png');
-  assert.equal(images[0].props.loading, 'lazy');
-  assert.equal(images[1].props.alt, 'Image 2');
+  // A stray images field renders no thumbnails: the daemon no longer sends it.
+  const stray = sections({ id: 'info', kind: 'info', title: 'Done: parser split', body, star: {}, images: [{ id: 'a'.repeat(64), media_type: 'image/png' }] }).view;
+  assert.equal(findNodes(stray, (item) => item.tag === 'img' || item.props?.class === 'card-images-block').length, 0);
 });
 
 test('a session report states its outcome above a title without the status prefix', () => {

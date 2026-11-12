@@ -58,7 +58,7 @@ pub fn store(
     if bytes.len() > MAX_BYTES {
         return Err("image is too large".to_owned());
     }
-    if crate::media::sniff(&bytes) != Some(media_type.as_str()) {
+    if sniff(&bytes) != Some(media_type.as_str()) {
         return Err("image bytes do not match its type".to_owned());
     }
     let directory = db_file.with_file_name("uploads");
@@ -72,6 +72,23 @@ pub fn store(
         name: display_name(name, extension),
         media_type,
     })
+}
+
+/// The media type the bytes themselves declare. SVG, HTML and every other type are refused.
+fn sniff(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    None
 }
 
 fn create_private_dir(directory: &Path) -> Result<(), String> {

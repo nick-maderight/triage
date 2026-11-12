@@ -6,7 +6,7 @@ use super::{
 };
 use crate::db::Db;
 use crate::dsh;
-use crate::events::{self, Answer, AnswerReq, Card, CardImage, CardOption, CardQuestion, Kind, Source, Star, MAX_CARD_IMAGES};
+use crate::events::{self, Answer, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star};
 use crate::omp;
 use crate::uploads::Upload;
 use serde_json::{Value, json};
@@ -26,6 +26,11 @@ const WATCH_MS: i64 = 24 * 60 * 60 * 1000;
 const ADOPT_WINDOW: Duration = Duration::from_secs(30);
 /// Gap between those looks.
 const ADOPT_POLL: Duration = Duration::from_millis(500);
+/// How long Close waits for dsh to answer the archive. dsh finishes an archive it was asked for
+/// even after the caller gives up, so a slow answer resolves the card while the archive finishes.
+const ARCHIVE_GRACE: Duration = Duration::from_secs(2);
+/// Caps the archive request. A failure after the grace has no caller left and is logged.
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What the bridge poll remembers between polls.
 #[derive(Default)]
@@ -256,7 +261,6 @@ fn prompt_card(
             level: None,
             tool_call_id: Some(item.event_id.clone()),
             report_due: false,
-            images: Vec::new(),
             engine: Some("dsh".to_owned()),
         });
     }
@@ -291,7 +295,6 @@ fn prompt_card(
         level: None,
         tool_call_id: Some(item.event_id.clone()),
         report_due: false,
-        images: Vec::new(),
         engine: Some("dsh".to_owned()),
     })
 }
@@ -412,7 +415,6 @@ fn plan_card(
         allow_other: true,
         questions: Vec::new(),
         body: Some(body),
-        images: Vec::new(),
         level: None,
         tool_call_id: None,
         report_due: false,
@@ -574,45 +576,6 @@ fn report_sessions(
     Ok(())
 }
 
-/// The images the turn that ended at `end` read, oldest first. dsh keeps the bytes in its
-/// attachment store, so the card names the attachment and the daemon serves it on demand.
-fn turn_images(recent: &[dsh::Event], turn_start: i64, end: i64) -> Vec<CardImage> {
-    let mut images: Vec<CardImage> = Vec::new();
-    for image in recent
-        .iter()
-        .filter(|event| event.kind == "tool/result" && event.seq > turn_start && event.seq < end)
-        .flat_map(|event| event.images.iter())
-    {
-        let Some(id) = image
-            .attachment_id
-            .strip_prefix("sha256:")
-            .filter(|id| events::image_hash(id))
-        else {
-            continue;
-        };
-        let media_type = image.media_type.to_ascii_lowercase();
-        if !matches!(
-            media_type.as_str(),
-            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
-        ) {
-            continue;
-        }
-        images.push(CardImage {
-            id: id.to_owned(),
-            media_type,
-            name: image.name.clone(),
-            width: (image.width > 0).then_some(image.width),
-            height: (image.height > 0).then_some(image.height),
-        });
-    }
-    let mut seen = HashSet::new();
-    images.retain(|image| seen.insert(image.id.clone()));
-    if images.len() > MAX_CARD_IMAGES {
-        images.drain(..images.len() - MAX_CARD_IMAGES);
-    }
-    images
-}
-
 /// The info card for the turn that ended at `end`. Its body is the newest reply with a status
 /// line in that turn, else the newest reply. `None` when the turn wrote no reply of its own and
 /// did not fail: dsh ends such a turn after an archive, and carding it would repeat the reply
@@ -677,8 +640,7 @@ fn report_card(
         parts.join("\n\n")
     };
     let (star, investigation) = trail(db, &format!("dsh:{sid}"), 0);
-    let images = turn_images(recent, turn_start, end.seq);
-    let mut turn = reply_turn(text, None, !star.situation.is_empty(), investigation, images);
+    let mut turn = reply_turn(text, None, !star.situation.is_empty(), investigation);
     if reason == "error" {
         turn.report_due = false;
         turn.action.clear();
@@ -994,6 +956,26 @@ fn decide_plan(
     }
 }
 
+/// Asks dsh to archive `sid` and waits at most ARCHIVE_GRACE for the answer. A failure inside the
+/// grace is returned, so the card stays queued. A slower answer lets the card resolve, and a failure
+/// after that is logged, because the worker has no caller left to return it to.
+fn archive_within_grace(launch: &Launch, sid: &str) -> Result<(), String> {
+    let host = launch.dsh_host.clone();
+    let owned = sid.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = dsh::connect(host.as_deref(), ARCHIVE_TIMEOUT).and_then(|client| client.archive(&owned));
+        if let Err(std::sync::mpsc::SendError(Err(error))) = tx.send(result) {
+            eprintln!("triage: dsh archive of {owned} failed after the card closed: {error}");
+        }
+    });
+    match rx.recv_timeout(ARCHIVE_GRACE) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("dsh archive stopped".to_owned()),
+    }
+}
+
 /// Archive a dsh session and stop its activity before resolving its open cards.
 pub(super) fn close(
     db: &Db,
@@ -1004,7 +986,7 @@ pub(super) fn close(
 ) -> Result<(), String> {
     let reason = format!("closed dsh:{sid}");
     let open = db.unresolved_cards().map_err(|error| error.to_string())?;
-    dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?.archive(sid)?;
+    archive_within_grace(launch, sid)?;
     if !record_swipe(
         db,
         &card.id,

@@ -352,7 +352,6 @@ fn ask_card(pane: &str, call_id: &str) -> Card {
         level: None,
         tool_call_id: Some(call_id.to_owned()),
         report_due: false,
-        images: Vec::new(),
         engine: None,
     }
 }
@@ -375,7 +374,6 @@ fn finding_card(root: &Path) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     }
 }
@@ -401,7 +399,6 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         level: None,
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     }
 }
@@ -440,7 +437,6 @@ fn info_card(id: &str, pane: &str) -> Card {
         level: Some("info".to_owned()),
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     }
 }
@@ -1969,7 +1965,6 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
                 None,
                 true,
                 true,
-                Vec::new(),
             )
             .action,
             "Run the investigation follow-up."
@@ -2022,7 +2017,6 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
             None,
             true,
             false,
-            Vec::new(),
         );
         assert_eq!(none.body.as_deref(), Some("Shipped."));
         assert!(none.action.is_empty());
@@ -2139,7 +2133,6 @@ fn agent_done_report_closed_by_none_reads_done() {
         None,
         true,
         false,
-        Vec::new(),
     );
     assert_eq!(turn.title, "Done: Block key shipped and pushed.");
     assert_eq!(turn.level, "info");
@@ -2154,7 +2147,6 @@ fn agent_done_report_with_an_open_step_keeps_the_warning() {
         None,
         true,
         false,
-        Vec::new(),
     );
     assert_eq!(turn.title, "Agent done: Push still open.");
     assert_eq!(turn.level, "warn");
@@ -2168,7 +2160,6 @@ fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
         None,
         true,
         false,
-        Vec::new(),
     );
     assert_eq!(turn.title, "Agent done: Suite gate still red.");
     assert_eq!(turn.level, "warn");
@@ -2181,7 +2172,6 @@ fn carried_agent_done_report_takes_the_closing_step() {
         Some("ENVOY_STATUS: agent-done\n\nWaited on the suite.\n\nRecommended action: none.".to_owned()),
         true,
         false,
-        Vec::new(),
     );
     assert_eq!(turn.title, "Agent done: Waited on the suite.");
     assert_eq!(turn.level, "warn");
@@ -2307,72 +2297,6 @@ fn waiting_pane_without_status_line_queues_an_info_card() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "waiting_pane_without_status_line_queues_an_info_card",
-        scratch.path(),
-        Some(scratch.path()),
-        Some(&bin),
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn omp_reply_card_carries_its_turn_images() {
-    if let Some(root) = child_root("omp_reply_card_carries_its_turn_images") {
-        fs::write(root.join("tmux-waiting"), b"").unwrap();
-        let transcript = root.join("transcript.jsonl");
-        let hash = "a".repeat(64);
-        let old = "b".repeat(64);
-        let user = serde_json::json!({
-            "type": "message",
-            "id": "u1",
-            "message": {"role": "user", "content": [{"type": "text", "text": "look"}]}
-        })
-        .to_string();
-        let image = |hash: &str, path: &str| {
-            serde_json::json!({
-                "type": "message",
-                "message": {
-                    "role": "toolResult",
-                    "toolCallId": "read-1",
-                    "content": [
-                        {"type": "text", "text": "Read image file [image/png]"},
-                        {"type": "image", "data": format!("blob:sha256:{hash}"), "mimeType": "image/png"}
-                    ],
-                    "details": {"meta": {"source": {"type": "path", "value": path}}}
-                }
-            })
-            .to_string()
-        };
-        write_transcript(
-            &root,
-            "/dev/pts/12",
-            &transcript,
-            &[
-                user.clone(),
-                image(&old, "/tmp/old.png"),
-                user,
-                image(&hash, "/tmp/shots/new.png"),
-                assistant_entry(
-                    "assistant-report",
-                    "stop",
-                    Some("ENVOY_STATUS: complete\n\nShipped."),
-                    None,
-                ),
-            ],
-        );
-        let db = Db::open(&root.join("triage.db")).unwrap();
-        assert_eq!(Tracker::default().tick(&db).written, 1);
-        let (card, _) = db.card("done:%12:assistant-report").unwrap().unwrap();
-        assert_eq!(card.images.len(), 1, "{card:?}");
-        assert_eq!(card.images[0].id, hash);
-        assert_eq!(card.images[0].media_type, "image/png");
-        assert_eq!(card.images[0].name.as_deref(), Some("new.png"));
-        return;
-    }
-
-    let scratch = Scratch::new();
-    let bin = fake_tmux(scratch.path());
-    run_child(
-        "omp_reply_card_carries_its_turn_images",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -6754,6 +6678,11 @@ struct BridgeData {
     // list_fails answers GET /v1/sessions with the failure a stalled projection sweep
     // produces, while every other route keeps working.
     list_fails: bool,
+    // archive_delay holds the archive answer back, the way a loaded dsh finishes an archive after
+    // the caller has given up. The archive is recorded only when it answers.
+    archive_delay: Duration,
+    // archive_error answers POST /v1/archive with this error.
+    archive_error: Option<String>,
 }
 
 impl BridgeData {
@@ -6793,6 +6722,12 @@ impl BridgeData {
             }
             ("POST", _) => {
                 let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+                if path == "/v1/archive" {
+                    if let Some(error) = self.archive_error.clone() {
+                        self.posts.push((path, value));
+                        return (StatusCode::BAD_GATEWAY, json!({"error": error}));
+                    }
+                }
                 if path == "/v1/launch" && self.refuse_workspace && !value["workspace"].is_null() {
                     self.posts.push((path.clone(), value));
                     return (StatusCode::BAD_REQUEST, json!({"error": "cwd must be an absolute path"}));
@@ -6856,6 +6791,11 @@ async fn bridge_route(
     let bearer = format!("Bearer {BRIDGE_SECRET}");
     if headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()) != Some(bearer.as_str()) {
         return (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "unauthorized"}))).into_response();
+    }
+    // Holds the archive back outside the store lock, so the route still answers other calls.
+    let delay = store.lock().unwrap().archive_delay;
+    if uri.path() == "/v1/archive" && !delay.is_zero() {
+        tokio::time::sleep(delay).await;
     }
     let (status, reply) = store.lock().unwrap().route(method, uri, &body);
     (status, axum::Json(reply)).into_response()
@@ -6987,17 +6927,6 @@ fn turn_end(seq: i64, reason: &str) -> Value {
     json!({"seq": seq, "type": "turn/end", "reason": reason})
 }
 
-fn image_event(seq: i64, id: &str, media: &str, name: &str) -> Value {
-    json!({"seq": seq, "type": "tool/result", "images": [{
-        "attachmentId": format!("sha256:{id}"),
-        "mediaType": media,
-        "bytes": 10,
-        "width": 640,
-        "height": 360,
-        "name": name,
-    }]})
-}
-
 fn question(id: &str, header: &str, text: &str, labels: &[&str], multi_select: bool) -> Value {
     let options: Vec<Value> = labels.iter().map(|label| json!({"label": label})).collect();
     json!({"id": id, "header": header, "question": text, "options": options, "multiSelect": multi_select})
@@ -7048,7 +6977,6 @@ fn dsh_card(db: &Db, id: &str, kind: Kind) -> Card {
         level: Some("info".to_owned()),
         tool_call_id: None,
         report_due: true,
-        images: Vec::new(),
         engine: Some("dsh".to_owned()),
     };
     db.insert_card(&card).unwrap();
@@ -7212,36 +7140,6 @@ fn closing_a_dsh_report_does_not_raise_the_archived_turn_again() {
 }
 
 #[test]
-fn dsh_report_card_carries_its_turn_images() {
-    let scratch = Scratch::new();
-    let db = dsh_db(&scratch);
-    let bridge = FakeBridge::start(scratch.path());
-    let hash = "c".repeat(64);
-    let old = "d".repeat(64);
-    bridge.edit(|data| {
-        data.sessions = vec![session(5)];
-        data.events.insert(
-            SID.to_owned(),
-            vec![
-                image_event(1, &old, "image/png", "old.png"),
-                turn_end(2, "completed"),
-                reply_event(3, "Writing the file."),
-                image_event(4, &hash, "image/webp", "shot.webp"),
-                turn_end(5, "completed"),
-            ],
-        );
-    });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
-    let (card, _) = db.card(&format!("done:dsh:{SID}:5")).unwrap().unwrap();
-    assert_eq!(card.images.len(), 1, "{card:?}");
-    assert_eq!(card.images[0].id, hash);
-    assert_eq!(card.images[0].media_type, "image/webp");
-    assert_eq!(card.images[0].name.as_deref(), Some("shot.webp"));
-    assert_eq!(card.images[0].width, Some(640));
-    assert_eq!(card.images[0].height, Some(360));
-}
-
-#[test]
 fn plan_mode_turn_reports_the_plan_ready() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
@@ -7249,12 +7147,10 @@ fn plan_mode_turn_reports_the_plan_ready() {
     let plan = "# Keep autorules sessions out\n\n## Goal\n\nNo cards.";
     bridge.edit(|data| {
         data.sessions = vec![plan_session(4)];
-        let hash = "e".repeat(64);
         data.events.insert(
             SID.to_owned(),
             vec![
                 reply_event(2, "Reading the tracker."),
-                image_event(3, &hash, "image/png", "plan.png"),
                 reply_event(4, plan),
                 turn_end(5, "completed"),
             ],
@@ -7269,7 +7165,6 @@ fn plan_mode_turn_reports_the_plan_ready() {
     assert_eq!(card.body.as_deref(), Some(plan));
     assert!(card.star.action.is_empty(), "{card:?}");
     assert!(!card.report_due, "{card:?}");
-    assert_eq!(card.images.len(), 1, "{card:?}");
     assert_eq!(done_cards(&db).len(), 1);
 }
 
@@ -8304,6 +8199,48 @@ fn dsh_close_archives_the_session_and_resolves_its_other_cards() {
 }
 
 #[test]
+fn dsh_close_resolves_the_card_while_a_slow_archive_finishes() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.archive_delay = Duration::from_secs(4);
+    });
+    let done = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    let started = Instant::now();
+    close(&db, &done, None, &bridge.launch()).expect("close");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "close waited for the whole archive: {:?}",
+        started.elapsed()
+    );
+    assert!(bridge.posts("/v1/archive").is_empty(), "the archive answered inside the grace");
+    assert_eq!(swipe_reason(&db, &done.id), Some(format!("closed dsh:{SID}")));
+    // dsh still finishes the archive after the card closed.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while bridge.posts("/v1/archive").is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(bridge.posts("/v1/archive"), vec![json!({"sessionId": SID})]);
+}
+
+#[test]
+fn dsh_close_keeps_the_card_queued_when_the_archive_fails_fast() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.archive_error = Some("session/archive: refused".to_owned());
+    });
+    let done = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    assert!(close(&db, &done, None, &bridge.launch()).is_err(), "a refused archive must fail the close");
+    assert_eq!(bridge.posts("/v1/archive").len(), 1);
+    assert_eq!(swipe_reason(&db, &done.id), None, "a refused archive must not record the close");
+}
+
+#[test]
 fn dsh_report_request_is_refused_while_the_session_runs() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
@@ -8356,7 +8293,6 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
         level: None,
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     };
     db.insert_card(&finding).unwrap();

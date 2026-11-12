@@ -3,7 +3,7 @@
 
 use crate::db::Db;
 use crate::dsh;
-use crate::events::{self, AnswerReq, Card, CardImage, CardOption, CardQuestion, Kind, Source, Star, Swipe};
+use crate::events::{self, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star, Swipe};
 use crate::omp::{self, PaneState};
 use crate::tmux;
 use crate::uploads::Upload;
@@ -1313,7 +1313,6 @@ fn add_ask_card(
         level: None,
         tool_call_id: Some(call.tool_call_id.clone()),
         report_due: false,
-        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {
@@ -1492,7 +1491,6 @@ fn queue_startup_card(db: &Db, pane: &tmux::Pane, entry: &Startup, written: &mut
         level: Some("error".to_owned()),
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {
@@ -1559,7 +1557,6 @@ fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<
         level: Some("error".to_owned()),
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {
@@ -1599,7 +1596,6 @@ fn queue_turn_card(
             let turn = Turn {
                 title,
                 body,
-                images: Vec::new(),
                 level: "error",
                 action: String::new(),
                 report_due: false,
@@ -1613,7 +1609,6 @@ fn queue_turn_card(
                 report,
                 !trail.situation.is_empty(),
                 investigation,
-                omp::turn_images(path).unwrap_or_default(),
             ),
         ),
     };
@@ -1656,8 +1651,6 @@ fn headline_of(source: &str) -> String {
 struct Turn {
     title: String,
     body: Option<String>,
-    /// The images the turn read, oldest first.
-    images: Vec<CardImage>,
     level: &'static str,
     action: String,
     report_due: bool,
@@ -1684,7 +1677,6 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
         allow_other: false,
         questions: Vec::new(),
         body: turn.body,
-        images: turn.images,
         refs,
         level: Some(turn.level.to_owned()),
         tool_call_id: None,
@@ -1700,7 +1692,6 @@ fn reply_turn(
     report: Option<String>,
     has_trail: bool,
     investigation: bool,
-    images: Vec<CardImage>,
 ) -> Turn {
     let text = omp::redact_credentials(&text);
     let report = report.map(|report| omp::redact_credentials(&report));
@@ -1768,7 +1759,7 @@ fn reply_turn(
         Some((omp::FinalStatus::AgentDone, _)) if closed_report && !missing_report => "info",
         Some(_) => "warn",
     };
-    Turn { title, body: Some(body), images, level, action, report_due: reported.is_none() && has_trail }
+    Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail }
 }
 
 /// Hand an investigation's recommended step back to its pane as a plan. The pane must still
@@ -2001,7 +1992,6 @@ fn queue_ended_card(
         level: Some("warn".to_owned()),
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     };
     if entry != "-" {
@@ -2073,7 +2063,6 @@ fn add_plan_card(
         level: None,
         tool_call_id: None,
         report_due: false,
-        images: Vec::new(),
         engine: None,
     };
     match db.insert_card(&card) {

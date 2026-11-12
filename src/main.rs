@@ -6,7 +6,6 @@ mod client;
 mod db;
 mod dsh;
 mod events;
-mod media;
 mod omp;
 mod server;
 mod tmux;
@@ -132,17 +131,6 @@ async fn run() -> Result<(), String> {
             let mut tracker = cards::Tracker::from_db(&db).map_err(|error| error.to_string())?;
             tracker.set_dsh_ignore(dsh_ignore);
             let (bus, _) = tokio::sync::broadcast::channel(64);
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            let dsh_home = std::env::var_os("DSH_HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".dsh"));
-            let media = media::Roots {
-                omp_blobs: home.join(".omp/agent/blobs"),
-                dsh_objects: dsh_home.join("attachments/v1/objects"),
-            };
             let state = std::sync::Arc::new(server::AppState {
                 db,
                 bus,
@@ -157,7 +145,6 @@ async fn run() -> Result<(), String> {
                     dsh_workspaces: workspaces,
                 },
                 allowed_hosts: allow_hosts,
-                media,
             });
             server::serve(state, listen)
                 .await
