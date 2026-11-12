@@ -458,7 +458,7 @@
           () => started === 1 && !dialog.open && text('#announcer').includes('Started · %fixture'),
           'session started announcement',
         );
-        assert(!text('#toasts').includes('Started'), 'starting a session shows no toast');
+        assert(text('#toasts').includes('Started · %fixture'), 'a fast launch reports the pane it started');
         await new Promise((resolve) => setTimeout(resolve, 500));
         assert(!peek.open, 'starting a session leaves the peek panel closed');
         return { scenario: 'compose-stays', passed: true };
