@@ -38,7 +38,6 @@ try {
 <ul class="counts" id="counts" aria-label="Cards waiting by kind" data-od-id="counts"></ul>
 <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite" data-od-id="connection"><span class="connection-dot" aria-hidden="true"></span><span class="connection-label">Connecting</span></div>
 <div class="top-actions" data-od-id="header-actions">
-<button type="button" class="btn ghost square" id="btn-notify" aria-label="Notifications" aria-haspopup="dialog" data-od-id="notify-button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
 <button type="button" class="btn ghost square" id="btn-theme" aria-label="Switch to dark mode" data-od-id="theme-toggle"></button>
 <button type="button" class="btn ghost" id="btn-compose" aria-keyshortcuts="c" data-od-id="compose-button"><svg class="compose-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="compose-label">New session</span> <kbd class="hint" aria-hidden="true">c</kbd></button>
 <button type="button" class="btn ghost" id="btn-history" aria-keyshortcuts="h" data-od-id="history-button">History <kbd class="hint" aria-hidden="true">h</kbd></button>
@@ -179,27 +178,6 @@ try {
 <button type="submit" class="btn primary" id="dispatch-start" data-od-id="dispatch-start">Launch <kbd class="hint" aria-hidden="true">Ctrl+Enter</kbd></button>
 </form>
 <p class="send-hint" id="dispatch-hint" aria-live="polite" data-od-id="dispatch-hint"></p>
-</dialog>
-<dialog id="notify" class="modal" aria-labelledby="notify-title" data-od-id="notify-sheet">
-<header class="sheet-head" data-od-id="notify-header">
-<h2 id="notify-title" data-od-id="notify-title">Notifications</h2>
-<button type="button" class="btn ghost" data-close data-od-id="notify-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
-</header>
-<div class="compose" data-od-id="notify-body">
-<p id="notify-status" data-od-id="notify-status">Checking this device…</p>
-<span id="notify-level-label" data-od-id="notify-level-label">Notify this device about</span>
-<div class="segmented" id="notify-level" role="radiogroup" aria-labelledby="notify-level-label" data-od-id="notify-level">
-<button type="button" role="radio" class="seg" data-level="1" aria-checked="false" tabindex="-1" data-od-id="notify-level-urgent">Urgent</button>
-<button type="button" role="radio" class="seg" data-level="2" aria-checked="true" data-od-id="notify-level-important">Important</button>
-<button type="button" role="radio" class="seg" data-level="5" aria-checked="false" tabindex="-1" data-od-id="notify-level-all">Everything</button>
-</div>
-<p class="mode-help" id="notify-level-help" data-od-id="notify-level-help"></p>
-<div class="notify-actions" data-od-id="notify-actions">
-<button type="button" class="btn" id="notify-test" disabled data-od-id="notify-test">Send test</button>
-<button type="button" class="btn primary" id="notify-toggle" disabled data-od-id="notify-toggle">Turn on</button>
-</div>
-</div>
-<p class="send-hint" id="notify-hint" aria-live="polite" data-od-id="notify-hint"></p>
 </dialog>
 <dialog id="keys" class="modal" aria-labelledby="keys-title" data-od-id="shortcut-sheet">
 <header class="sheet-head" data-od-id="keys-header">

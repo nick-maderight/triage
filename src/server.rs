@@ -16,8 +16,6 @@ pub struct AppState {
     pub tracker: Mutex<Tracker>,
     /// Where and how triage launches omp sessions, from `triage serve` flags.
     pub launch: crate::cards::Launch,
-    /// Web Push sender with the daemon's VAPID key and one HTTP agent for every push service.
-    pub push: crate::push::Push,
     /// Host names accepted besides loopback, from `serve --allow-host`.
     pub allowed_hosts: Vec<String>,
     /// Roots of the session stores that keep card images.
@@ -163,7 +161,7 @@ async fn failure_body(
 }
 
 
-fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> axum::Router {
+fn router(state: Arc<AppState>, port: Option<u16>) -> axum::Router {
     let policy = HostPolicy { port, hosts: state.allowed_hosts.clone().into() };
     axum::Router::new()
         .route("/", axum::routing::get(shell_asset))
@@ -192,17 +190,12 @@ fn router_with_notify(state: Arc<AppState>, notify: bool, port: Option<u16>) -> 
         .route("/v1/tmux-sessions", axum::routing::get(tmux_sessions))
         .route("/v1/models", axum::routing::get(models))
         .route("/v1/history", axum::routing::get(history))
-        .route("/v1/push", axum::routing::get(push_settings))
-        .route("/v1/push/subscribe", axum::routing::post(push_subscribe))
-        .route("/v1/push/unsubscribe", axum::routing::post(push_unsubscribe))
-        .route("/v1/push/test", axum::routing::post(push_test))
         .route("/v1/panes/{pane}/peek", axum::routing::get(peek))
         .route("/v1/panes/{pane}/send", axum::routing::post(send))
         .route("/v1/panes/{pane}/jump", axum::routing::post(jump))
         .route("/v1/dsh/open", axum::routing::post(dsh_open))
         .route("/v1/dsh/{id}/peek", axum::routing::get(dsh_peek))
         .route("/v1/dsh/{id}/send", axum::routing::post(dsh_send))
-        .layer(axum::Extension(notify))
         // A prompt image rides the request as base64; everything else stays far below this.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .with_state(state)
@@ -319,33 +312,9 @@ fn default_history_limit() -> usize {
 }
 
 #[derive(serde::Deserialize)]
-struct PushQuery {
-    endpoint: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
 struct ModelsQuery {
     #[serde(default)]
     engine: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct PushKeys {
-    p256dh: String,
-    auth: String,
-}
-
-/// `PushSubscription.toJSON()` plus the level; serde ignores `expirationTime`.
-#[derive(serde::Deserialize)]
-struct PushSubscribeReq {
-    endpoint: String,
-    keys: PushKeys,
-    max_priority: u8,
-}
-
-#[derive(serde::Deserialize)]
-struct PushEndpointReq {
-    endpoint: String,
 }
 
 async fn queue(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -384,7 +353,6 @@ async fn stream(State(state): State<Arc<AppState>>) -> impl axum::response::Into
 
 async fn ingest(
     State(state): State<Arc<AppState>>,
-    axum::Extension(notify): axum::Extension<bool>,
     axum::Json(event): axum::Json<crate::events::CloudEvent>,
 ) -> axum::response::Response {
     let card = card_from_event(&event);
@@ -392,8 +360,6 @@ async fn ingest(
     if card.is_none() && event.r#type == crate::events::T_FINDING {
         return error_response(axum::http::StatusCode::BAD_REQUEST, "invalid finding questions");
     }
-    let notification_title = if notify { card.as_ref().map(|card| card.title.clone()) } else { None };
-    let pushed = card.clone();
     let db = Arc::clone(&state);
     let stored = tokio::task::spawn_blocking(move || {
         let fold_lock = db.db.answer_lock(&format!("fold:{}", event.source));
@@ -421,19 +387,12 @@ async fn ingest(
                 }).map_err(crate::db::InsertEventError::Database)?;
             }
         }
-        let queued = stored && card.is_some() && fold_target.is_none();
-        Ok::<_, crate::db::InsertEventError>((stored, queued))
+        Ok::<_, crate::db::InsertEventError>(stored)
     }).await;
     match stored {
-        Ok(Ok((stored, queued))) => {
+        Ok(Ok(stored)) => {
             if stored {
                 broadcast(&state).await;
-                if queued {
-                    if let Some(title) = notification_title {
-                        notify_card(title);
-                    }
-                    push_cards(&state, pushed.into_iter().collect());
-                }
             }
             (axum::http::StatusCode::ACCEPTED, axum::Json(serde_json::json!({"ok": true, "stored": stored}))).into_response()
         }
@@ -1168,11 +1127,6 @@ async fn report_failed_launch(state: &Arc<AppState>, prompt: &str, error: &str) 
         return;
     }
     broadcast(state).await;
-    if let Some(card) = card {
-        // The card and its push are the notification; the desktop popup honours `--no-notify`,
-        // which this path has no flag for.
-        push_cards(state, vec![card]);
-    }
 }
 
 async fn skip(
@@ -1396,86 +1350,6 @@ async fn context(
     }
 }
 
-async fn push_settings(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<PushQuery>,
-) -> axum::response::Response {
-    let lookup = Arc::clone(&state);
-    let result = tokio::task::spawn_blocking(move || match query.endpoint {
-        Some(endpoint) => lookup.db.push_subscription(&endpoint),
-        None => Ok(None),
-    })
-    .await;
-    match result {
-        Ok(Ok(subscription)) => axum::Json(serde_json::json!({
-            "key": state.push.public_key(),
-            "max_priority": subscription.map(|subscription| subscription.max_priority),
-        }))
-        .into_response(),
-        Ok(Err(error)) => internal_error(error),
-        Err(error) => internal_error(error),
-    }
-}
-
-async fn push_subscribe(
-    State(state): State<Arc<AppState>>,
-    axum::Json(request): axum::Json<PushSubscribeReq>,
-) -> axum::response::Response {
-    let subscription = match crate::push::Subscription::checked(
-        request.endpoint,
-        request.keys.p256dh,
-        request.keys.auth,
-        request.max_priority,
-    ) {
-        Ok(subscription) => subscription,
-        Err(message) => return error_response(axum::http::StatusCode::BAD_REQUEST, message),
-    };
-    match tokio::task::spawn_blocking(move || state.db.upsert_push_subscription(&subscription)).await {
-        Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(Err(error)) => internal_error(error),
-        Err(error) => internal_error(error),
-    }
-}
-
-async fn push_unsubscribe(
-    State(state): State<Arc<AppState>>,
-    axum::Json(request): axum::Json<PushEndpointReq>,
-) -> axum::response::Response {
-    match tokio::task::spawn_blocking(move || state.db.delete_push_subscription(&request.endpoint)).await {
-        Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(Err(error)) => internal_error(error),
-        Err(error) => internal_error(error),
-    }
-}
-
-async fn push_test(
-    State(state): State<Arc<AppState>>,
-    axum::Json(request): axum::Json<PushEndpointReq>,
-) -> axum::response::Response {
-    let result = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<crate::push::Sent>> {
-        let Some(subscription) = state.db.push_subscription(&request.endpoint)? else {
-            return Ok(None);
-        };
-        let sent = state.push.send(&subscription, crate::push::TEST_PAYLOAD, "high");
-        if matches!(sent, crate::push::Sent::Gone) {
-            state.db.delete_push_subscription(&subscription.endpoint)?;
-        }
-        Ok(Some(sent))
-    })
-    .await;
-    match result {
-        Ok(Ok(Some(crate::push::Sent::Delivered))) => axum::Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(Ok(Some(crate::push::Sent::Gone))) => error_response(
-            axum::http::StatusCode::GONE,
-            "the push service dropped this subscription; turn notifications on again",
-        ),
-        Ok(Ok(Some(crate::push::Sent::Failed(error)))) => error_response(axum::http::StatusCode::BAD_GATEWAY, &error),
-        Ok(Ok(None)) => error_response(axum::http::StatusCode::NOT_FOUND, "this device is not subscribed"),
-        Ok(Err(error)) => internal_error(error),
-        Err(error) => internal_error(error),
-    }
-}
-
 fn pane_error_response(
     error: &str,
     fallback: axum::http::StatusCode,
@@ -1639,30 +1513,6 @@ async fn broadcast(state: &Arc<AppState>) {
     }
 }
 
-fn notify_card(title: String) {
-    tokio::spawn(async move {
-        let _ = tokio::process::Command::new("notify-send")
-            .arg("triage")
-            .arg(title)
-            .status()
-            .await;
-    });
-}
-
-/// Pushes new cards to subscribed devices on a blocking thread, since ureq blocks.
-fn push_cards(state: &Arc<AppState>, cards: Vec<crate::events::Card>) {
-    if cards.is_empty() {
-        return;
-    }
-    let state = Arc::clone(state);
-    // Devices get their pushes one after another. Send them in parallel only if one slow push service ever holds up the rest.
-    tokio::task::spawn_blocking(move || {
-        for card in &cards {
-            state.push.notify(&state.db, card);
-        }
-    });
-}
-
 fn internal_error(error: impl std::fmt::Display) -> axum::response::Response {
     error_response(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())
 }
@@ -1786,11 +1636,10 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
     })
 }
 
-/// Bind and serve forever. Also spawns the pane tracker loop and queue notifications.
+/// Bind and serve forever. Also spawns the pane tracker loop.
 pub async fn serve(
     state: Arc<AppState>,
     addr: std::net::SocketAddr,
-    notify: bool,
 ) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     std::sync::LazyLock::force(&MODELS_LOAD);
@@ -1811,27 +1660,21 @@ pub async fn serve(
                     + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written;
                 let after = state.db.queue(now_ms)?;
                 let previous: std::collections::HashSet<_> = before.iter().map(|card| card.id.as_str()).collect();
-                let added = after.into_iter().filter(|card| !previous.contains(card.id.as_str())).collect::<Vec<_>>();
-                let version = if written > 0 || !added.is_empty() { Some(state.db.version()?) } else { None };
-                Ok::<_, rusqlite::Error>((version, added))
+                let added = after.iter().any(|card| !previous.contains(card.id.as_str()));
+                let version = if written > 0 || added { Some(state.db.version()?) } else { None };
+                Ok::<_, rusqlite::Error>(version)
             })
             .await;
-            if let Ok(Ok((version, added))) = result {
+            if let Ok(Ok(version)) = result {
                 last_poll_ms = now_ms;
                 if let Some(version) = version {
                     let _ = poll_state.bus.send(version);
                 }
-                if notify {
-                    for card in &added {
-                        notify_card(card.title.clone());
-                    }
-                }
-                push_cards(&poll_state, added);
             }
         }
     });
     let port = listener.local_addr()?.port();
-    axum::serve(listener, router_with_notify(state, notify, Some(port))).await
+    axum::serve(listener, router(state, Some(port))).await
 }
 
 #[cfg(test)]

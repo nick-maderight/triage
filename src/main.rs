@@ -8,7 +8,6 @@ mod dsh;
 mod events;
 mod media;
 mod omp;
-mod push;
 mod server;
 mod tmux;
 mod uploads;
@@ -57,8 +56,6 @@ enum Commands {
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
         #[arg(long = "allow-host", value_name = "HOST")]
         allow_hosts: Vec<String>,
-        #[arg(long)]
-        no_notify: bool,
     },
     Emit {
         #[arg(default_value = "-")]
@@ -102,7 +99,7 @@ fn main() {
 #[tokio::main]
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, dsh_ignore_workspaces, dsh_workspaces, allow_hosts, no_notify } => {
+        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, dsh_ignore_workspaces, dsh_workspaces, allow_hosts } => {
             // Validate before opening the DB so a bad flag exits 1 before anything is created.
             cards::engine_flags(engine, model.as_deref(), thinking.as_deref())?;
             let dsh_workspace = dsh::workspace_name(Some(&dsh_workspace))?.map(str::to_owned);
@@ -135,7 +132,6 @@ async fn run() -> Result<(), String> {
             let mut tracker = cards::Tracker::from_db(&db).map_err(|error| error.to_string())?;
             tracker.set_dsh_ignore(dsh_ignore);
             let (bus, _) = tokio::sync::broadcast::channel(64);
-            let push = push::Push::load(&db, &allow_hosts)?;
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default();
@@ -160,11 +156,10 @@ async fn run() -> Result<(), String> {
                     dsh_workspace,
                     dsh_workspaces: workspaces,
                 },
-                push,
                 allowed_hosts: allow_hosts,
                 media,
             });
-            server::serve(state, listen, !no_notify)
+            server::serve(state, listen)
                 .await
                 .map_err(|error| error.to_string())
         }

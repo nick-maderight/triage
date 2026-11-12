@@ -158,13 +158,11 @@ fn test_plan_card(pane: &str) -> crate::events::Card {
 }
 
 fn state_with(db: Db, launch: crate::cards::Launch) -> Arc<AppState> {
-    let push = crate::push::Push::load(&db, &[]).unwrap();
     Arc::new(AppState {
         db,
         bus: tokio::sync::broadcast::channel(32).0,
         tracker: Mutex::new(crate::cards::Tracker::default()),
         launch,
-        push,
         allowed_hosts: Vec::new(),
         media: crate::media::Roots::default(),
     })
@@ -651,7 +649,7 @@ struct HttpResponse {
 async fn start_http_server(
     state: Arc<AppState>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    start_http_server_with_router(super::router_with_notify(state, false, None)).await
+    start_http_server_with_router(super::router(state, None)).await
 }
 
 async fn start_http_server_with_prewrite_gate(
@@ -1045,13 +1043,11 @@ async fn serves_a_card_image_from_the_store() {
         ..crate::events::CardImage::default()
     }];
     db.insert_card(&card).unwrap();
-    let push = crate::push::Push::load(&db, &[]).unwrap();
     let state = Arc::new(AppState {
         db,
         bus: tokio::sync::broadcast::channel(8).0,
         tracker: Mutex::new(crate::cards::Tracker::default()),
         launch: crate::cards::Launch::default(),
-        push,
         allowed_hosts: Vec::new(),
         media: crate::media::Roots {
             omp_blobs: blobs,
@@ -1231,193 +1227,6 @@ async fn ingest_rejects_malformed_finding_questions_and_stores_unknown_events() 
     server.abort();
 }
 
-/// The RFC 8291 receiver's public key and auth secret.
-const UA_PUBLIC: &str =
-    "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
-const AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
-
-type PushHit = (String, axum::http::HeaderMap, Vec<u8>);
-
-/// A push service at `{base}{id}` that records every delivery and answers `status`.
-async fn stub_push_service(
-    status: StatusCode,
-) -> (String, tokio::sync::mpsc::UnboundedReceiver<PushHit>) {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-    let router = axum::Router::new().route(
-        "/push/{id}",
-        axum::routing::post(
-            move |axum::extract::Path(id): axum::extract::Path<String>,
-                  headers: axum::http::HeaderMap,
-                  body: axum::body::Bytes| {
-                let sender = sender.clone();
-                async move {
-                    let _ = sender.send((id, headers, body.to_vec()));
-                    status
-                }
-            },
-        ),
-    );
-    let (address, _server) = start_http_server_with_router(router).await;
-    (format!("http://{address}/push/"), receiver)
-}
-
-fn subscription(endpoint: String, max_priority: u8) -> crate::push::Subscription {
-    crate::push::Subscription {
-        endpoint,
-        p256dh: UA_PUBLIC.to_owned(),
-        auth: AUTH.to_owned(),
-        max_priority,
-    }
-}
-
-#[tokio::test]
-async fn push_routes_store_update_and_forget_a_subscription() {
-    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let (address, server) = start_http_server(state.clone()).await;
-    let lookup = "/v1/push?endpoint=https%3A%2F%2Fpush.example.test%2Fabc";
-    for level in [2, 1] {
-        let body = serde_json::json!({
-            "endpoint": "https://push.example.test/abc",
-            "keys": {"p256dh": UA_PUBLIC, "auth": AUTH},
-            "max_priority": level,
-        });
-        let response = http_request(address, "POST", "/v1/push/subscribe", &body.to_string()).await;
-        assert_eq!(response.status, StatusCode::OK, "{body}");
-    }
-
-    let stored = http_request(address, "GET", lookup, "").await;
-    assert_eq!(
-        stored.body["max_priority"], 1,
-        "subscribing again must replace the level"
-    );
-    assert_eq!(stored.body["key"].as_str().unwrap().len(), 87);
-    assert!(http_request(address, "GET", "/v1/push", "").await.body["max_priority"].is_null());
-
-    let forgotten = http_request(
-        address,
-        "POST",
-        "/v1/push/unsubscribe",
-        r#"{"endpoint":"https://push.example.test/abc"}"#,
-    )
-    .await;
-    assert_eq!(forgotten.status, StatusCode::OK);
-    assert!(http_request(address, "GET", lookup, "").await.body["max_priority"].is_null());
-    server.abort();
-}
-
-#[tokio::test]
-async fn push_subscribe_rejects_what_a_browser_would_never_send() {
-    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let (address, server) = start_http_server(state.clone()).await;
-    let https = "https://push.example.test/abc";
-    let cases = [
-        (
-            "http://push.example.test/abc",
-            UA_PUBLIC,
-            AUTH,
-            2,
-            "endpoint must be an https URL",
-        ),
-        (
-            https,
-            AUTH,
-            AUTH,
-            2,
-            "p256dh must be an uncompressed P-256 public key",
-        ),
-        (https, UA_PUBLIC, UA_PUBLIC, 2, "auth must be 16 bytes"),
-        (https, UA_PUBLIC, AUTH, 0, "max_priority must be 1 to 5"),
-        (https, UA_PUBLIC, AUTH, 6, "max_priority must be 1 to 5"),
-    ];
-    for (endpoint, p256dh, auth, level, error) in cases {
-        let body = serde_json::json!({"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}, "max_priority": level});
-        let response = http_request(address, "POST", "/v1/push/subscribe", &body.to_string()).await;
-        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(response.body["error"], error, "{body}");
-    }
-    assert!(state.db.push_subscriptions().unwrap().is_empty());
-    server.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ingest_pushes_a_card_to_devices_whose_level_admits_it() {
-    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let (base, mut pushes) = stub_push_service(StatusCode::CREATED).await;
-    // Inserted directly, because the route accepts only https endpoints.
-    state
-        .db
-        .upsert_push_subscription(&subscription(format!("{base}important"), 2))
-        .unwrap();
-    state
-        .db
-        .upsert_push_subscription(&subscription(format!("{base}urgent"), 1))
-        .unwrap();
-    let (address, server) = start_http_server(state.clone()).await;
-
-    let response = http_request(
-            address,
-            "POST",
-            "/v1/ingest",
-            r#"{"specversion":"1.0","id":"push-check","source":"urn:test:push","type":"triage.finding","data":{"title":"Push check"}}"#,
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::ACCEPTED);
-    let queued = state.db.queue(crate::events::now_ms()).unwrap();
-    assert_eq!((queued[0].kind, queued[0].priority), (Kind::Finding, 2));
-
-    let (id, headers, body) = tokio::time::timeout(Duration::from_secs(5), pushes.recv())
-        .await
-        .expect("the important device got no push")
-        .unwrap();
-    assert_eq!(id, "important");
-    assert_eq!(headers["content-encoding"], "aes128gcm");
-    assert_eq!(headers["ttl"], "86400");
-    assert_eq!(headers["urgency"], "normal");
-    let authorization = headers["authorization"].to_str().unwrap();
-    assert!(authorization.starts_with("vapid t="), "{authorization}");
-    assert!(
-        authorization.ends_with(&format!(", k={}", state.push.public_key())),
-        "{authorization}"
-    );
-    // Record size 4096, then the 65-byte sender key, after the 16-byte salt.
-    assert_eq!(body[16..21], [0, 0, 16, 0, 65]);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(500), pushes.recv())
-            .await
-            .is_err(),
-        "the urgent-only device must not hear a priority-2 card"
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn push_test_drops_a_subscription_the_service_forgot() {
-    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let (base, _pushes) = stub_push_service(StatusCode::GONE).await;
-    let endpoint = format!("{base}forgotten");
-    state
-        .db
-        .upsert_push_subscription(&subscription(endpoint.clone(), 2))
-        .unwrap();
-    let (address, server) = start_http_server(state.clone()).await;
-    let body = serde_json::json!({"endpoint": endpoint}).to_string();
-
-    assert_eq!(
-        http_request(address, "POST", "/v1/push/test", &body)
-            .await
-            .status,
-        StatusCode::GONE
-    );
-    assert!(state.db.push_subscription(&endpoint).unwrap().is_none());
-    assert_eq!(
-        http_request(address, "POST", "/v1/push/test", &body)
-            .await
-            .status,
-        StatusCode::NOT_FOUND
-    );
-    server.abort();
-}
-
 #[tokio::test]
 async fn same_event_id_from_different_sources_stores_and_looks_up_distinct_cards() {
     let first_event = event_with_id(
@@ -1524,34 +1333,6 @@ async fn duplicate_queued_finding_folds_without_queueing() {
     server.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn folded_duplicate_sends_no_push() {
-    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let (base, mut pushes) = stub_push_service(StatusCode::CREATED).await;
-    state.db.upsert_push_subscription(&subscription(format!("{base}duplicate"), 2)).unwrap();
-    let (address, server) = start_http_server(state.clone()).await;
-    let event = |id| event_with_id(
-        crate::events::T_FINDING,
-        "jobs://runner1",
-        id,
-        serde_json::json!({"title": "Alert flush failed"}),
-    );
-    for id in ["first", "duplicate"] {
-        let response = http_request(
-            address,
-            "POST",
-            "/v1/ingest",
-            &serde_json::to_string(&event(id)).unwrap(),
-        ).await;
-        assert_eq!(response.status, StatusCode::ACCEPTED);
-    }
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), pushes.recv()).await.unwrap().unwrap().0,
-        "duplicate"
-    );
-    assert!(tokio::time::timeout(Duration::from_millis(500), pushes.recv()).await.is_err());
-    server.abort();
-}
 #[tokio::test]
 async fn report_route_handles_unknown_and_paneless_cards() {
     let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
@@ -2430,20 +2211,17 @@ async fn poll_broadcasts_when_deferred_card_becomes_due() {
     })
     .unwrap();
     let (bus, mut updates) = tokio::sync::broadcast::channel(16);
-    let push = crate::push::Push::load(&db, &[]).unwrap();
     let state = Arc::new(AppState {
         db,
         bus,
         tracker: Mutex::new(crate::cards::Tracker::default()),
         launch: crate::cards::Launch::default(),
-        push,
         allowed_hosts: Vec::new(),
         media: crate::media::Roots::default(),
     });
     let server = tokio::spawn(super::serve(
         state.clone(),
         "127.0.0.1:0".parse().unwrap(),
-        false,
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(500), updates.recv())

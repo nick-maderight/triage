@@ -1015,11 +1015,8 @@
     assert(registration, 'service worker registration exists');
     return { scenario: 'pwa', passed: true };
   };
-  const checkNotify = async () => {
-    const bell = document.querySelector('#btn-notify'),
-      bar = document.querySelector('.bar'),
-      dialog = document.querySelector('#notify');
-    assert(visible(bell), 'the notifications bell is visible');
+  const checkHeader = async () => {
+    const bar = document.querySelector('.bar');
     assert(document.documentElement.scrollWidth <= innerWidth, 'the page does not scroll sideways');
     assert(bar.scrollWidth <= bar.clientWidth, 'the header bar does not overflow');
     // Visually hidden labels are 1px wide on purpose; every other header item must show its whole content.
@@ -1030,23 +1027,7 @@
         `${item.id || item.className} is not clipped (${item.scrollWidth} > ${item.clientWidth})`,
       );
     }
-    bell.click();
-    await waitFor(
-      () => dialog.open && !text('#notify-status').includes('Checking'),
-      'the notifications sheet to check this device',
-      5000,
-    );
-    assert(
-      dialog.querySelectorAll('#notify-level [role="radio"][aria-checked="true"]').length === 1,
-      'exactly one notification level is selected',
-    );
-    const status = text('#notify-status');
-    assert(
-      document.querySelector('#notify-toggle').disabled === /blocked|cannot|unavailable|Home Screen/.test(status),
-      `Turn on is disabled exactly when this device cannot subscribe (${status})`,
-    );
-    dialog.close();
-    return { scenario: 'notify', passed: true };
+    return { scenario: 'header', passed: true };
   };
 
   const checkDshCard = async () => {
@@ -1081,7 +1062,7 @@
     if (scenario === 'long-title') return checkLongTitle();
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();
-    if (scenario === 'notify') return checkNotify();
+    if (scenario === 'header') return checkHeader();
     if (scenario === 'dsh-card') return checkDshCard();
     fail(`unknown scenario ${String(scenario)}`);
   };

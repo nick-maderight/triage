@@ -138,7 +138,6 @@ fn spawn_daemon(temp: &TestDir, tmux_dir: &Path, db_path: &Path, addr: SocketAdd
         .arg(db_path)
         .args(["--listen"])
         .arg(addr.to_string())
-        .arg("--no-notify")
         .env_clear()
         .env("PATH", tmux_dir)
         .env("TMPDIR", &temp.0)

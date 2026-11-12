@@ -1331,7 +1331,6 @@ dialog.sheet[open] {
 }
 .compose label,
 #dispatch-mode-label,
-#notify-level-label,
 #compose-mode-label {
   font-size: 13px;
   font-weight: 500;
@@ -1386,12 +1385,6 @@ dialog.sheet[open] {
 .mode-help {
   color: var(--muted);
   font-size: 13px;
-}
-.notify-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin: 12px 0 20px;
 }
 /* pickers */
 .picker-field {

@@ -85,7 +85,7 @@ fn start_server(address: SocketAddr, database: &Path, directory: &TestDir, path:
     let database = database.to_str().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_triage"));
     command
-        .args(["serve", "--listen", &address, "--db", database, "--no-notify"])
+        .args(["serve", "--listen", &address, "--db", database])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     isolate_server(&mut command, directory, path);

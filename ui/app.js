@@ -52,7 +52,6 @@ const S = {
   peekMonoRatio: 0,
   contextToken: 0,
   picker: null,
-  notify: { loaded: false, error: null, key: null, reg: null, sub: null, level: null, choice: 2 },
 };
 (() => {
   const $ = (s, r = document) => r.querySelector(s),
@@ -1786,169 +1785,6 @@ const S = {
     if (prior?.isConnected) prior.focus({ preventScroll: true });
     else if (!document.querySelector('dialog[open]')) focusPrimary();
   }
-  // Notifications: one push subscription per device, and the daemon keeps its level.
-  const NOTIFY_HELP = {
-    1: 'Questions, plans and anything sent as urgent.',
-    2: 'Adds findings. Session reports stay quiet.',
-    5: 'Every new card, session reports included.',
-  };
-  const b64urlBytes = (s) =>
-    Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
-  function notifyStatus(env) {
-    if (!env.supported)
-      return {
-        text: env.ios
-          ? 'On iPhone and iPad, add Triage to the Home Screen from the Share menu, then turn notifications on in the app.'
-          : 'This browser cannot get push notifications here. Open the inbox at its HTTPS address.',
-        on: false,
-        toggle: false,
-      };
-    if (env.permission === 'denied')
-      return {
-        text: "Notifications are blocked for this site. Allow them in the browser's site settings, then reopen this sheet.",
-        on: false,
-        toggle: false,
-      };
-    if (env.error)
-      return { text: `Notifications are unavailable here (${env.error}).`, on: false, toggle: false };
-    if (!env.loaded) return { text: 'Checking this device…', on: false, toggle: false };
-    return env.level == null
-      ? { text: 'Off on this device.', on: false, toggle: true }
-      : { text: 'On for this device.', on: true, toggle: true };
-  }
-  function notifyEnv() {
-    const ua = navigator.userAgent;
-    return {
-      supported: 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
-      ios: /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1),
-      permission: 'Notification' in window ? Notification.permission : 'default',
-      loaded: S.notify.loaded,
-      error: S.notify.error,
-      level: S.notify.level,
-    };
-  }
-  function renderNotify() {
-    const n = S.notify,
-      status = notifyStatus(notifyEnv());
-    $('#notify-status').textContent = status.text;
-    $('#notify-toggle').textContent = status.on ? 'Turn off' : 'Turn on';
-    $('#notify-toggle').disabled = !status.toggle;
-    $('#notify-test').disabled = !status.on;
-    for (const b of $('#notify-level').children) {
-      const on = Number(b.dataset.level) === n.choice;
-      b.setAttribute('aria-checked', String(on));
-      b.tabIndex = on ? 0 : -1;
-    }
-    $('#notify-level-help').textContent = NOTIFY_HELP[n.choice];
-  }
-  async function loadNotify() {
-    const n = S.notify;
-    n.loaded = false;
-    n.error = null;
-    renderNotify();
-    if (!notifyEnv().supported) return;
-    try {
-      n.reg = await Promise.race([
-        navigator.serviceWorker.ready,
-        new Promise((_, fail) => setTimeout(() => fail(new Error('the service worker did not start')), 5000)),
-      ]);
-      n.sub = await n.reg.pushManager.getSubscription();
-      const r = await api(`/v1/push${n.sub ? `?endpoint=${enc(n.sub.endpoint)}` : ''}`);
-      n.key = r.key;
-      n.level = r.max_priority;
-      const made = n.sub?.options?.applicationServerKey;
-      // A subscription made with an older daemon key can never be delivered, so Turn on starts a fresh one.
-      if (made && String(new Uint8Array(made)) !== String(b64urlBytes(n.key))) {
-        await n.sub.unsubscribe();
-        n.sub = null;
-        n.level = null;
-      }
-      if (n.level != null) n.choice = n.level;
-      n.loaded = true;
-    } catch (e) {
-      n.error = e.message;
-    }
-    renderNotify();
-  }
-  async function saveNotify(level) {
-    await api('/v1/push/subscribe', { ...S.notify.sub.toJSON(), max_priority: level });
-    S.notify.level = level;
-  }
-  async function toggleNotify() {
-    const n = S.notify,
-      hint = $('#notify-hint');
-    hint.textContent = '';
-    try {
-      if (n.level != null) {
-        await api('/v1/push/unsubscribe', { endpoint: n.sub.endpoint });
-        await n.sub.unsubscribe();
-        n.sub = null;
-        n.level = null;
-        hint.textContent = 'Turned off on this device.';
-      } else {
-        // Safari shows the permission prompt only when subscribe runs straight from the tap, so nothing is awaited before it.
-        n.sub =
-          n.sub ||
-          (await n.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlBytes(n.key) }));
-        await saveNotify(n.choice);
-        hint.textContent = 'On. Send a test to check this device.';
-      }
-    } catch (e) {
-      hint.textContent =
-        notifyEnv().permission === 'denied'
-          ? 'Notifications are blocked for this site.'
-          : `Could not change notifications (${e.message}).`;
-    }
-    renderNotify();
-  }
-  async function setNotifyLevel(level) {
-    const n = S.notify,
-      previous = n.choice;
-    n.choice = level;
-    renderNotify();
-    if (n.level == null || level === n.level) return;
-    try {
-      await saveNotify(level);
-      $('#notify-hint').textContent = 'Saved.';
-    } catch (e) {
-      n.choice = previous;
-      $('#notify-hint').textContent = `Could not save (${e.message}).`;
-    }
-    renderNotify();
-  }
-  async function testNotify() {
-    const n = S.notify,
-      hint = $('#notify-hint');
-    hint.textContent = 'Sending…';
-    try {
-      await api('/v1/push/test', { endpoint: n.sub.endpoint });
-      hint.textContent = 'Test sent. It should arrive in a few seconds.';
-    } catch (e) {
-      hint.textContent = `Test failed (${e.message}).`;
-      if (e.status === 404 || e.status === 410) {
-        await n.sub?.unsubscribe().catch(() => {});
-        n.sub = null;
-        await loadNotify();
-      }
-    }
-  }
-  function openNotify() {
-    $('#notify-hint').textContent = '';
-    showDialog($('#notify'));
-    void loadNotify();
-  }
-  // Close notifications for cards already handled elsewhere, judged by a fresh read of the queue, never a stale one.
-  function pruneNotifications() {
-    if (document.visibilityState !== 'visible' || !('serviceWorker' in navigator)) return;
-    Promise.all([api('/v1/queue'), navigator.serviceWorker.getRegistration()])
-      .then(([q, r]) =>
-        r?.getNotifications().then((shown) => {
-          const queued = new Set(q.cards.map((c) => c.id));
-          for (const n of shown) if (!queued.has(n.tag)) n.close();
-        }),
-      )
-      .catch(() => {});
-  }
   function peekAtBottom(pre) {
     return pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 1;
   }
@@ -3074,16 +2910,6 @@ const S = {
   $('#btn-compose').addEventListener('click', openCompose);
   $('#btn-keys').addEventListener('click', () => showDialog($('#keys')));
   $('#count-toggle')?.addEventListener('click', countToggle);
-  $('#btn-notify').addEventListener('click', openNotify);
-  $('#notify-toggle').addEventListener('click', toggleNotify);
-  $('#notify-test').addEventListener('click', testNotify);
-  $('#notify-level').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-level]');
-    if (b) void setNotifyLevel(Number(b.dataset.level));
-  });
-  $('#notify-level').addEventListener('keydown', (e) =>
-    radioKeydown(e, (b) => void setNotifyLevel(Number(b.dataset.level))),
-  );
   // Theme: the inline head script sets data-theme first; the toggle swaps and persists it.
   const icon = (d) =>
       `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`,
@@ -3146,7 +2972,6 @@ const S = {
     clearSheetImage('dispatch');
     closeDialog($('#dispatch'));
   });
-  $('#notify').addEventListener('close', () => closeDialog($('#notify')));
   $('#dispatch-form').addEventListener('submit', submitDispatch);
   $('#dispatch-note').addEventListener('input', (e) => {
     const d = S.drafts.get(S.dispatchId);
@@ -3234,7 +3059,6 @@ const S = {
     void refresh().then(connectStream);
   }
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-  document.addEventListener('visibilitychange', pruneNotifications);
   function resumeStream() {
     if (S.stream) S.stream.close();
     S.stream = null;
@@ -3248,6 +3072,5 @@ const S = {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') resumeStream();
   });
-  pruneNotifications();
   boot();
 })();

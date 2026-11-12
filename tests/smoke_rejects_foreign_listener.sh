@@ -52,7 +52,7 @@ if [ "$calls" -ne 1 ]; then
   exit 1
 fi
 case "$serve_args" in
-  "serve --db $TEST_DIR"/triage-smoke.*/triage.db" --listen 127.0.0.1:7391 --no-notify")
+  "serve --db $TEST_DIR"/triage-smoke.*/triage.db" --listen 127.0.0.1:7391")
     ;;
   *)
     printf '%s\n' 'smoke server did not use a per-run database' >&2

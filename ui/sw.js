@@ -1,4 +1,4 @@
-const VERSION = 'triage-shell-v10';
+const VERSION = 'triage-shell-v11';
 const SHELL = [
   '/',
   '/style.css',
@@ -35,30 +35,4 @@ self.addEventListener('fetch', (e) => {
       .catch(() => cache.match(e.request).then((cached) => cached || Response.error()))
   );
   e.respondWith(update);
-});
-
-// Every push carries one card as {title, body, tag}. Browsers revoke push permission when a push shows nothing,
-// so an unreadable payload still shows a notification.
-self.addEventListener('push', (e) => {
-  let card = {};
-  try {
-    card = e.data?.json() ?? {};
-  } catch {}
-  e.waitUntil(
-    self.registration.showNotification(card.title || 'Triage', {
-      body: card.body || '',
-      tag: card.tag || 'triage',
-      icon: '/apple-touch-icon.png',
-    }),
-  );
-});
-
-self.addEventListener('notificationclick', (e) => {
-  e.notification.close();
-  e.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
-      const inbox = windows.find((w) => new URL(w.url).origin === self.location.origin);
-      return inbox ? inbox.focus() : self.clients.openWindow('/');
-    }),
-  );
 });

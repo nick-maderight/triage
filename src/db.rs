@@ -164,14 +164,6 @@ fn query_cards<P: rusqlite::Params>(conn: &Connection, sql: &str, params: P) -> 
         .map(|data| from_json(data?))
         .collect()
 }
-fn push_subscription_row(row: &rusqlite::Row<'_>) -> Result<crate::push::Subscription> {
-    Ok(crate::push::Subscription {
-        endpoint: row.get(0)?,
-        p256dh: row.get(1)?,
-        auth: row.get(2)?,
-        max_priority: row.get(3)?,
-    })
-}
 pub(crate) fn cloud_event_key(source: &str, id: &str) -> String {
     format!("event:{}:{}:{}", source.len(), source, id)
 }
@@ -254,17 +246,8 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS events_card_id_idx ON events(card_id);
             CREATE INDEX IF NOT EXISTS events_type_ts_ms_idx ON events(type, ts_ms);
-            CREATE TABLE IF NOT EXISTS push_subscriptions (
-                endpoint TEXT PRIMARY KEY,
-                p256dh TEXT NOT NULL,
-                auth TEXT NOT NULL,
-                max_priority INTEGER NOT NULL,
-                created_ms INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS push_vapid (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                pkcs8 BLOB NOT NULL
-            );",
+            DROP TABLE IF EXISTS push_subscriptions;
+            DROP TABLE IF EXISTS push_vapid;",
         )?;
         Ok(Db {
             conn: Mutex::new(conn),
@@ -741,55 +724,6 @@ impl Db {
         conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0))
     }
 
-    /// The daemon's VAPID key: the stored one, or `candidate` stored now when none exists.
-    pub fn vapid_key(&self, candidate: &[u8]) -> Result<Vec<u8>> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT OR IGNORE INTO push_vapid (id, pkcs8) VALUES (1, ?1)", [candidate])?;
-        conn.query_row("SELECT pkcs8 FROM push_vapid WHERE id = 1", [], |row| row.get(0))
-    }
-
-    /// Stores a browser's subscription; subscribing again with the same endpoint replaces its keys and level.
-    pub fn upsert_push_subscription(&self, subscription: &crate::push::Subscription) -> Result<()> {
-        self.conn.lock().unwrap().execute(
-            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, max_priority, created_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(endpoint) DO UPDATE SET
-                 p256dh = excluded.p256dh, auth = excluded.auth, max_priority = excluded.max_priority",
-            params![
-                subscription.endpoint,
-                subscription.p256dh,
-                subscription.auth,
-                subscription.max_priority,
-                crate::events::now_ms()
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn push_subscription(&self, endpoint: &str) -> Result<Option<crate::push::Subscription>> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT endpoint, p256dh, auth, max_priority FROM push_subscriptions WHERE endpoint = ?1",
-                [endpoint],
-                push_subscription_row,
-            )
-            .optional()
-    }
-
-    pub fn push_subscriptions(&self) -> Result<Vec<crate::push::Subscription>> {
-        let conn = self.conn.lock().unwrap();
-        let mut statement =
-            conn.prepare("SELECT endpoint, p256dh, auth, max_priority FROM push_subscriptions ORDER BY created_ms")?;
-        let rows = statement.query_map([], push_subscription_row)?;
-        rows.collect()
-    }
-
-    pub fn delete_push_subscription(&self, endpoint: &str) -> Result<()> {
-        self.conn.lock().unwrap().execute("DELETE FROM push_subscriptions WHERE endpoint = ?1", [endpoint])?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
