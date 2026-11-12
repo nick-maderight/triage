@@ -789,11 +789,15 @@ main {
   background: var(--clear);
   color: var(--muted);
 }
-.other-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.other-form,
+.field-row {
+  display: flex;
   align-items: center;
   gap: 8px;
+}
+:is(.other-form, .field-row) > .field {
+  flex: 1;
+  min-width: 0;
 }
 .note {
   display: grid;
@@ -1335,7 +1339,7 @@ dialog.sheet[open] {
   font-size: 13px;
   font-weight: 500;
 }
-.compose > :is(.compose-grid, #compose-mode-label, label[for='dispatch-note']) {
+.compose > :is(.compose-grid, #compose-mode-label, label[for='dispatch-note'], label[for='dictation-phrases']) {
   margin-top: 12px;
 }
 .compose-grid {
@@ -1990,7 +1994,7 @@ dialog.picker::backdrop {
     margin-left: auto;
   }
 }
-/* Phones need room for the bell. Under 440px the wordmark keeps only its symbol, and under 390px New session keeps only its plus. */
+/* Phones need room for the Settings button. Under 440px the wordmark keeps only its symbol. New session keeps only its plus under 390px. */
 @media (max-width: 439px) {
   .brand-name {
     position: absolute;
@@ -2212,4 +2216,43 @@ dialog.picker::backdrop {
   white-space: nowrap;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* Dictation puts one microphone beside each text field. It shows once the browser can recognize speech on this device. */
+:root:not([data-dictation='on']) .mic {
+  display: none;
+}
+.mic::before {
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3ZM19 10v2a7 7 0 0 1-14 0v-2M12 19v3'/%3E%3C/svg%3E");
+  content: '';
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+}
+.mic[aria-pressed='true'] {
+  background: var(--negative-bg);
+  color: var(--negative-fg);
+}
+.phrases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.phrases[hidden] {
+  display: none;
+}
+.phrase {
+  max-width: 100%;
+  white-space: normal;
+  text-align: start;
+}
+.compose > h3 {
+  font-weight: 600;
+}
+.dictation-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 12px 0 20px;
 }

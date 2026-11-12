@@ -1017,6 +1017,7 @@
   };
   const checkHeader = async () => {
     const bar = document.querySelector('.bar');
+    assert(visible(document.querySelector('#btn-settings')), 'the Settings button is visible');
     assert(document.documentElement.scrollWidth <= innerWidth, 'the page does not scroll sideways');
     assert(bar.scrollWidth <= bar.clientWidth, 'the header bar does not overflow');
     // Visually hidden labels are 1px wide on purpose; every other header item must show its whole content.
@@ -1045,6 +1046,74 @@
     return { scenario: 'dsh-card', passed: true };
   };
 
+  // Fakes the browser's on-device speech engine to run the scenario in any browser.
+  const checkDictation = async () => {
+    const NativeRecognition = window.SpeechRecognition,
+      settings = document.querySelector('#settings'),
+      compose = document.querySelector('#compose'),
+      prompt = document.querySelector('#compose-prompt'),
+      mic = document.querySelector('[data-dictate="compose-prompt"]'),
+      made = [];
+    class FakeRecognition {
+      static available = async () => 'available';
+      static install = async () => true;
+      constructor() {
+        made.push(this);
+      }
+      start() {}
+      stop() {
+        this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'dictated words' }], { isFinal: true })] });
+        this.onend();
+      }
+      abort() {
+        this.onend();
+      }
+    }
+    FakeRecognition.prototype.processLocally = false;
+    window.SpeechRecognition = FakeRecognition;
+    try {
+      document.querySelector('#btn-settings').click();
+      await waitFor(
+        () =>
+          settings.open &&
+          document.documentElement.dataset.dictation === 'on' &&
+          document.querySelector('#compose-phrases [data-phrase]'),
+        'the Settings sheet, dictation on and a saved phrase',
+      );
+      for (const id of ['#dictation-dictionary', '#dictation-phrases', '#dictation-save'])
+        assert(visible(document.querySelector(id)), `${id} is visible`);
+      assert(document.documentElement.scrollWidth <= innerWidth, 'the page does not scroll sideways');
+      settings.close();
+      const note = document.querySelector('#note');
+      if (note) {
+        const beside = document.querySelector('[data-dictate="note"]').getBoundingClientRect(),
+          row = note.getBoundingClientRect();
+        assert(beside.width && beside.top < row.bottom && row.top < beside.bottom, 'the note microphone sits beside the note');
+      }
+      document.querySelector('#btn-compose').click();
+      await waitFor(() => compose.open, 'the New session sheet');
+      assert(visible(mic), 'the prompt has a visible microphone');
+      const phrase = document.querySelector('#compose-phrases [data-phrase]');
+      phrase.click();
+      assert(prompt.value === phrase.dataset.phrase, 'a phrase button writes its phrase into the prompt');
+      prompt.value = 'Fix the build';
+      prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+      mic.click();
+      await waitFor(() => mic.getAttribute('aria-pressed') === 'true', 'the microphone to show it listens');
+      assert(made.length === 1 && made[0].processLocally === true, 'the recognizer is told to stay on this device');
+      mic.click();
+      await waitFor(() => prompt.value === 'Fix the build dictated words', 'the dictated words in the prompt');
+      await waitFor(() => mic.getAttribute('aria-pressed') === 'false' && !mic.disabled, 'the microphone to reset');
+      return { scenario: 'dictation', passed: true };
+    } finally {
+      window.SpeechRecognition = NativeRecognition;
+      prompt.value = '';
+      prompt.dispatchEvent(new Event('input', { bubbles: true }));
+      settings.close();
+      compose.close();
+    }
+  };
+
   globalThis.checkTriage = async (scenario) => {
     if (scenario === 'peek') return checkPeek();
     if (scenario === 'dimensions') return checkDimensions();
@@ -1064,6 +1133,7 @@
     if (scenario === 'plan-approval') return checkPlanApproval();
     if (scenario === 'header') return checkHeader();
     if (scenario === 'dsh-card') return checkDshCard();
+    if (scenario === 'dictation') return checkDictation();
     fail(`unknown scenario ${String(scenario)}`);
   };
 })();

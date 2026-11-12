@@ -52,6 +52,9 @@ const S = {
   peekMonoRatio: 0,
   contextToken: 0,
   picker: null,
+  dictating: null,
+  phrases: [],
+  dictionary: [],
 };
 (() => {
   const $ = (s, r = document) => r.querySelector(s),
@@ -365,7 +368,7 @@ const S = {
       S.shell = q.shell ?? '';
       return false;
     }
-    if (q.shell === S.shell || S.inflight.size || $('dialog[open]')) return false;
+    if (q.shell === S.shell || S.inflight.size || S.dictating || $('dialog[open]')) return false;
     const typed = [...S.drafts.values()].some((d) => d.note.trim() || d.other.trim() || d.dispatch.trim());
     if (typed || $('#compose-prompt')?.value.trim()) return false;
     location.reload();
@@ -1274,6 +1277,7 @@ const S = {
             draft(c).other = e.target.value;
           },
         }),
+        micButton('other-text', 'Dictate your answer'),
         button(c, 'other', 'btn secondary', { type: 'submit' }, null, 'Submit'),
       ),
     );
@@ -1285,19 +1289,24 @@ const S = {
       'div',
       'note',
       h('label', { for: 'note' }, 'Note', h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'n')),
-      h('input', {
-        id: 'note',
-        class: 'field',
-        type: 'text',
-        autocomplete: 'off',
-        enterkeyhint: 'done',
-        placeholder: 'Optional note for this action',
-        value: d.note,
-        disabled: busy,
-        oninput: (e) => {
-          draft(c).note = e.target.value;
-        },
-      }),
+      el(
+        'div',
+        'field-row',
+        h('input', {
+          id: 'note',
+          class: 'field',
+          type: 'text',
+          autocomplete: 'off',
+          enterkeyhint: 'done',
+          placeholder: 'Optional note for this action',
+          value: d.note,
+          disabled: busy,
+          oninput: (e) => {
+            draft(c).note = e.target.value;
+          },
+        }),
+        micButton('note', 'Dictate the note'),
+      ),
     );
   }
   function laterChoices() {
@@ -1813,6 +1822,218 @@ const S = {
     const prior = S.dialogFocus.get(d);
     if (prior?.isConnected) prior.focus({ preventScroll: true });
     else if (!document.querySelector('dialog[open]')) focusPrimary();
+  }
+  // Dictation runs in the browser. Every recognition sets processLocally, which requires the browser to recognize
+  // the speech on this device. The daemon only stores the dictionary and the phrases.
+  const DICTATION_STATUS = {
+    available:
+      'Your browser turns speech into text on this device. Please press the microphone beside a text field, speak, then press it again.',
+    downloadable:
+      "Your browser turns speech into text on this device. The first press of a microphone sets up the browser's speech model for this site, which can take a few minutes.",
+    downloading: 'Your browser is downloading its speech model. The microphones work once it finishes.',
+    unavailable:
+      "The microphones stay hidden because this browser cannot promise to keep your speech on this device. Any dictation your keyboard or operating system provides still types into triage's text fields.",
+    insecure: 'The microphones stay hidden because dictation requires the inbox over HTTPS or on localhost.',
+  };
+  const DICTATION_ERRORS = {
+    'no-speech': 'The microphone heard no speech.',
+    'not-allowed': 'Please allow the microphone for this site to dictate.',
+  };
+  function localSpeech() {
+    const Recognition = window.SpeechRecognition;
+    return window.isSecureContext && typeof Recognition?.available === 'function' && 'processLocally' in Recognition.prototype
+      ? Recognition
+      : null;
+  }
+  function speechOptions() {
+    return { langs: [navigator.language || 'en-US'], processLocally: true };
+  }
+  function micButton(id, label) {
+    return paintMic(h('button', { type: 'button', class: 'btn ghost square mic', 'data-dictate': id, 'aria-label': label }));
+  }
+  function paintMic(b) {
+    const phase = S.dictating?.id === b.dataset.dictate ? S.dictating.phase : '';
+    b.dataset.phase = phase;
+    b.setAttribute('aria-pressed', String(phase === 'listening'));
+    b.disabled = phase === 'starting';
+    return b;
+  }
+  function paintMics() {
+    document.querySelectorAll('.mic').forEach(paintMic);
+  }
+  function endDictation() {
+    S.dictating = null;
+    paintMics();
+  }
+  async function toggleDictation(id) {
+    const active = S.dictating;
+    if (active) {
+      if (active.id === id && active.phase === 'listening') active.recognition.stop();
+      return;
+    }
+    const field = $(`#${id}`),
+      Recognition = localSpeech();
+    if (!field || field.disabled || !Recognition) return;
+    const run = { id, card: field.closest('.card') ? current()?.id : null, phase: 'starting', recognition: null, cancelled: false, error: '' };
+    S.dictating = run;
+    paintMics();
+    try {
+      if ((await Recognition.available(speechOptions())) !== 'available') return await installSpeech(Recognition);
+      if (run.cancelled) return endDictation();
+      const recognition = new Recognition();
+      Object.assign(recognition, { lang: speechOptions().langs[0], processLocally: true, continuous: true, interimResults: false });
+      recognition.onresult = (e) => {
+        const words = [...e.results]
+          .slice(e.resultIndex)
+          .filter((result) => result.isFinal)
+          .map((result) => result[0].transcript.trim())
+          .filter(Boolean)
+          .join(' ');
+        if (words && !run.cancelled && !placeDictation(run, applyDictionary(words, S.dictionary))) {
+          run.cancelled = true;
+          recognition.abort();
+        }
+      };
+      recognition.onerror = (e) => {
+        run.error = e.error;
+      };
+      recognition.onend = () => {
+        endDictation();
+        if (!run.cancelled && run.error) toast(DICTATION_ERRORS[run.error] ?? `Dictation stopped (${run.error}).`, true);
+      };
+      recognition.start();
+      Object.assign(run, { recognition, phase: 'listening' });
+      paintMics();
+      announce('The microphone is listening. Please press it again to stop.');
+    } catch (e) {
+      endDictation();
+      toast(`Dictation failed (${e.message}).`, true);
+    }
+  }
+  // The first press on each site installs the browser's speech model. Press again to dictate.
+  async function installSpeech(Recognition) {
+    const wait = toast('Your browser is setting up speech recognition…', false, true);
+    try {
+      const ready = await Recognition.install(speechOptions());
+      toast(
+        ready
+          ? 'Speech recognition is ready. Please press the microphone again to dictate.'
+          : 'This browser could not set up speech recognition.',
+        !ready,
+      );
+    } catch {
+      toast('This browser could not set up speech recognition.', true);
+    } finally {
+      wait.remove();
+      endDictation();
+      void checkSpeech();
+    }
+  }
+  // A field outside the view sends its words to a toast, never to another card.
+  function placeDictation(run, text) {
+    const field = $(`#${run.id}`),
+      dialog = field?.closest('dialog');
+    if (!field || field.disabled || (dialog && !dialog.open) || (run.card && run.card !== current()?.id)) {
+      toast(`The field closed before the words arrived: ${text}`, true);
+      return false;
+    }
+    insertText(field, text);
+    return true;
+  }
+  function insertText(field, text) {
+    const start = field.selectionStart ?? field.value.length,
+      end = field.selectionEnd ?? start,
+      before = field.value.slice(0, start),
+      after = field.value.slice(end),
+      words = `${before && !/\s$/.test(before) ? ' ' : ''}${text}${after && !/^\s/.test(after) ? ' ' : ''}`;
+    field.value = before + words + after;
+    field.selectionStart = field.selectionEnd = before.length + words.length;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.focus({ preventScroll: true });
+  }
+  // One "heard = written" entry per line, blank lines skipped. The longest heard form sorts first so it wins.
+  function parseDictionary(text) {
+    const entries = [];
+    text.split('\n').forEach((line, index) => {
+      const at = line.indexOf('='),
+        heard = line.slice(0, at).trim(),
+        written = line.slice(at + 1).trim();
+      if (!line.trim()) return;
+      if (at < 0 || !heard || !written) throw new Error(`Please write dictionary line ${index + 1} as heard = written.`);
+      entries.push([heard, written]);
+    });
+    return entries.sort((a, b) => b[0].length - a[0].length);
+  }
+  // Matches whole words and ignores letter case. One pass means replaced text never matches again.
+  function applyDictionary(text, entries) {
+    if (!entries.length) return text;
+    const heard = entries.map(([form]) => form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+      written = new Map(entries.map(([form, word]) => [form.toLowerCase(), word]));
+    return text.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}])(?:${heard})(?![\\p{L}\\p{N}])`, 'giu'),
+      (match) => written.get(match.toLowerCase()) ?? match,
+    );
+  }
+  function renderPhrases() {
+    for (const box of document.querySelectorAll('.phrases')) {
+      box.replaceChildren(
+        ...S.phrases.map((phrase) => h('button', { type: 'button', class: 'btn phrase', 'data-phrase': phrase }, phrase)),
+      );
+      box.hidden = !S.phrases.length;
+    }
+  }
+  async function checkSpeech() {
+    let status = window.isSecureContext ? 'unavailable' : 'insecure';
+    try {
+      status = (await localSpeech()?.available(speechOptions())) ?? status;
+    } catch {}
+    if (!Object.hasOwn(DICTATION_STATUS, status)) status = 'unavailable';
+    document.documentElement.dataset.dictation = ['available', 'downloadable', 'downloading'].includes(status) ? 'on' : 'off';
+    $('#dictation-status').textContent = DICTATION_STATUS[status];
+  }
+  async function loadDictation() {
+    try {
+      const data = await api('/v1/dictation');
+      $('#dictation-dictionary').value = data.dictionary;
+      $('#dictation-phrases').value = data.phrases;
+      S.phrases = data.phrases
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      renderPhrases();
+      S.dictionary = parseDictionary(data.dictionary);
+    } catch (e) {
+      $('#dictation-hint').textContent = `Could not load dictation settings (${e.message}).`;
+    }
+  }
+  async function saveDictation(e) {
+    e.preventDefault();
+    const save = $('#dictation-save'),
+      hint = $('#dictation-hint'),
+      dictionary = $('#dictation-dictionary').value;
+    try {
+      parseDictionary(dictionary);
+    } catch (err) {
+      hint.textContent = err.message;
+      return;
+    }
+    save.disabled = true;
+    hint.textContent = 'Saving…';
+    try {
+      await api('/v1/dictation', { dictionary, phrases: $('#dictation-phrases').value });
+      hint.textContent = 'Saved.';
+      await loadDictation();
+    } catch (err) {
+      hint.textContent = err.message;
+    } finally {
+      save.disabled = false;
+    }
+  }
+  function openSettings() {
+    $('#dictation-hint').textContent = '';
+    showDialog($('#settings'));
+    void checkSpeech();
+    void loadDictation();
   }
   function peekAtBottom(pre) {
     return pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 1;
@@ -2927,6 +3148,10 @@ const S = {
       return;
     }
     if (S.laterOpen && !e.target.closest?.('.later')) closeLater(false);
+    const mic = e.target.closest?.('[data-dictate]'),
+      phrase = e.target.closest?.('[data-phrase]');
+    if (mic) void toggleDictation(mic.dataset.dictate);
+    else if (phrase) insertText($(`#${phrase.parentElement.dataset.for}`), phrase.dataset.phrase);
   });
   document.addEventListener('focusin', (e) => {
     const menu = $('#later-menu');
@@ -2935,6 +3160,17 @@ const S = {
     if (S.laterOpen && !menu?.contains(e.target) && !e.target.contains?.(menu)) closeLater(false);
     if (S.countsExpanded && !e.target.closest?.('#count-toggle, #counts')) closeCounts();
   });
+  // Closing the sheet that holds the field being dictated stops listening and drops the words.
+  document.addEventListener(
+    'close',
+    (e) => {
+      const run = S.dictating;
+      if (!run || !e.target.contains($(`#${run.id}`))) return;
+      run.cancelled = true;
+      run.recognition?.abort();
+    },
+    true,
+  );
   $('#btn-history').addEventListener('click', openHistory);
   $('#btn-compose').addEventListener('click', openCompose);
   $('#btn-keys').addEventListener('click', () => showDialog($('#keys')));
@@ -2946,6 +3182,8 @@ const S = {
     });
   }
   $('#count-toggle')?.addEventListener('click', countToggle);
+  $('#btn-settings').addEventListener('click', openSettings);
+  $('#dictation-form').addEventListener('submit', saveDictation);
   // Theme: the inline head script sets data-theme first; the toggle swaps and persists it.
   const icon = (d) =>
       `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`,
@@ -3093,6 +3331,8 @@ const S = {
   function boot() {
     setConnection('connecting');
     void refresh().then(connectStream);
+    void checkSpeech();
+    void loadDictation();
   }
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   function resumeStream() {

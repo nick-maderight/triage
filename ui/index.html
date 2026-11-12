@@ -38,6 +38,7 @@ try {
 <ul class="counts" id="counts" aria-label="Cards waiting by kind" data-od-id="counts"></ul>
 <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite" data-od-id="connection"><span class="connection-dot" aria-hidden="true"></span><span class="connection-label">Connecting</span></div>
 <div class="top-actions" data-od-id="header-actions">
+<button type="button" class="btn ghost square" id="btn-settings" aria-label="Settings" aria-haspopup="dialog" data-od-id="settings-button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg></button>
 <button type="button" class="btn ghost square" id="btn-theme" aria-label="Switch to dark mode" data-od-id="theme-toggle"></button>
 <button type="button" class="btn ghost" id="btn-compose" aria-keyshortcuts="c" data-od-id="compose-button"><svg class="compose-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="compose-label">New session</span> <kbd class="hint" aria-hidden="true">c</kbd></button>
 <button type="button" class="btn ghost" id="btn-history" aria-keyshortcuts="h" data-od-id="history-button">History <kbd class="hint" aria-hidden="true">h</kbd></button>
@@ -60,6 +61,7 @@ try {
 <form class="send" id="peek-form" data-od-id="peek-form">
 <label for="peek-input" class="sr-only">Text to send to the pane</label>
 <input class="field" id="peek-input" type="text" autocomplete="off" enterkeyhint="send" placeholder="Send text to the pane" disabled data-od-id="peek-input">
+<button type="button" class="btn ghost square mic" data-dictate="peek-input" aria-label="Dictate text for the pane" aria-pressed="false" data-od-id="peek-dictate"></button>
 <button type="submit" class="btn primary" id="peek-send" disabled data-od-id="peek-send">Send</button>
 </form>
 <p class="send-hint" id="peek-hint" aria-live="polite" data-od-id="peek-hint"></p>
@@ -88,6 +90,7 @@ try {
 <label for="compose-prompt">What should the session do?</label>
 <textarea class="field" id="compose-prompt" rows="4" required autocomplete="off" placeholder="Ask a question, give a task, or start a chat" data-od-id="compose-prompt"></textarea>
 <div class="attach" data-od-id="compose-attach">
+<button type="button" class="btn ghost square mic" data-dictate="compose-prompt" aria-label="Dictate the prompt" aria-pressed="false" data-od-id="compose-dictate"></button>
 <input type="file" class="sr-only" id="compose-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="compose-image">
 <button type="button" class="btn ghost attach-add" id="compose-image-add" aria-controls="compose-image" data-od-id="compose-image-add">Attach image</button>
 <div class="attach-preview" id="compose-image-preview" hidden data-od-id="compose-image-preview">
@@ -96,6 +99,7 @@ try {
 <button type="button" class="btn ghost" id="compose-image-remove" aria-label="Remove the attached image">Remove</button>
 </div>
 </div>
+<div class="phrases" id="compose-phrases" data-for="compose-prompt" role="group" aria-label="Phrases you often say" hidden data-od-id="compose-phrases"></div>
 <div class="compose-grid">
 <div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory</label>
 <button type="button" class="field picker-field" id="compose-cwd" value="" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
@@ -167,6 +171,7 @@ try {
 <label for="dispatch-note">Instruction</label>
 <textarea class="field" id="dispatch-note" rows="4" autocomplete="off" placeholder="Optional direction for the session" data-od-id="dispatch-note"></textarea>
 <div class="attach" data-od-id="dispatch-attach">
+<button type="button" class="btn ghost square mic" data-dictate="dispatch-note" aria-label="Dictate the instruction" aria-pressed="false" data-od-id="dispatch-dictate"></button>
 <input type="file" class="sr-only" id="dispatch-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="dispatch-image">
 <button type="button" class="btn ghost attach-add" id="dispatch-image-add" aria-controls="dispatch-image" data-od-id="dispatch-image-add">Attach image</button>
 <div class="attach-preview" id="dispatch-image-preview" hidden data-od-id="dispatch-image-preview">
@@ -175,9 +180,30 @@ try {
 <button type="button" class="btn ghost" id="dispatch-image-remove" aria-label="Remove the attached image">Remove</button>
 </div>
 </div>
+<div class="phrases" id="dispatch-phrases" data-for="dispatch-note" role="group" aria-label="Phrases you often say" hidden data-od-id="dispatch-phrases"></div>
 <button type="submit" class="btn primary" id="dispatch-start" data-od-id="dispatch-start">Launch <kbd class="hint" aria-hidden="true">Ctrl+Enter</kbd></button>
 </form>
 <p class="send-hint" id="dispatch-hint" aria-live="polite" data-od-id="dispatch-hint"></p>
+</dialog>
+<dialog id="settings" class="modal" aria-labelledby="settings-title" data-od-id="settings-sheet">
+<header class="sheet-head" data-od-id="settings-header">
+<h2 id="settings-title" data-od-id="settings-title">Settings</h2>
+<button type="button" class="btn ghost" data-close data-od-id="settings-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
+</header>
+<form class="compose" id="dictation-form" aria-labelledby="dictation-title" data-od-id="dictation-form">
+<h3 id="dictation-title" data-od-id="dictation-title">Dictation</h3>
+<p class="mode-help" id="dictation-status" data-od-id="dictation-status">Checking this browser…</p>
+<label for="dictation-dictionary" data-od-id="dictation-dictionary-label">Dictionary</label>
+<textarea class="field" id="dictation-dictionary" rows="5" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="forge jo = Forgejo" aria-describedby="dictation-dictionary-help" data-od-id="dictation-dictionary"></textarea>
+<p class="mode-help" id="dictation-dictionary-help" data-od-id="dictation-dictionary-help">Please put one entry on each line, as what the browser hears = what to write. Matching ignores letter case and takes whole words only.</p>
+<label for="dictation-phrases" data-od-id="dictation-phrases-label">Phrases you often say</label>
+<textarea class="field" id="dictation-phrases" rows="4" autocomplete="off" placeholder="Please report what changed." aria-describedby="dictation-phrases-help" data-od-id="dictation-phrases"></textarea>
+<p class="mode-help" id="dictation-phrases-help" data-od-id="dictation-phrases-help">One per line. New session and Dispatch show each one as a button that adds it to the text.</p>
+<div class="dictation-actions" data-od-id="dictation-actions">
+<button type="submit" class="btn primary" id="dictation-save" data-od-id="dictation-save">Save</button>
+</div>
+</form>
+<p class="send-hint" id="dictation-hint" aria-live="polite" data-od-id="dictation-hint"></p>
 </dialog>
 <dialog id="keys" class="modal" aria-labelledby="keys-title" data-od-id="shortcut-sheet">
 <header class="sheet-head" data-od-id="keys-header">

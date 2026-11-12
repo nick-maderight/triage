@@ -58,6 +58,7 @@ test('custom answers are hidden from findings and available on ask and plan card
       button: (_card, _action, className, props, onClick, ...children) =>
         node('button', { ...props, class: className, onClick }, ...children),
       render() {},
+      micButton: () => null,
       snapshot: () => ({}),
       announce() {},
       focusPrimary() {},
@@ -214,6 +215,7 @@ test('plan cards from the queue render and answer through the answer route', asy
       },
       resultMessage: () => 'Sent answer',
       render() {},
+      micButton: () => null,
       emptyHistory() {},
       window: { matchMedia: () => ({ matches: true }) },
       $: (selector) => (selector === '#other-text' || selector === '#other-btn' ? { focus() {} } : null),

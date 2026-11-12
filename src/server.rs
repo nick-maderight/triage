@@ -190,6 +190,7 @@ fn router(state: Arc<AppState>, port: Option<u16>) -> axum::Router {
         .route("/v1/tmux-sessions", axum::routing::get(tmux_sessions))
         .route("/v1/models", axum::routing::get(models))
         .route("/v1/history", axum::routing::get(history))
+        .route("/v1/dictation", axum::routing::get(dictation_settings).post(save_dictation))
         .route("/v1/panes/{pane}/peek", axum::routing::get(peek))
         .route("/v1/panes/{pane}/send", axum::routing::post(send))
         .route("/v1/panes/{pane}/jump", axum::routing::post(jump))
@@ -315,6 +316,12 @@ fn default_history_limit() -> usize {
 struct ModelsQuery {
     #[serde(default)]
     engine: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DictationReq {
+    dictionary: String,
+    phrases: String,
 }
 
 async fn queue(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -1345,6 +1352,27 @@ async fn context(
             .into_response()
         }
         Ok(Ok(None)) => error_response(axum::http::StatusCode::NOT_FOUND, "card not found"),
+        Ok(Err(error)) => internal_error(error),
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn dictation_settings(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    match tokio::task::spawn_blocking(move || state.db.dictation()).await {
+        Ok(Ok((dictionary, phrases))) => {
+            axum::Json(serde_json::json!({"dictionary": dictionary, "phrases": phrases})).into_response()
+        }
+        Ok(Err(error)) => internal_error(error),
+        Err(error) => internal_error(error),
+    }
+}
+
+async fn save_dictation(
+    State(state): State<Arc<AppState>>,
+    axum::Json(request): axum::Json<DictationReq>,
+) -> axum::response::Response {
+    match tokio::task::spawn_blocking(move || state.db.set_dictation(&request.dictionary, &request.phrases)).await {
+        Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
         Ok(Err(error)) => internal_error(error),
         Err(error) => internal_error(error),
     }

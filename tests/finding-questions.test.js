@@ -131,6 +131,7 @@ test('Other on a finding question records typed text and moves to the next quest
       button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
       mdInline: (text) => text,
       render() {},
+      micButton: () => null,
       $: () => ({ focus() {} }),
       goStep: (current, step) => Object.assign(state.drafts.get(current.id), { step, open: false }),
     });
@@ -182,6 +183,7 @@ test('an empty Other submit keeps the field open and says what it wants', () => 
       toast: (text, error) => toasts.push([text, error]),
       announce: (text) => said.push(text),
       render() {},
+      micButton: () => null,
       $: () => ({ focus() {} }),
       goStep: (current, step) => {
         steps.push(step);

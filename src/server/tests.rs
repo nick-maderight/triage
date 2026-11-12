@@ -1228,6 +1228,24 @@ async fn ingest_rejects_malformed_finding_questions_and_stores_unknown_events() 
 }
 
 #[tokio::test]
+async fn dictation_settings_start_empty_and_keep_the_latest_save() {
+    let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
+    let (address, server) = start_http_server(state).await;
+    let empty = http_request(address, "GET", "/v1/dictation", "").await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(empty.body, serde_json::json!({"dictionary": "", "phrases": ""}));
+    for saved in [
+        serde_json::json!({"dictionary": "forge jo = Forgejo\n\nred mine = Redmine", "phrases": "Please report what changed."}),
+        serde_json::json!({"dictionary": "", "phrases": "Ship it."}),
+    ] {
+        let response = http_request(address, "POST", "/v1/dictation", &saved.to_string()).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+        assert_eq!(http_request(address, "GET", "/v1/dictation", "").await.body, saved);
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn same_event_id_from_different_sources_stores_and_looks_up_distinct_cards() {
     let first_event = event_with_id(
         crate::events::T_INFO,
