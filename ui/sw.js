@@ -1,4 +1,4 @@
-const VERSION = 'triage-shell-v11';
+const VERSION = 'triage-shell-v12';
 const SHELL = [
   '/',
   '/style.css',
@@ -16,8 +16,31 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== VERSION).map((key) => caches.delete(key))))
-      .then(() => self.clients.claim()),
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((key) => key !== VERSION).map((key) => caches.delete(key)));
+      await self.clients.claim();
+      // A tab running an older inbox cannot reload itself and would keep answering with dead
+      // controls. Ask every tab once; reload the ones that do not answer.
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true }),
+        answered = new Set(),
+        onMessage = (event) => {
+          if (event.data?.type === 'triage-shell-pong') answered.add(event.source?.id);
+        };
+      self.addEventListener('message', onMessage);
+      for (const client of clients) {
+        try {
+          client.postMessage({ type: 'triage-shell-ping' });
+        } catch {}
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      self.removeEventListener('message', onMessage);
+      await Promise.all(
+        clients.map((client) =>
+          answered.has(client.id) ? null : client.navigate?.(client.url)?.catch(() => {}),
+        ),
+      );
+    })(),
   );
 });
 

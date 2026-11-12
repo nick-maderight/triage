@@ -321,3 +321,74 @@ test('a finding question with its own star is titled by its label and opens at t
   for (const step of [0, 1, 2]) context.ui.goStep(card, step);
   assert.deepEqual(scrolls, [0, 240, 240], 'only a question with its own text resets the scroll');
 });
+
+test('Other opens when an action is in flight and brings its field into view', () => {
+  const card = {
+      id: 'finding-other-pending',
+      kind: 'finding',
+      allow_other: true,
+      questions: [{ label: 'q', question: 'Choose', options: [{ label: 'Keep' }] }],
+    },
+    state = {
+      pending: { id: 'another-card', control: 'skip' },
+      remoteSwapUntil: Date.now() + 60000,
+      drafts: new Map([[card.id, { step: 0, answers: [], other: '', note: '', open: false }]]),
+    },
+    focused = [],
+    scrolled = [],
+    context = vm.createContext({
+      S: state,
+      draft: (current) => state.drafts.get(current.id),
+      answerable: () => true,
+      ident: (name, current) => `${name}-${current.id}`,
+      h: node,
+      el: (tag, props, ...children) => node(tag, props || {}, ...children),
+      button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
+      mdInline: (text) => text,
+      render() {},
+      $: () => ({
+        focus: (...args) => focused.push(args),
+        scrollIntoView: (...args) => scrolled.push(args),
+      }),
+    });
+  vm.runInContext(
+    `${['otherAllowed', 'otherRow', 'questionView', 'toggleOther'].map((name) => functionSource(name)).join('\n')}\nglobalThis.ui = { toggleOther };`,
+    context,
+  );
+  context.ui.toggleOther(card);
+  const draft = state.drafts.get(card.id);
+  assert.equal(draft.open, true, 'a click on Other opens the field even while another card acts');
+  assert.equal(scrolled.length, 1, 'the field is brought into view');
+  assert.equal(scrolled[0][0].block, 'nearest');
+  assert.equal(focused[0][0].preventScroll, true);
+});
+
+test('the digit after the last option opens Other', () => {
+  const card = {
+      id: 'finding-other-digit',
+      kind: 'finding',
+      allow_other: true,
+      questions: [{ label: 'q', question: 'Choose', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Skip' }] }],
+    },
+    state = { pending: null, drafts: new Map([[card.id, { step: 0, answers: [], other: '', note: '', open: false }]]) },
+    context = vm.createContext({
+      S: state,
+      draft: (current) => state.drafts.get(current.id),
+      answerable: () => true,
+      ident: (name, current) => `${name}-${current.id}`,
+      h: node,
+      el: (tag, props, ...children) => node(tag, props || {}, ...children),
+      button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
+      mdInline: (text) => text,
+      render() {},
+      $: () => ({ focus() {}, scrollIntoView() {} }),
+      answerStep: () => assert.fail('the Other digit records no option'),
+      goStep: () => assert.fail('the Other digit does not move a question'),
+    });
+  vm.runInContext(
+    `${['otherAllowed', 'otherRow', 'questionView', 'toggleOther', 'pickStep'].map((name) => functionSource(name)).join('\n')}\nglobalThis.ui = { pickStep };`,
+    context,
+  );
+  context.ui.pickStep(card, 3);
+  assert.equal(state.drafts.get(card.id).open, true, 'key 4 opens the fourth, Other button');
+});

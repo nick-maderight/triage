@@ -1178,12 +1178,16 @@ const S = {
   }
   function pickStep(c, i) {
     if (S.pending) return;
-    const d = draft(c);
-    if (d.step >= c.questions.length) {
+    const d = draft(c),
+      question = c.questions[d.step];
+    if (!question) {
       if (i < c.questions.length) goStep(c, i);
       return;
     }
-    if (c.questions[d.step].options?.[i] != null) answerStep(c, { option: i });
+    const options = question.options || [];
+    if (options[i] != null) return answerStep(c, { option: i });
+    // The Other row is the next button after the last option, so its digit opens it too.
+    if (i === options.length && otherAllowed(c)) toggleOther(c);
   }
   function answerStep(c, answer) {
     const d = draft(c),
@@ -1673,7 +1677,10 @@ const S = {
   function pick(c, i) {
     if (Date.now() < S.remoteSwapUntil) return;
     if (c.questions?.length && answerable(c)) return pickStep(c, i);
-    const option = c.options?.[i];
+    const options = c.options || [];
+    // The Other row follows the last option; its digit opens it for an ask or plan card.
+    if (i === options.length && otherAllowed(c) && answerable(c)) return toggleOther(c);
+    const option = options[i];
     if (!option || !answerable(c) || c.kind === 'info') return;
     if (c.kind === 'finding') return openDispatch(c, optionMode(option), true, i);
     const needsOther = c.kind === 'plan' && option.label === 'Refine',
@@ -1694,18 +1701,21 @@ const S = {
     act(c, 'answer', body, `option-${i}`);
   }
   function toggleOther(c) {
-    if (Date.now() < S.remoteSwapUntil || !answerable(c) || !otherAllowed(c)) return;
-    // A pending action would drop the click, so say why instead of nothing.
-    if (S.pending) {
-      const message = 'An answer is already going out.';
-      toast(message, true);
-      announce(`Error: ${message}`);
-      return;
-    }
+    // The row is only rendered when Other is offered, so a click always opens it. An action in
+    // flight or a card swap must not swallow the click and leave the button looking dead.
+    if (!otherAllowed(c)) return;
     const d = draft(c);
     d.open = !d.open;
     render();
-    $(d.open ? '#other-text' : '#other-btn')?.focus({ preventScroll: true });
+    if (!d.open) {
+      $('#other-btn')?.focus({ preventScroll: true });
+      return;
+    }
+    const field = $('#other-text');
+    // The field can open below the fold on a phone or a short window. Bring it into view, then
+    // focus without scrolling again so the on-screen keyboard does not cover it.
+    field?.scrollIntoView?.({ block: 'nearest' });
+    field?.focus({ preventScroll: true });
   }
   // An empty Other is a slip, not a submit: keep the field open and say what it wants.
   function sendOther(c) {
@@ -2909,6 +2919,13 @@ const S = {
   $('#btn-history').addEventListener('click', openHistory);
   $('#btn-compose').addEventListener('click', openCompose);
   $('#btn-keys').addEventListener('click', () => showDialog($('#keys')));
+  // The worker reloads a tab that cannot answer its ping, which is how a tab running an older
+  // inbox picks up a deploy it could not notice by itself.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'triage-shell-ping') e.source?.postMessage({ type: 'triage-shell-pong' });
+    });
+  }
   $('#count-toggle')?.addEventListener('click', countToggle);
   // Theme: the inline head script sets data-theme first; the toggle swaps and persists it.
   const icon = (d) =>
