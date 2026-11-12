@@ -58,6 +58,7 @@ const fakeSpeech = (status) => {
     }
     start() {
       this.started = true;
+      this.onstart?.();
     }
     stop() {
       this.stopped = true;
@@ -77,8 +78,34 @@ const list = (...results) => Object.assign({ length: results.length }, results);
 const final = (...transcripts) =>
   list(...transcripts.map((transcript) => ({ 0: { transcript }, length: 1, isFinal: true })));
 
+// Timers the page arms for a recogniser that never answers, fired by a test on demand.
+const fakeClock = () => {
+  let last = 0;
+  const timers = new Map();
+  return {
+    setTimeout(fn, ms) {
+      timers.set(++last, { fn, ms });
+      return last;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    fire(ms) {
+      for (const [id, timer] of [...timers]) {
+        if (timer.ms !== ms) continue;
+        timers.delete(id);
+        timer.fn();
+      }
+    },
+    pending() {
+      return timers.size;
+    },
+  };
+};
+
 const dictationContext = (window, note = field('check')) => {
   const toasts = [],
+    clock = fakeClock(),
     context = vm.createContext({
       Event,
       S: { dictating: null, dictionary: [] },
@@ -93,10 +120,22 @@ const dictationContext = (window, note = field('check')) => {
       },
       navigator: { language: 'en-GB' },
       window: { isSecureContext: true, ...window },
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
     });
   vm.runInContext(
     [
-      ...['DICTATION_STATUS', 'DICTATION_READY', 'DICTATION_ERRORS', 'DICTATION_PAUSES'].map(constSource),
+      ...[
+        'DICTATION_STATUS',
+        'DICTATION_READY',
+        'DICTATION_ERRORS',
+        'DICTATION_PAUSES',
+        'DICTATION_FIRST_GRACE',
+        'DICTATION_START_TIMEOUT',
+        'DICTATION_END_TIMEOUT',
+        'DICTATION_PAUSE_TIMEOUT',
+        'speech',
+      ].map(constSource),
       ...[
         'speechApi',
         'speechEngine',
@@ -105,10 +144,17 @@ const dictationContext = (window, note = field('check')) => {
         'paintMic',
         'paintMics',
         'endDictation',
+        'speechRecognition',
+        'clearSpeechTimer',
         'startDictation',
+        'watchSpeech',
+        'speechStarted',
+        'speechResult',
+        'speechError',
+        'speechEnded',
         'readResults',
-        'afterDictation',
         'stopDictation',
+        'cancelDictation',
         'finishDictation',
         'placeDictation',
         'insertText',
@@ -119,7 +165,7 @@ const dictationContext = (window, note = field('check')) => {
     ].join('\n'),
     context,
   );
-  return { context, note, toasts };
+  return { context, note, toasts, clock };
 };
 const onDevice = { langs: ['en-GB'], processLocally: true };
 
@@ -135,6 +181,7 @@ const fakeSafari = () => {
       if (this.running) throw new Error('The recognition has already started.');
       this.started = (this.started ?? 0) + 1;
       this.running = true;
+      this.onstart?.();
     }
     stop() {
       this.stopped = true;
@@ -147,6 +194,24 @@ const fakeSafari = () => {
     end() {
       this.running = false;
       this.onend();
+    }
+  }
+  return { Recognition, made };
+};
+
+// What an iPhone hands back when a recogniser is left dead: start() returns and no event ever follows.
+const deadSafari = () => {
+  const made = [];
+  class Recognition {
+    constructor() {
+      made.push(this);
+    }
+    start() {
+      this.started = (this.started ?? 0) + 1;
+    }
+    stop() {}
+    abort() {
+      this.aborted = true;
     }
   }
   return { Recognition, made };
@@ -211,7 +276,7 @@ test('the dictionary swaps whole heard phrases, longest first, in one pass', () 
     assert.throws(() => context.parseDictionary(text), new RegExp(`dictionary line ${line} as`));
 });
 
-test('the microphone listens only through on-device recognition and types each final phrase', async () => {
+test('the microphone listens through on-device recognition and types each final phrase', async () => {
   const { Recognition, made, calls } = fakeSpeech('available'),
     { context, note, toasts } = dictationContext({ SpeechRecognition: Recognition });
   context.S.dictionary = context.parseDictionary('forge jo = Forgejo');
@@ -290,24 +355,105 @@ test('Safari starts the microphone inside the press and types the words it hears
       interimResults: recognition.interimResults,
       started: recognition.started,
     },
-    { lang: 'en-GB', processLocally: undefined, continuous: false, interimResults: false, started: 1 },
+    { lang: 'en-GB', processLocally: undefined, continuous: true, interimResults: false, started: 1 },
   );
   await pressed;
   assert.equal(context.S.dictating.phase, 'listening');
   recognition.onresult({ resultIndex: 0, results: final('then push to forge jo') });
   assert.equal(note.value, 'check then push to Forgejo');
-  // Safari ends the run at the first pause, and the run starts again so one press collects a sentence.
-  recognition.end();
-  assert.equal(made.length, 2, 'the run listens again after Safari ends it');
-  assert.equal(made[1].started, 1);
-  assert.equal(context.S.dictating.phase, 'listening');
-  made[1].onresult({ resultIndex: 0, results: final('and tag it') });
-  assert.equal(note.value, 'check then push to Forgejo and tag it');
   await context.toggleDictation('note');
-  assert.ok(made[1].stopped, 'a second press stops the run');
+  assert.ok(recognition.stopped, 'a second press stops the run');
   assert.equal(context.S.dictating, null);
-  assert.equal(made.length, 2, 'a pressed stop does not listen again');
   assert.equal(toasts.length, 0);
+});
+
+test('every run reuses one recogniser, so iPhone is not asked for the microphone again', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, note } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].onresult({ resultIndex: 0, results: final('first') });
+  // Safari below 17 still ends the run at a pause; the press starts the same recogniser again.
+  made[0].end();
+  assert.equal(context.S.dictating, null, 'a pause ends the run');
+  await context.toggleDictation('note');
+  assert.equal(made.length, 1, 'the second run reuses the recogniser');
+  assert.equal(made[0].started, 2, 'the recogniser listens again');
+  made[0].onresult({ resultIndex: 0, results: final('second') });
+  assert.equal(note.value, 'check first second');
+  await context.toggleDictation('note');
+  assert.equal(context.S.dictating, null);
+});
+
+test('a recogniser that never starts ends the run and a press builds a fresh one', async () => {
+  const { Recognition, made } = deadSafari(),
+    { context, toasts, clock } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  assert.equal(context.S.dictating.phase, 'starting', 'a dead start does not claim to listen');
+  assert.equal(made.length, 1);
+  // The permission question may still be open on the first use, so only the second start is impatient.
+  clock.fire(120000);
+  assert.equal(context.S.dictating, null, 'the long first wait ends the run');
+  assert.deepEqual(
+    toasts.at(-1),
+    [
+      'The microphone did not start. Please allow the microphone for this site, turn on Dictation and Siri in Settings, then press again.',
+      true,
+    ],
+  );
+  await context.toggleDictation('note');
+  assert.equal(made.length, 2, 'the next press builds a fresh recogniser');
+  clock.fire(4000);
+  assert.equal(context.S.dictating, null, 'a later silent start ends sooner');
+});
+
+test('a stop the browser never answers ends the run instead of leaving the microphone live', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, clock } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].stop = function stop() {
+    this.stopped = true;
+  };
+  await context.toggleDictation('note');
+  assert.equal(context.S.dictating.stopped, true, 'the press asks the run to stop');
+  clock.fire(1500);
+  assert.equal(context.S.dictating, null, 'a stop the browser never answers ends the run');
+  await context.toggleDictation('note');
+  assert.equal(made.length, 2, 'the next press builds a recogniser that answers again');
+  assert.equal(context.S.dictating.phase, 'listening');
+});
+
+test('a real failure ends the run without waiting for an end event', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].onerror({ error: 'not-allowed' });
+  assert.equal(context.S.dictating, null, 'the run ends on the error alone');
+  assert.equal(made.length, 1, 'a failed run does not listen again');
+  assert.deepEqual(toasts, [['Please allow the microphone for this site to dictate.', true]]);
+});
+
+test('a Safari pause that the browser never ends does not hold the microphone', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, toasts, clock } = dictationContext({ webkitSpeechRecognition: Recognition });
+  await context.toggleDictation('note');
+  made[0].onerror({ error: 'no-speech' });
+  assert.equal(context.S.dictating.phase, 'listening', 'the pause is not a failure while the end is due');
+  clock.fire(2500);
+  assert.equal(context.S.dictating, null);
+  assert.deepEqual(toasts, [['The microphone heard no speech.', true]], 'the pause still says what happened');
+});
+
+test('a result list the browser cannot read ends the run with its message', async () => {
+  const { Recognition, made } = fakeSafari(),
+    { context, note, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
+  context.S.dictionary = [];
+  await context.toggleDictation('note');
+  made[0].onresult({ resultIndex: 0, results: [] });
+  assert.equal(note.value, 'check', 'an empty list adds nothing');
+  assert.equal(context.S.dictating.phase, 'listening', 'an empty list leaves the run listening');
+  made[0].onresult({ resultIndex: 0, get results() { throw new TypeError('the results threw'); } });
+  assert.equal(context.S.dictating, null, 'an unreadable list ends the run instead of listening on');
+  assert.deepEqual(toasts, [['Dictation stopped (the results threw).', true]], 'it says what the browser did');
 });
 
 test('Safari shows the microphones and says its speech service hears the words', async () => {
@@ -333,39 +479,4 @@ test('Safari shows the microphones and says its speech service hears the words',
   assert.equal(context.document.documentElement.dataset.dictation, 'on');
   assert.match(status.textContent, /speech service/);
   assert.match(status.textContent, /leave this device/);
-});
-
-test('a result list the browser cannot read ends the run with its message', async () => {
-  const { Recognition, made } = fakeSafari(),
-    { context, note, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
-  await context.toggleDictation('note');
-  made[0].onresult({ resultIndex: 0, results: [] });
-  assert.equal(note.value, 'check', 'an empty list adds nothing');
-  assert.equal(context.S.dictating.phase, 'listening', 'an empty list leaves the run listening');
-  made[0].onresult({ resultIndex: 0, get results() { throw new TypeError('the results threw'); } });
-  assert.equal(context.S.dictating, null, 'an unreadable list ends the run instead of listening on');
-  assert.deepEqual(toasts, [['Dictation stopped (the results threw).', true]], 'it says what the browser did');
-});
-
-test('a Safari run that heard nothing lets go at the pause', async () => {
-  const { Recognition, made } = fakeSafari(),
-    { context, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
-  await context.toggleDictation('note');
-  made[0].onerror({ error: 'no-speech' });
-  made[0].end();
-  assert.equal(made.length, 1, 'a quiet room does not keep the microphone open');
-  assert.equal(context.S.dictating, null);
-  assert.deepEqual(toasts, [['The microphone heard no speech.', true]], 'it says the microphone heard nothing');
-});
-
-test('a Safari run that hits an error says what happened and keeps the words', async () => {
-  const { Recognition, made } = fakeSafari(),
-    { context, note, toasts } = dictationContext({ webkitSpeechRecognition: Recognition });
-  await context.toggleDictation('note');
-  made[0].onerror({ error: 'not-allowed' });
-  made[0].end();
-  assert.equal(context.S.dictating, null);
-  assert.equal(made.length, 1, 'a failed run does not listen again');
-  assert.equal(note.value, 'check');
-  assert.deepEqual(toasts, [['Please allow the microphone for this site to dictate.', true]]);
 });

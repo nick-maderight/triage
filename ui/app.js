@@ -1803,11 +1803,28 @@ const S = {
     'language-not-supported': 'This browser cannot recognize the language of this page.',
     network: "The browser's speech service could not be reached.",
     'no-speech': 'The microphone heard no speech.',
+    'no-start':
+      'The microphone did not start. Please allow the microphone for this site, turn on Dictation and Siri in Settings, then press again.',
     'not-allowed': 'Please allow the microphone for this site to dictate.',
     'service-not-allowed': "Please turn on Dictation and Siri in this device's Settings to dictate.",
   };
   // Safari reports its silence timeout as one of these, which ends a run without failing it.
   const DICTATION_PAUSES = ['aborted', 'no-speech'];
+  // A recogniser on iPhone can be left dead: start() returns without an event, so nothing ever ends the run.
+  // The first wait is long because the microphone permission question can sit open; later waits are short.
+  const DICTATION_FIRST_GRACE = 120000;
+  const DICTATION_START_TIMEOUT = 4000;
+  const DICTATION_END_TIMEOUT = 1500;
+  const DICTATION_PAUSE_TIMEOUT = 2500;
+  // The one recogniser this page runs. iPhone asks for the microphone again for a new recogniser and can leave a
+  // replaced one dead, so every run reuses it and the page drops it only when it stops answering.
+  const speech = {
+    recognition: null,
+    engine: null,
+    granted: false,
+    attempts: 0,
+    timer: 0,
+  };
   function speechApi() {
     return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
   }
@@ -1831,7 +1848,6 @@ const S = {
     const phase = S.dictating?.id === b.dataset.dictate ? S.dictating.phase : '';
     b.dataset.phase = phase;
     b.setAttribute('aria-pressed', String(phase === 'listening'));
-    b.disabled = phase === 'starting';
     return b;
   }
   function paintMics() {
@@ -1844,68 +1860,137 @@ const S = {
   async function toggleDictation(id) {
     const active = S.dictating;
     if (active) {
-      // Safari answers a press with another press, so its run ends where the words already went in.
-      if (active.id === id && active.phase === 'listening') stopDictation(active);
+      if (active.id !== id) return;
+      // A press while the microphone is listening stops it. A press while it is still starting ends the wait,
+      // so a start the browser never finishes cannot swallow every later press.
+      if (active.phase === 'listening') stopDictation(active);
+      else cancelDictation(active);
       return;
     }
     const field = $(`#${id}`),
       engine = speechEngine();
     if (!field || field.disabled || !engine) return;
-    const run = { id, card: field.closest('.card') ? current()?.id : null, phase: 'starting', recognition: null, cancelled: false, stopped: false, announced: false, error: '' };
+    const run = { id, card: field.closest('.card') ? current()?.id : null, phase: 'starting', recognition: null, cancelled: false, stopped: false, announced: false, heard: false, error: '' };
     S.dictating = run;
     paintMics();
     // Safari starts recognition only inside the press that asked for it, so its engine starts before any await.
     if (!engine.local) return startDictation(run, engine);
     try {
-      if ((await engine.Recognition.available(speechOptions())) !== 'available') return await installSpeech(engine.Recognition);
-      if (run.cancelled) return endDictation();
+      if ((await engine.Recognition.available(speechOptions())) !== 'available') return await installSpeech(engine.Recognition, run);
+      if (run.cancelled || S.dictating !== run) return;
       startDictation(run, engine);
     } catch (e) {
-      endDictation();
-      toast(`Dictation failed (${e.message}).`, true);
+      if (S.dictating === run) {
+        endDictation();
+        toast(`Dictation failed (${e.message}).`, true);
+      }
     }
+  }
+  // One recogniser for the whole page, rebuilt only when its engine changes or it stops answering.
+  function speechRecognition(engine) {
+    if (speech.recognition && speech.engine === engine.Recognition) return speech.recognition;
+    const recognition = new engine.Recognition();
+    Object.assign(recognition, { lang: speechLang(), interimResults: false, continuous: true });
+    if (engine.local) recognition.processLocally = true;
+    recognition.onstart = () => speechStarted(recognition);
+    recognition.onaudiostart = () => speechStarted(recognition);
+    recognition.onresult = (e) => speechResult(recognition, e);
+    recognition.onerror = (e) => speechError(recognition, e);
+    recognition.onend = () => speechEnded(recognition);
+    speech.recognition = recognition;
+    speech.engine = engine.Recognition;
+    return recognition;
+  }
+  function clearSpeechTimer() {
+    if (!speech.timer) return;
+    clearTimeout(speech.timer);
+    speech.timer = 0;
   }
   function startDictation(run, engine) {
     try {
-      const recognition = new engine.Recognition();
-      Object.assign(recognition, { lang: speechLang(), interimResults: false, continuous: engine.local });
-      if (engine.local) recognition.processLocally = true;
-      recognition.onresult = (e) => {
-        // The result list is array-like, not iterable, in Safari and in Chromium, so it is read by index.
-        // A browser that hands back something else ends the run with its message instead of a live microphone.
-        try {
-          const words = readResults(e).map((result) => result[0].transcript.trim()).filter(Boolean);
-          if (!words.length || run.cancelled) return;
-          if (placeDictation(run, applyDictionary(words.join(' '), S.dictionary))) run.heard = true;
-          else {
-            run.cancelled = true;
-            recognition.abort();
-          }
-        } catch (err) {
-          run.error = err.message;
-          try {
-            recognition.abort();
-          } catch {
-            finishDictation(run);
-          }
-        }
-      };
-      recognition.onerror = (e) => {
-        run.error = e.error;
-      };
-      recognition.onend = () => afterDictation(run, engine, recognition);
+      const recognition = speechRecognition(engine);
+      run.recognition = recognition;
+      run.heard = false;
+      speech.attempts += 1;
+      // The wait is armed before start() so an engine that reports starting synchronously still clears it.
+      watchSpeech(run, recognition);
       recognition.start();
-      Object.assign(run, { recognition, heard: false, phase: 'listening' });
-      paintMics();
-      // A restarted run keeps the one announcement, so Safari's pause does not repeat it.
-      if (!run.announced) {
-        run.announced = true;
-        announce('The microphone is listening. Please press it again to stop.');
-      }
     } catch (e) {
+      speech.recognition = null;
+      speech.engine = null;
+      clearSpeechTimer();
       endDictation();
       toast(`Dictation failed (${e.message}).`, true);
+      return;
     }
+    paintMics();
+    if (!run.announced) {
+      run.announced = true;
+      announce('The microphone is listening. Please press it again to stop.');
+    }
+  }
+  // A recogniser that reports nothing after start() is dead on iPhone. It ends the run and is dropped so the next
+  // press builds a fresh one, instead of leaving a microphone that looks live and answers no press.
+  function watchSpeech(run, recognition) {
+    clearSpeechTimer();
+    speech.timer = setTimeout(
+      () => {
+        speech.timer = 0;
+        if (S.dictating !== run || run.recognition !== recognition) return;
+        speech.recognition = null;
+        speech.engine = null;
+        run.error = 'no-start';
+        finishDictation(run);
+      },
+      // Only the first press can be waiting on a permission question; later presses say so quickly.
+      speech.attempts > 1 ? DICTATION_START_TIMEOUT : DICTATION_FIRST_GRACE,
+    );
+  }
+  function speechStarted(recognition) {
+    speech.granted = true;
+    const run = S.dictating;
+    if (!run || run.recognition !== recognition) return;
+    clearSpeechTimer();
+    if (run.phase === 'listening') return;
+    run.phase = 'listening';
+    paintMics();
+  }
+  function speechResult(recognition, e) {
+    const run = S.dictating;
+    if (!run || run.recognition !== recognition) return;
+    speechStarted(recognition);
+    // The result list is array-like, not iterable, in Safari and in Chromium, so it is read by index.
+    // A browser that hands back something else ends the run with its message instead of a live microphone.
+    try {
+      const words = readResults(e)
+        .map((result) => result[0].transcript.trim())
+        .filter(Boolean);
+      if (!words.length || run.cancelled) return;
+      if (placeDictation(run, applyDictionary(words.join(' '), S.dictionary))) run.heard = true;
+      else cancelDictation(run);
+    } catch (err) {
+      run.error = err.message;
+      finishDictation(run);
+      try {
+        recognition.abort();
+      } catch {}
+    }
+  }
+  function speechError(recognition, e) {
+    const run = S.dictating;
+    if (!run || run.recognition !== recognition) return;
+    // An error is an answer from the recogniser, so this page is no longer waiting on a silent start.
+    speech.granted = true;
+    clearSpeechTimer();
+    run.error = e.error;
+    // A real failure ends the run now. Safari sends this without a following onend in some versions.
+    if (!DICTATION_PAUSES.includes(e.error)) return finishDictation(run);
+    // A pause ends the run itself; only a browser that never ends it needs the timer.
+    speech.timer = setTimeout(() => finishDictation(run), DICTATION_PAUSE_TIMEOUT);
+  }
+  function speechEnded(recognition) {
+    const run = S.dictating;
+    if (run?.recognition === recognition) finishDictation(run);
   }
   // The final results from `resultIndex` on, read by index because the list has no iterator.
   function readResults(e) {
@@ -1917,31 +2002,42 @@ const S = {
     }
     return finals;
   }
-  // A local engine keeps listening until it is stopped. Safari ends a run at the first pause, so a run that heard
-  // words starts again and one press can collect a whole sentence. A run that heard nothing ends the press, so a
-  // quiet room cannot keep the microphone open.
-  function afterDictation(run, engine, recognition) {
-    if (S.dictating !== run || run.recognition !== recognition) return;
-    const pause = DICTATION_PAUSES.includes(run.error);
-    if (run.stopped || run.cancelled || (run.error && !pause) || engine.local || !run.heard) return finishDictation(run);
-    if (pause) run.error = '';
-    startDictation(run, engine);
-  }
   function stopDictation(run) {
     run.stopped = true;
+    clearSpeechTimer();
     try {
       run.recognition?.stop();
     } catch {
-      finishDictation(run);
+      speech.recognition = null;
+      speech.engine = null;
+      return finishDictation(run);
     }
+    // A stop the browser never answers would leave the button dead, so the run ends anyway and a fresh
+    // recogniser takes the next press.
+    speech.timer = setTimeout(() => {
+      speech.timer = 0;
+      if (S.dictating !== run) return;
+      speech.recognition = null;
+      speech.engine = null;
+      finishDictation(run);
+    }, DICTATION_END_TIMEOUT);
+  }
+  function cancelDictation(run) {
+    run.cancelled = true;
+    clearSpeechTimer();
+    try {
+      run.recognition?.abort();
+    } catch {}
+    if (S.dictating === run) endDictation();
   }
   function finishDictation(run) {
-    const error = run.error;
+    clearSpeechTimer();
     if (S.dictating === run) endDictation();
-    if (!run.cancelled && error) toast(DICTATION_ERRORS[error] ?? `Dictation stopped (${error}).`, true);
+    const error = run.error;
+    if (!run.cancelled && !run.stopped && error) toast(DICTATION_ERRORS[error] ?? `Dictation stopped (${error}).`, true);
   }
   // The first press on each site installs the browser's speech model. Press again to dictate.
-  async function installSpeech(Recognition) {
+  async function installSpeech(Recognition, run) {
     const wait = toast('Your browser is setting up speech recognition…', false, true);
     try {
       const ready = await Recognition.install(speechOptions());
@@ -1955,7 +2051,7 @@ const S = {
       toast('This browser could not set up speech recognition.', true);
     } finally {
       wait.remove();
-      endDictation();
+      if (S.dictating === run) endDictation();
       void checkSpeech();
     }
   }
@@ -3219,8 +3315,7 @@ const S = {
     (e) => {
       const run = S.dictating;
       if (!run || !e.target.contains($(`#${run.id}`))) return;
-      run.cancelled = true;
-      run.recognition?.abort();
+      cancelDictation(run);
     },
     true,
   );
@@ -3400,6 +3495,9 @@ const S = {
   window.addEventListener('online', resumeStream);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') resumeStream();
+    // WebKit refuses speech recognition while the page is not visible, so a hidden inbox drops the run instead
+    // of leaving a microphone that can never come back.
+    else if (S.dictating) cancelDictation(S.dictating);
   });
   boot();
 })();

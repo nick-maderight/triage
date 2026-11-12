@@ -1176,8 +1176,8 @@
   };
 
   // Fakes the browser's speech engines to run the scenario in any browser. The first press uses the on-device
-  // engine, the second one the engine Safari offers, which has neither available() nor processLocally and ends a
-  // run at the first pause.
+  // engine, the second one the engine Safari offers, which has neither available() nor processLocally. Both report
+  // starting, as a real engine does, so the microphone shows that it listens.
   const checkDictation = async () => {
     const NativeRecognition = window.SpeechRecognition,
       settings = document.querySelector('#settings'),
@@ -1195,7 +1195,9 @@
       constructor() {
         made.push(this);
       }
-      start() {}
+      start() {
+        this.onstart();
+      }
       stop() {
         this.onresult({ resultIndex: 0, results: heard('dictated words') });
         this.onend();
@@ -1208,7 +1210,10 @@
       constructor() {
         safari.push(this);
       }
-      start() {}
+      start() {
+        this.started = (this.started ?? 0) + 1;
+        this.onstart();
+      }
       stop() {
         this.onend();
       }
@@ -1253,7 +1258,7 @@
       assert(made.length === 1 && made[0].processLocally === true, 'the recognizer is told to stay on this device');
       mic.click();
       await waitFor(() => prompt.value === 'Fix the build dictated words', 'the dictated words in the prompt');
-      await waitFor(() => mic.getAttribute('aria-pressed') === 'false' && !mic.disabled, 'the microphone to reset');
+      await waitFor(() => mic.getAttribute('aria-pressed') === 'false', 'the microphone to reset');
       // Safari: only webkitSpeechRecognition, and no on-device recognition can be required.
       window.SpeechRecognition = undefined;
       window.webkitSpeechRecognition = SafariRecognition;
@@ -1270,13 +1275,17 @@
       await waitFor(() => mic.getAttribute('aria-pressed') === 'true', 'the Safari microphone to show it listens');
       assert(safari.length === 1, 'the Safari recognizer starts on the press');
       assert(!('processLocally' in safari[0]), 'the Safari recognizer is not told to stay on this device');
+      assert(safari[0].continuous === true, 'the Safari recognizer keeps listening');
       assert(safari[0].lang, 'the Safari recognizer is told the language');
       safari[0].onresult({ resultIndex: 0, results: heard('words') });
-      safari[0].end();
       await waitFor(() => prompt.value === 'Safari words', 'the Safari words in the prompt');
-      assert(safari.length === 2 && mic.getAttribute('aria-pressed') === 'true', 'Safari keeps listening after its first pause');
+      safari[0].end();
+      await waitFor(() => mic.getAttribute('aria-pressed') === 'false', 'Safari ending the run to reset the microphone');
       mic.click();
-      await waitFor(() => mic.getAttribute('aria-pressed') === 'false' && !mic.disabled, 'the Safari microphone to stop on the press');
+      await waitFor(() => safari[0].started === 2 && mic.getAttribute('aria-pressed') === 'true', 'the next press to reuse the Safari recognizer');
+      assert(safari.length === 1, 'the next run reuses the Safari recognizer');
+      mic.click();
+      await waitFor(() => mic.getAttribute('aria-pressed') === 'false', 'the Safari microphone to stop on the press');
       return { scenario: 'dictation', passed: true };
     } finally {
       window.SpeechRecognition = NativeRecognition;
