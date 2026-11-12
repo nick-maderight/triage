@@ -108,6 +108,29 @@ test('Start closes the sheet while the daemon launches', async () => {
   assert.equal(h.start.disabled, false);
 });
 
+test('Start reports a launch the daemon accepted', async () => {
+  const h = harness(),
+    submitted = h.context.submitCompose({ preventDefault() {} });
+  await settled();
+  // The daemon answers before the launch finishes: it keeps working there, and a failure
+  // reaches the inbox as a card.
+  h.answer.resolve({ ok: true, json: async () => ({ ok: true, starting: true }) });
+  await submitted;
+  assert.equal(h.compose.open, false);
+  assert.equal(h.prompt.value, '');
+  assert.equal(h.start.disabled, false);
+  assert.equal(h.hint.textContent, '');
+  assert.deepEqual(h.announcements, ['Starting a session.', 'Starting the session.']);
+  assert.deepEqual(
+    h.toasts.map((toast) => [toast.message, toast.error]),
+    [
+      ['Starting…', false],
+      ['Starting a dsh session.', false],
+    ],
+  );
+  assert.equal(h.toasts[0].removed, true);
+});
+
 test('a failed Start puts its prompt back and reopens the sheet', async () => {
   const h = harness(),
     submitted = h.context.submitCompose({ preventDefault() {} });

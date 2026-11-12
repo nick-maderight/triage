@@ -70,15 +70,20 @@ impl Tracker {
             return TickReport { written };
         };
         let client = dsh::Client::new(&host, dsh::TICK_TIMEOUT);
-        let listed = client.sessions().and_then(|(pid, sessions, plans)| {
-            client
-                .pending()
-                .map(|(_, pending)| (pid, sessions, pending, plans))
-        });
-        let (pid, sessions, pending, plan_decisions) = match listed {
-            Ok(listed) => listed,
+        // The cheap read first: `session/list` computes a projection per session and can take
+        // ten seconds, so only this one tells a dead host from a busy one.
+        let pending = match client.pending() {
+            Ok((_, pending)) => pending,
             Err(error) => {
                 backoff(&mut self.dsh, now, &error);
+                return TickReport { written };
+            }
+        };
+        let (pid, sessions, plan_decisions) = match client.sessions() {
+            Ok(listed) => listed,
+            // A slow or failed list skips this tick, not the next thirty seconds of cards.
+            Err(error) => {
+                list_failed(&mut self.dsh, now, &error);
                 return TickReport { written };
             }
         };
@@ -141,6 +146,16 @@ fn backoff(memo: &mut Memo, now: i64, error: &str) {
     }
     memo.failing = true;
     memo.retry_at_ms = now + BACKOFF_MS;
+}
+
+/// Retry on the next poll after a session list that failed or timed out. `session/list`
+/// projects every session, so a busy host stalls it for seconds while the bridge stays up.
+fn list_failed(memo: &mut Memo, now: i64, error: &str) {
+    if !memo.failing {
+        eprintln!("triage: dsh bridge: session list: {error}");
+    }
+    memo.failing = true;
+    memo.retry_at_ms = now + POLL_MS;
 }
 
 /// Queue a card for each pending dsh question or plan review that has none yet.
@@ -1034,8 +1049,6 @@ pub(super) fn launch_new(
     image: Option<&Upload>,
 ) -> Result<String, String> {
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::LAUNCH_TIMEOUT)?;
-    // Listing is a quick read even while a launch is slow, so it never holds a launch up.
-    let probe = dsh::connect(launch.dsh_host.as_deref(), dsh::TICK_TIMEOUT)?;
     let title = truncate_chars(title.to_owned(), 60);
     let (mode, executor, executor_effort) = match start {
         Start::Goal => ("goal", None, None),
@@ -1060,7 +1073,9 @@ pub(super) fn launch_new(
     if let Some(image) = image {
         body["image"] = image.dsh_image();
     }
-    let before = listed_session_ids(&probe);
+    // The session this launch creates is newer than this, so adoption never needs a list of
+    // the sessions that were already there, which costs a slow `session/list` round trip.
+    let started_at = crate::events::now_ms();
     match client.launch(&body) {
         Ok(sid) => Ok(format!("dsh:{sid}")),
         // A host older than workspaces rejects the field before it starts anything, so the
@@ -1072,19 +1087,11 @@ pub(super) fn launch_new(
             body["cwd"] = json!(cwd);
             match client.launch(&body) {
                 Ok(sid) => Ok(format!("dsh:{sid}")),
-                Err(error) => adopt_started(&probe, &before, &title, error),
+                Err(error) => adopt_started(&client, started_at, &title, error),
             }
         }
-        Err(error) => adopt_started(&probe, &before, &title, error),
+        Err(error) => adopt_started(&client, started_at, &title, error),
     }
-}
-
-/// The ids the host lists, so a launch tells its own session from the ones already there.
-fn listed_session_ids(client: &dsh::Client) -> HashSet<String> {
-    client
-        .sessions()
-        .map(|(_, sessions, _)| sessions.into_iter().map(|session| session.session_id).collect())
-        .unwrap_or_default()
 }
 
 /// The session a launch that timed out started, or the launch's own error. The bridge
@@ -1093,7 +1100,7 @@ fn listed_session_ids(client: &dsh::Client) -> HashSet<String> {
 /// answer, and it archives the session it created before answering.
 pub(super) fn adopt_started(
     client: &dsh::Client,
-    before: &HashSet<String>,
+    started_at: i64,
     title: &str,
     error: String,
 ) -> Result<String, String> {
@@ -1104,7 +1111,9 @@ pub(super) fn adopt_started(
     loop {
         if let Ok((_, sessions, _)) = client.sessions()
             && let Some(session) = sessions.iter().find(|session| {
-                !before.contains(&session.session_id) && session.title.as_deref() == Some(title)
+                // A session created by this launch is newer than it; a second of slack covers
+                // a clock that lands just under the recorded start.
+                session.title.as_deref() == Some(title) && session.updated_at_ms >= started_at - 1000
             })
         {
             return Ok(format!("dsh:{}", session.session_id));

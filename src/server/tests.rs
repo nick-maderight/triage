@@ -3032,6 +3032,168 @@ async fn dsh_session_refuses_an_omp_model_selector() {
     server.abort();
 }
 
+/// A dsh bridge that holds every launch for `delay` and then answers `reply`. It lists no
+/// sessions, so a tracker tick against it is harmless.
+async fn slow_launch_bridge(
+    delay: std::time::Duration,
+    reply: (StatusCode, serde_json::Value),
+) -> (TestDir, PathBuf, Arc<std::sync::atomic::AtomicUsize>) {
+    let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&launches);
+    let app = axum::Router::new()
+        .route(
+            "/v1/sessions",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"pid": 4242, "items": [], "planDecisions": true}))
+            }),
+        )
+        .route(
+            "/v1/pending",
+            axum::routing::get(|| async { axum::Json(serde_json::json!({"pid": 4242, "items": []})) }),
+        )
+        .route(
+            "/v1/launch",
+            axum::routing::post(move || {
+                let reply = reply.clone();
+                let counted = Arc::clone(&counted);
+                async move {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(delay).await;
+                    (reply.0, axum::Json(reply.1))
+                }
+            }),
+        );
+    let (address, _server) = start_http_server_with_router(app).await;
+    let dir = TestDir::new("triage-slow-launch");
+    let host = dir.0.join("dsh-host.json");
+    std::fs::write(
+        &host,
+        serde_json::json!({"api": format!("http://{address}"), "secret": "s3cret", "pid": 4242})
+            .to_string(),
+    )
+    .unwrap();
+    (dir, host, launches)
+}
+
+fn dsh_launch_state(db: Db, host: PathBuf) -> Arc<AppState> {
+    state_with(
+        db,
+        crate::cards::Launch {
+            engine: crate::cards::Engine::Dsh,
+            dsh_host: Some(host),
+            ..crate::cards::Launch::default()
+        },
+    )
+}
+
+#[tokio::test]
+async fn new_session_answers_starting_before_a_slow_launch_finishes() {
+    let (dir, host, launches) = slow_launch_bridge(
+        std::time::Duration::from_secs(5),
+        (StatusCode::OK, serde_json::json!({"sessionId": "session-slow"})),
+    )
+    .await;
+    let db = Db::open(&dir.0.join("triage.sqlite")).unwrap();
+    let state = dsh_launch_state(db, host);
+    let (address, server) = start_http_server(Arc::clone(&state)).await;
+    let started = std::time::Instant::now();
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","engine":"dsh"}"#,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert_eq!(response.status, StatusCode::ACCEPTED);
+    assert_eq!(response.body["ok"], true);
+    assert_eq!(response.body["starting"], true);
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "Start waited for the launch: {elapsed:?}"
+    );
+    assert_eq!(launches.load(std::sync::atomic::Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn new_session_answers_the_pane_a_fast_launch_returns() {
+    let (dir, host, _launches) = slow_launch_bridge(
+        std::time::Duration::ZERO,
+        (StatusCode::OK, serde_json::json!({"sessionId": "session-fast"})),
+    )
+    .await;
+    let db = Db::open(&dir.0.join("triage.sqlite")).unwrap();
+    let state = dsh_launch_state(db, host);
+    let (address, server) = start_http_server(Arc::clone(&state)).await;
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","engine":"dsh"}"#,
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.body["pane"], "dsh:session-fast");
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_launch_that_fails_after_start_lands_in_the_inbox() {
+    let (dir, host, _launches) = slow_launch_bridge(
+        std::time::Duration::from_secs(3),
+        (
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({"error": "dsh bridge unreachable: connection reset by peer"}),
+        ),
+    )
+    .await;
+    let db = Db::open(&dir.0.join("triage.sqlite")).unwrap();
+    let state = dsh_launch_state(db, host);
+    let (address, server) = start_http_server(Arc::clone(&state)).await;
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","engine":"dsh"}"#,
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::ACCEPTED);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let queued = state.db.queue(crate::events::now_ms()).unwrap();
+        if let Some(card) = queued.iter().find(|card| card.title == "Could not start the session") {
+            let body = card.body.as_deref().unwrap_or_default();
+            assert!(body.contains("connection reset by peer"), "{body}");
+            assert!(body.contains("Reply pong."), "{body}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no launch failure card in the inbox"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn new_session_refuses_a_bad_mode_before_it_waits_for_the_launch() {
+    let db = Db::open(&TestDir::new("triage-session-bad-mode").0.join("triage.sqlite")).unwrap();
+    let state = state(db, None);
+    let (address, server) = start_http_server(Arc::clone(&state)).await;
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","engine":"dsh","mode":"plan-into","executor_thinking":"max"}"#,
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.body["error"], "execution effort needs an execution model");
+    server.abort();
+}
+
 #[tokio::test]
 async fn dsh_send_refuses_a_command_prefix_before_reaching_the_bridge() {
     let db = Db::open(Path::new(":memory:")).unwrap();

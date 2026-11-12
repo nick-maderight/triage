@@ -1077,36 +1077,101 @@ async fn start_session(
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
+    // Reject a bad mode now; the worker parses it again, because `Start` borrows the request.
+    if let Err(error) = crate::cards::Start::parse(
+        request.mode.as_deref(),
+        request.executor.as_deref(),
+        request.executor_thinking.as_deref(),
+    ) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
+    // The launch outlives the answer: a slow dsh host takes tens of seconds, and the inbox
+    // must not wait on it. A worker sends its outcome once; the handler waits LAUNCH_GRACE
+    // for it, and a watcher turns a later failure into a card.
+    let (tx, mut rx) = tokio::sync::watch::channel::<Option<Result<String, String>>>(None);
     let action_state = Arc::clone(&state);
-    match tokio::task::spawn_blocking(move || {
-        let start = crate::cards::Start::parse(
-            request.mode.as_deref(),
-            request.executor.as_deref(),
-            request.executor_thinking.as_deref(),
-        )?;
-        let image = match request.image.as_ref() {
-            Some(image) => Some(crate::uploads::store(
-                &action_state.db.path(),
-                &image.media_type,
-                &image.data,
-                image.name.as_deref(),
-            )?),
-            None => None,
+    let prompt = request.prompt.clone();
+    tokio::task::spawn_blocking(move || {
+        let outcome = (|| {
+            let start = crate::cards::Start::parse(
+                request.mode.as_deref(),
+                request.executor.as_deref(),
+                request.executor_thinking.as_deref(),
+            )?;
+            let image = match request.image.as_ref() {
+                Some(image) => Some(crate::uploads::store(
+                    &action_state.db.path(),
+                    &image.media_type,
+                    &image.data,
+                    image.name.as_deref(),
+                )?),
+                None => None,
+            };
+            crate::cards::start_session(
+                &action_state.db,
+                &request.prompt,
+                &cwd,
+                &launch,
+                start,
+                image.as_ref(),
+            )
+        })();
+        let _ = tx.send(Some(outcome));
+    });
+    if tokio::time::timeout(LAUNCH_GRACE, rx.changed()).await.is_ok() {
+        return match rx.borrow_and_update().clone() {
+            Some(Ok(pane)) => axum::Json(serde_json::json!({"ok": true, "pane": pane})).into_response(),
+            Some(Err(error)) => error_response(axum::http::StatusCode::BAD_REQUEST, &error),
+            None => internal_error("launch answered nothing"),
         };
-        crate::cards::start_session(
-            &action_state.db,
-            &request.prompt,
-            &cwd,
-            &launch,
-            start,
-            image.as_ref(),
-        )
-    })
-    .await
-    {
-        Ok(Ok(pane)) => axum::Json(serde_json::json!({"ok": true, "pane": pane})).into_response(),
-        Ok(Err(error)) => error_response(axum::http::StatusCode::BAD_REQUEST, &error),
-        Err(error) => internal_error(error),
+    }
+    let watcher = Arc::clone(&state);
+    tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            let outcome = { rx.borrow_and_update().clone() };
+            if let Some(Err(error)) = outcome {
+                report_failed_launch(&watcher, &prompt, &error).await;
+                break;
+            }
+        }
+    });
+    (axum::http::StatusCode::ACCEPTED, axum::Json(serde_json::json!({"ok": true, "starting": true}))).into_response()
+}
+
+/// How long Start waits for the engine before it answers "still starting". Shorter than a slow
+/// launch, longer than a healthy one, which answers in well under a second.
+const LAUNCH_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// Tell the inbox a launch it had already accepted failed, so a background failure is never
+/// silent. The card carries the engine's error and the prompt that was not started.
+async fn report_failed_launch(state: &Arc<AppState>, prompt: &str, error: &str) {
+    eprintln!("triage: launch failed: {error}");
+    let event = crate::events::CloudEvent {
+        specversion: "1.0".to_owned(),
+        id: format!("launch-failed:{}", uuid::Uuid::new_v4()),
+        source: "triage://launch".to_owned(),
+        r#type: crate::events::T_INFO.to_owned(),
+        subject: Some("Could not start the session".to_owned()),
+        time: None,
+        priority: Some(2),
+        data: serde_json::json!({
+            "title": "Could not start the session",
+            "body": format!("{error}\n\n{prompt}"),
+            "level": "warn",
+        }),
+    };
+    let card = card_from_event(&event);
+    let stored_card = card.clone();
+    let db = Arc::clone(state);
+    let stored = tokio::task::spawn_blocking(move || db.db.insert_event(&event, stored_card.as_ref())).await;
+    if !matches!(stored, Ok(Ok(true))) {
+        return;
+    }
+    broadcast(state).await;
+    if let Some(card) = card {
+        // The card and its push are the notification; the desktop popup honours `--no-notify`,
+        // which this path has no flag for.
+        push_cards(state, vec![card]);
     }
 }
 

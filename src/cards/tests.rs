@@ -6642,6 +6642,9 @@ struct BridgeData {
     slow_launch_started: Option<Value>,
     // launch_error is the error the next launch answers, when it answers one.
     launch_error: Option<String>,
+    // list_fails answers GET /v1/sessions with the failure a stalled projection sweep
+    // produces, while every other route keeps working.
+    list_fails: bool,
 }
 
 impl BridgeData {
@@ -6653,6 +6656,9 @@ impl BridgeData {
             self.reads.push(uri.to_string());
         }
         match (method.as_str(), path.as_str()) {
+            ("GET", "/v1/sessions") if self.list_fails => {
+                (StatusCode::SERVICE_UNAVAILABLE, json!({"error": "session/list: timeout"}))
+            }
             ("GET", "/v1/sessions") => (
                 StatusCode::OK,
                 json!({"pid": self.pid, "items": self.sessions, "planDecisions": self.plan_decisions}),
@@ -7698,10 +7704,12 @@ fn dsh_launch_adopts_the_session_a_timed_out_launch_started() {
     bridge.edit(|data| data.sessions.push(started));
     // The host created the session, then took too long to answer. Reporting that as a
     // failure made a retry start the same brief a second time, so the launch adopts it.
+    // The launch began a minute before now; the host created the session after that.
+    let started_at = NOW - 120_000;
     assert_eq!(
         dsh_track::adopt_started(
             &client,
-            &HashSet::new(),
+            started_at,
             "Ship it",
             "dsh bridge unreachable: timeout: global".to_owned(),
         ),
@@ -7711,10 +7719,66 @@ fn dsh_launch_adopts_the_session_a_timed_out_launch_started() {
     // adopting one would report a launch that never started.
     let reads = bridge.reads("/v1/sessions");
     assert_eq!(
-        dsh_track::adopt_started(&client, &HashSet::new(), "Ship it", "workspace is invalid".to_owned()),
+        dsh_track::adopt_started(&client, started_at, "Ship it", "workspace is invalid".to_owned()),
         Err("workspace is invalid".to_owned())
     );
     assert_eq!(bridge.reads("/v1/sessions"), reads);
+}
+
+#[test]
+fn dsh_launch_never_lists_the_host_sessions() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    assert_eq!(
+        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None),
+        Ok("dsh:session-new".to_owned())
+    );
+    // `session/list` projects every session and is the slowest call the host has. A launch
+    // must not pay for it.
+    assert_eq!(bridge.reads("/v1/sessions"), 0);
+}
+
+#[test]
+fn dsh_launch_does_not_adopt_a_session_older_than_the_launch() {
+    let scratch = Scratch::new();
+    let bridge = FakeBridge::start(scratch.path());
+    let client = dsh::connect(Some(bridge.host()), dsh::TICK_TIMEOUT).unwrap();
+    // The stale session carries the same title and comes first, so only its age tells the
+    // two apart.
+    let mut stale = session(1);
+    stale["sessionId"] = json!("session-stale");
+    stale["title"] = json!("Ship it");
+    let mut fresh = session(2);
+    fresh["sessionId"] = json!("session-fresh");
+    fresh["title"] = json!("Ship it");
+    fresh["updatedAtMs"] = json!(NOW);
+    bridge.edit(|data| data.sessions.extend([stale, fresh]));
+    assert_eq!(
+        dsh_track::adopt_started(
+            &client,
+            NOW - 1_000,
+            "Ship it",
+            "dsh bridge unreachable: timeout: global".to_owned(),
+        ),
+        Ok("dsh:session-fresh".to_owned())
+    );
+}
+
+#[test]
+fn a_failed_session_list_retries_on_the_next_poll() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.list_fails = true);
+    let mut tracker = Tracker::default();
+    tracker.dsh_tick_at(&db, Some(bridge.host()), NOW);
+    let reads = bridge.reads("/v1/sessions");
+    assert!(reads >= 1, "the list was never read");
+    // The bridge answered `pending`, so the host is up: a stalled list earns a retry on the
+    // next poll, not the thirty-second backoff a dead host gets.
+    tracker.dsh_tick_at(&db, Some(bridge.host()), NOW + 4_000);
+    assert!(bridge.reads("/v1/sessions") > reads);
 }
 
 #[test]

@@ -2510,9 +2510,16 @@ const S = {
     const pending = toast('Starting…', false, true);
     try {
       const data = await api('/v1/sessions', body);
-      announce(`Started · ${data.pane}`);
-      if (data.pane?.startsWith('dsh:')) toast('Started a dsh session.');
-      else toast(`Started · ${data.pane}`);
+      // A launch the daemon accepted but has not finished answers `starting`. It keeps running
+      // there, and a failure reaches the inbox as a card.
+      if (data.starting) {
+        announce('Starting the session.');
+        toast(body.engine === 'dsh' ? 'Starting a dsh session.' : 'Starting the session.');
+      } else {
+        announce(`Started · ${data.pane}`);
+        if (data.pane?.startsWith('dsh:')) toast('Started a dsh session.');
+        else toast(`Started · ${data.pane}`);
+      }
     } catch (err) {
       // Put the draft back so a retry is one Start, unless a newer draft sits in the sheet.
       const message = err.message || 'Could not start the session.';
