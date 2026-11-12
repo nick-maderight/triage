@@ -154,7 +154,25 @@ capture-pane)
         while [ ! -f "$HOME/tmux-release-capture" ] && [ -d "$HOME" ]; do /bin/sleep 0.01; done
     fi
     if [ -f "$HOME/tmux-plan-review" ]; then
+        sel=0
+        if [ -f "$HOME/tmux-plan-selected" ]; then IFS= read -r sel < "$HOME/tmux-plan-selected"; fi
         printf '╭─ Plan Review ─╮\n'
+        printf '├────────────────╮\n'
+        printf '│ Plan mode - next step │\n'
+        printf '│ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n'
+        printf '│   ↳ Example Model │\n'
+        index=0
+        for option in 'Approve and execute' 'Approve and compact context' 'Approve and keep context (~8k / 1m)' 'Refine plan' 'Save and quit'; do
+            if [ "$index" = "$sel" ]; then
+                printf '│ ❯ %s │\n' "$option"
+            else
+                printf '│   %s │\n' "$option"
+            fi
+            index=$((index + 1))
+        done
+        printf '├────────────────╮\n'
+        printf '│ ↑/↓ select · ⏎ confirm · ←/→ model · ⎋ cancel │\n'
+        printf '╰────────────────╯\n'
     elif [ -f "$HOME/tmux-plan-mode" ]; then
         printf '⬢ Example Model · ◉ high · 🗺 Plan\n'
         printf 'π > session\n'
@@ -171,7 +189,27 @@ capture-pane)
     ;;
 send-keys)
     printf '%s\n' "$*" >> "$HOME/tmux-keys.log"
-    case " $* " in *" Enter "*) : > "$HOME/tmux-answered" ;; esac
+    selected=0
+    if [ -f "$HOME/tmux-plan-selected" ]; then IFS= read -r selected < "$HOME/tmux-plan-selected"; fi
+    case " $* " in
+    *" Down "*) if [ "$selected" -lt 4 ]; then selected=$((selected + 1)); fi ;;
+    *" Up "*) if [ "$selected" -gt 0 ]; then selected=$((selected - 1)); fi ;;
+    esac
+    printf '%s\n' "$selected" > "$HOME/tmux-plan-selected"
+    case " $* " in *" Enter "*)
+        : > "$HOME/tmux-answered"
+        if [ -f "$HOME/tmux-plan-review" ]; then
+            /bin/rm -f "$HOME/tmux-plan-review" "$HOME/tmux-plan-selected"
+            if [ "$selected" = 3 ]; then
+                : > "$HOME/tmux-plan-refined"
+                : > "$HOME/tmux-plan-mode"
+            else
+                : > "$HOME/tmux-plan-approved"
+                /bin/rm -f "$HOME/tmux-plan-mode"
+            fi
+        fi
+        ;;
+    esac
     case " $* " in *" M-P "*) if [ ! -f "$HOME/tmux-plan-toggle-fails" ]; then : > "$HOME/tmux-plan-mode"; fi ;; esac
     ;;
 new-window)
@@ -4374,6 +4412,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
         fs::write(root.join("tmux-plan-review"), b"").unwrap();
+        fs::write(root.join("tmux-plan-mode"), b"").unwrap();
         let approve = plan_card(&pane, 0);
         let empty = plan_card(&pane, 1);
         let unknown = plan_card(&pane, 2);
@@ -4405,19 +4444,6 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
             &Launch::default(),
         None,
         );
-        let approve_result = answer(&db, &approve, &answer_req(0, None), &Launch::default(), None);
-        let refine_result = answer(
-            &db,
-            &refine,
-            &AnswerReq {
-                option: Some(1),
-                text: Some("Add a rollback step".to_owned()),
-                note: Some("Reviewed".to_owned()),
-                ..AnswerReq::default()
-            },
-            &Launch::default(),
-        None,
-        );
         let executor_refine_result = answer(
             &db,
             &refine_with_executor,
@@ -4430,6 +4456,26 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
             &Launch::default(),
         None,
         );
+        let approve_result = answer(&db, &approve, &answer_req(0, None), &Launch::default(), None);
+        let reopen = || {
+            fs::write(root.join("tmux-plan-review"), b"").unwrap();
+            fs::write(root.join("tmux-plan-mode"), b"").unwrap();
+            let _ = fs::remove_file(root.join("tmux-plan-selected"));
+        };
+        reopen();
+        let refine_result = answer(
+            &db,
+            &refine,
+            &AnswerReq {
+                option: Some(1),
+                text: Some("Add a rollback step".to_owned()),
+                note: Some("Reviewed".to_owned()),
+                ..AnswerReq::default()
+            },
+            &Launch::default(),
+        None,
+        );
+        reopen();
         let other_result = answer(
             &db,
             &other,
@@ -4444,7 +4490,9 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         let refine_swipe = current_swipe(&db, &refine.id);
         let other_swipe = current_swipe(&db, &other.id);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
-        let escape = keys.find("send-keys -t %12 Esc").unwrap();
+        let refine_pick = keys
+            .find("send-keys -t %12 Down\nsend-keys -t %12 Down\nsend-keys -t %12 Down\nsend-keys -t %12 Enter")
+            .unwrap();
         let text = keys
             .find("send-keys -t %12 -l -- Add a rollback step")
             .unwrap();
@@ -4471,13 +4519,13 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         assert_eq!(refine_swipe.text.as_deref(), Some("Add a rollback step"));
         assert_eq!(refine_swipe.note.as_deref(), Some("Reviewed"));
         assert_eq!(other_swipe.option, None);
-        assert!(escape < text && text < next_enter);
+        assert!(!keys.contains("Escape"), "{keys}");
         assert_eq!(
-            keys.lines()
-                .filter(|line| *line == "send-keys -t %12 Escape")
-                .count(),
-            2
+            keys.lines().filter(|line| *line == "send-keys -t %12 Down").count(),
+            6
         );
+        assert!(refine_pick < text && text < next_enter, "{keys}");
+        assert!(root.join("tmux-plan-refined").exists());
         return;
     }
 
@@ -4485,6 +4533,67 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "plan_answers_approve_refine_and_reject_invalid_refinements",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_refine_refuses_a_review_that_approved_instead_of_refining() {
+    if let Some(root) = child_root("plan_refine_refuses_a_review_that_approved_instead_of_refining") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
+        let screens = root.join("tmux-capture-seq");
+        fs::create_dir_all(&screens).unwrap();
+        let review = "╭─ Plan Review ─╮\n\
+                      ├────────────────╮\n\
+                      │ Plan mode - next step │\n\
+                      │ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n\
+                      │   ↳ Example Model │\n\
+                      │   Approve and execute │\n\
+                      │   Approve and compact context │\n\
+                      │   Approve and keep context (~8k / 1m) │\n\
+                      │ ❯ Refine plan │\n\
+                      │   Save and quit │\n\
+                      ├────────────────╮\n\
+                      │ ↑/↓ select · ⏎ confirm · ←/→ model · ⎋ cancel │\n\
+                      ╰────────────────╯\n";
+        fs::write(screens.join("0"), review).unwrap();
+        fs::write(screens.join("1"), review).unwrap();
+        fs::write(screens.join("rest"), "complete\n").unwrap();
+        let card = plan_card(&pane, 0);
+        db.insert_card(&card).unwrap();
+
+        let result = answer(
+            &db,
+            &card,
+            &AnswerReq {
+                option: Some(1),
+                text: Some("Add a rollback step".to_owned()),
+                ..AnswerReq::default()
+            },
+            &Launch::default(),
+        None,
+        );
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+
+        assert_eq!(
+            result.as_ref().err().map(String::as_str),
+            Some("plan review approved the plan instead of refining")
+        );
+        assert!(db.card(&card.id).unwrap().unwrap().1.is_none());
+        assert_eq!(keys.lines().filter(|line| *line == "send-keys -t %12 Enter").count(), 1);
+        assert!(!keys.contains("Down"), "{keys}");
+        assert!(!keys.contains("Add a rollback step"), "{keys}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "plan_refine_refuses_a_review_that_approved_instead_of_refining",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),

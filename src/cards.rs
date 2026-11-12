@@ -751,7 +751,7 @@ fn target_lock(db: &Db, card: &Card) -> Option<std::sync::Arc<std::sync::Mutex<(
 ///   then type the text), press Enter, re-capture and require the dialog gone.
 ///   Record the swipe with reason `typed`. Any mismatch returns Err and writes nothing.
 /// - info: swipe done.
-/// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval or Esc followed by literal text for refinement and stores the choice in the swipe.
+/// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval, or confirms the overlay's own `Refine plan` row and then sends the note as literal text, and stores the choice in the swipe.
 /// `launch` names the harness, tmux session, model and thinking level a launched session uses.
 pub fn answer(
     db: &Db,
@@ -2828,8 +2828,7 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
         tmux::send_keys(pane, &["Enter"]).map_err(|error| error.to_string())?;
         record_swipe(db, &card.id, "done", option, role, req.note.clone(), Some("typed".to_owned()))
     } else {
-        tmux::send_keys(pane, &["Escape"]).map_err(|error| error.to_string())?;
-        tmux::send_text(pane, refinement.unwrap()).map_err(|error| error.to_string())?;
+        refine_plan(pane, refinement.unwrap())?;
         record_swipe(
             db,
             &card.id,
@@ -2847,7 +2846,52 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
     }
 }
 
+/// Move Plan Review's `❯` onto `label` and confirm it. Every move is read back, because omp
+/// skips a disabled row, so counting presses cannot land on the row. Confirms only when the
+/// marked row is `label`, so a Refine can never submit another choice such as Approve.
+fn confirm_plan_option(pane: &str, label: &str) -> Result<(), String> {
+    for _ in 0..10 {
+        let screen = tmux::screen(pane).map_err(|error| error.to_string())?;
+        if !omp::plan_review_open(&screen) {
+            return Err("plan review is not open".to_owned());
+        }
+        let (rows, selected) = omp::plan_review_options(&screen)
+            .ok_or_else(|| "plan review has no options".to_owned())?;
+        let target = rows
+            .iter()
+            .position(|row| row == label)
+            .ok_or_else(|| format!("plan review does not offer {label}"))?;
+        if target == selected {
+            tmux::send_keys(pane, &["Enter"]).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        let key = if target > selected { "Down" } else { "Up" };
+        tmux::send_keys(pane, &[key]).map_err(|error| error.to_string())?;
+        thread::sleep(DIALOG_SETTLE);
+    }
+    Err(format!("plan review did not select {label}"))
+}
 
+/// Refine a plan: confirm Plan Review's own Refine row, wait for the overlay to close while plan
+/// mode stays on, then type the feedback into the prompt. Escape is not a refine: it cancels the
+/// review, and the keystrokes that follow can reach the overlay's highlighted row and approve the
+/// plan instead of refining it.
+fn refine_plan(pane: &str, refinement: &str) -> Result<(), String> {
+    confirm_plan_option(pane, "Refine plan")?;
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(100));
+        let screen = tmux::screen(pane).map_err(|error| error.to_string())?;
+        if omp::plan_review_open(&screen) || !omp::plan_mode_on(&screen) {
+            continue;
+        }
+        return tmux::send_text(pane, refinement).map_err(|error| error.to_string());
+    }
+    let screen = tmux::screen(pane).map_err(|error| error.to_string())?;
+    if omp::plan_review_open(&screen) {
+        return Err("plan review did not close".to_owned());
+    }
+    Err("plan review approved the plan instead of refining".to_owned())
+}
 
 fn answer_finding(
     db: &Db,

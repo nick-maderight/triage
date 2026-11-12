@@ -1009,6 +1009,58 @@ pub fn plan_review_open(screen: &str) -> bool {
     screen.lines().any(|line| line.starts_with("╭─ Plan Review"))
 }
 
+/// Read the Plan Review footer's option labels and the row the `❯` marks, in display order. The
+/// rows sit between the two `├` rules of the open box; the title, slider and its model hint are
+/// skipped. A header without its footer rows, or without a marked row, reads as none.
+pub fn plan_review_options(screen: &str) -> Option<(Vec<String>, usize)> {
+    let mut open = false;
+    let mut footer = false;
+    let mut rows: Vec<String> = Vec::new();
+    let mut selected = None;
+    for line in screen.lines() {
+        if line.starts_with("╭─ Plan Review") {
+            open = true;
+            footer = false;
+            rows.clear();
+            selected = None;
+            continue;
+        }
+        if !open {
+            continue;
+        }
+        if line.starts_with('╰') {
+            break;
+        }
+        if line.starts_with('├') {
+            footer = !footer;
+            continue;
+        }
+        if !footer {
+            continue;
+        }
+        let content = line
+            .strip_prefix('│')
+            .map(|rest| rest.trim_end().strip_suffix('│').unwrap_or(rest).trim())
+            .unwrap_or_default();
+        if content.is_empty()
+            || content.starts_with("Plan mode - next step")
+            || content.starts_with("continue with")
+            || content.starts_with('↳')
+        {
+            continue;
+        }
+        let label = match content.strip_prefix('❯') {
+            Some(rest) => {
+                selected = Some(rows.len());
+                rest.trim()
+            }
+            None => content,
+        };
+        rows.push(label.to_owned());
+    }
+    selected.filter(|_| !rows.is_empty()).map(|selected| (rows, selected))
+}
+
 /// Reads the visible role track and selected index from Plan Review.
 pub fn plan_execution_models(screen: &str) -> Option<(Vec<String>, usize)> {
     if !screen.lines().any(|line| line.contains("←/→ model")) {
@@ -1442,6 +1494,57 @@ mod tests {
         );
         assert_eq!(plan_execution_models("continue with ◂ smol ◀ default ▶ slow ▸"), None);
         assert_eq!(plan_execution_models("continue with ◂ smol ◀ default ▶ slow ▸\n↑/↓ scroll · ⏎ open"), None);
+    }
+
+    #[test]
+    fn parses_plan_review_options_and_marks_the_selected_row() {
+        let (rows, selected) =
+            plan_review_options(include_str!("../tests/fixtures/plan_review_overlay.txt")).unwrap();
+        assert_eq!(
+            rows,
+            [
+                "Approve and execute",
+                "Approve and compact context",
+                "Approve and keep context (~118k / 1m)",
+                "Refine plan",
+                "Save and quit"
+            ]
+        );
+        assert_eq!(selected, 0);
+        let moved = "╭─ Plan Review ─╮\n\
+                     │ plan body │\n\
+                     ├───────────┤\n\
+                     │ Plan mode - next step │\n\
+                     │ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n\
+                     │   ↳ Example Model │\n\
+                     │   Approve and execute │\n\
+                     │   Approve and keep context (~9k / 1m) │\n\
+                     │ ❯ Refine plan │\n\
+                     │   Save and quit │\n\
+                     ├───────────┤\n\
+                     │ ↑/↓ select · ⏎ confirm · ←/→ model │\n\
+                     ╰───────────╯\n";
+        assert_eq!(
+            plan_review_options(moved),
+            Some((rows_without_compact(), 2))
+        );
+        assert_eq!(plan_review_options("╭─ Plan Review ─╮\n"), None);
+        assert_eq!(
+            plan_review_options("╭─ Plan Review ─╮\n├───┤\n│ ❯ Approve and execute │\n╰───╯\n"),
+            Some((vec!["Approve and execute".to_owned()], 0))
+        );
+    }
+
+    fn rows_without_compact() -> Vec<String> {
+        [
+            "Approve and execute",
+            "Approve and keep context (~9k / 1m)",
+            "Refine plan",
+            "Save and quit",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     }
 
     #[test]

@@ -1729,8 +1729,41 @@ async fn plan_answer_route_relays_approve_and_refine() {
         &tmux,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$TRIAGE_BUGHUNT_1792294661_TMUX_LOG.args"
+pane=
+for arg in "$@"; do
+    case "$arg" in %*) pane=$arg ;; esac
+done
+state="$TRIAGE_BUGHUNT_1792294661_TMUX_LOG$pane"
 case "$1" in
-capture-pane) printf '╭─ Plan Review ─╮\n' ;;
+capture-pane)
+    if [ -f "$state.picked" ]; then
+        printf '⬢ Example Model · ◉ high · 🗺 Plan\n'
+        exit 0
+    fi
+    printf '╭─ Plan Review ─╮\n'
+    printf '├────────────────╮\n'
+    printf '│ Plan mode - next step │\n'
+    printf '│ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n'
+    printf '│   ↳ Example Model │\n'
+    if [ "$pane" = "%43" ]; then
+        printf '│   Approve and execute │\n'
+        printf '│   Approve and compact context │\n'
+        printf '│   Approve and keep context (~8k / 1m) │\n'
+        printf '│ ❯ Refine plan │\n'
+    else
+        printf '│ ❯ Approve and execute │\n'
+        printf '│   Approve and compact context │\n'
+        printf '│   Approve and keep context (~8k / 1m) │\n'
+        printf '│   Refine plan │\n'
+    fi
+    printf '│   Save and quit │\n'
+    printf '├────────────────╮\n'
+    printf '│ ↑/↓ select · ⏎ confirm · ←/→ model · ⎋ cancel │\n'
+    printf '╰────────────────╯\n'
+    ;;
+send-keys)
+    case " $* " in *" Enter "*) : > "$state.picked" ;; esac
+    ;;
 esac
 "#,
     )
@@ -1769,12 +1802,13 @@ esac
     assert_eq!(approved.status, StatusCode::OK);
     assert_eq!(refined.status, StatusCode::OK);
     assert!(log.lines().any(|line| line == "send-keys -t %42 Enter"));
-    let escape = log.find("send-keys -t %43 Esc").unwrap();
+    assert!(!log.contains("Escape"), "{log}");
+    let pick = log.find("send-keys -t %43 Enter").unwrap();
     let note = log
         .find("send-keys -t %43 -l -- Add rollback step")
         .unwrap();
-    let enter = note + log[note..].find("send-keys -t %43 Enter").unwrap();
-    assert!(escape < note && note < enter);
+    let submit = note + log[note..].find("send-keys -t %43 Enter").unwrap();
+    assert!(pick < note && note < submit, "{log}");
     assert_eq!(approve_swipe.option, Some(0));
     assert_eq!(refine_swipe.option, Some(1));
     assert_eq!(refine_swipe.text.as_deref(), Some("Add rollback step"));
