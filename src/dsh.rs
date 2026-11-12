@@ -121,7 +121,7 @@ impl Ignore {
 
 /// Whether two paths name the same directory. A live session's directory and its workspace
 /// exist, so the resolved paths decide; an unresolvable path falls back to its text.
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,

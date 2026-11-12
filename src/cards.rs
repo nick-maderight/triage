@@ -1073,14 +1073,7 @@ pub fn start_session(
         }
         let path = write_brief(db, session_brief(prompt, start != Start::Goal, workspace_workdir(launch, cwd)))?;
         let title = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
-        return dsh_track::launch_new(
-            launch,
-            cwd,
-            &path,
-            &truncate_chars(title.to_owned(), 60),
-            start,
-            image,
-        );
+        return dsh_track::launch_new(launch, cwd, &path, title, start, image);
     }
     // Validate before writing the brief so a bad choice leaves nothing behind.
     launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
@@ -3495,7 +3488,8 @@ impl Engine {
 /// Where and how triage launches sessions, from `triage serve` flags. Unset omp fields fall
 /// back to `DEFAULT_SESSION` and to omp's own configured model and thinking level. `dsh_host`
 /// is the host file the dsh bridge is read from. `dsh_workspace` names the dsh workspace every
-/// new dsh session joins, so the dsh web UI shows triage's sessions in one group.
+/// new dsh session joins, so the dsh web UI shows triage's sessions in one group, and
+/// `dsh_workspaces` is the directory that holds one directory per workspace name.
 #[derive(Debug, Clone, Default)]
 pub struct Launch {
     pub session: Option<String>,
@@ -3504,6 +3498,7 @@ pub struct Launch {
     pub engine: Engine,
     pub dsh_host: Option<PathBuf>,
     pub dsh_workspace: Option<String>,
+    pub dsh_workspaces: Option<PathBuf>,
 }
 
 /// Trim an omp model selector and refuse shell characters. A blank selector means unset.

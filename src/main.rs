@@ -119,7 +119,8 @@ async fn run() -> Result<(), String> {
                     ));
                 }
             }
-            let dsh_ignore = match (ignored.is_empty(), workspaces_dir(dsh_workspaces)) {
+            let workspaces = workspaces_dir(dsh_workspaces);
+            let dsh_ignore = match (ignored.is_empty(), workspaces.clone()) {
                 (false, Some(root)) => dsh::Ignore::new(root, ignored),
                 _ => dsh::Ignore::default(),
             };
@@ -157,6 +158,7 @@ async fn run() -> Result<(), String> {
                     engine,
                     dsh_host: dsh::host_file(),
                     dsh_workspace,
+                    dsh_workspaces: workspaces,
                 },
                 push,
                 allowed_hosts: allow_hosts,

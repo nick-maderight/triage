@@ -11,7 +11,7 @@ use crate::omp;
 use crate::uploads::Upload;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Gap between bridge polls after a good poll, in ms.
@@ -770,6 +770,51 @@ fn brief_prompt(brief: &Path) -> String {
     format!("Read the brief at {} and carry it out.", brief.display())
 }
 
+/// The prompt a new dsh session gets. It opens with the task's name, which gives dsh's
+/// session titler the work itself instead of a brief path. dsh names a session from its
+/// first `user` message. A plan launch records this text as one. An empty `name` gives the
+/// plain brief prompt.
+fn launch_prompt(brief: &Path, name: &str) -> String {
+    let name = title_words(name, 120, 240);
+    if name.is_empty() {
+        return brief_prompt(brief);
+    }
+    format!("{name}: Read the brief at {} and carry it out.", brief.display())
+}
+
+/// One line of a title. A card title cannot break the launch prompt, which the bridge
+/// accepts only as one line.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` cut to at most `chars` characters and `bytes` bytes on a word boundary. A single
+/// overlong word is cut at a character boundary, never inside one. It carries no ellipsis,
+/// because this is a name and not a clipped preview.
+fn title_words(text: &str, chars: usize, bytes: usize) -> String {
+    let text = one_line(text);
+    let fits = |candidate: &str| candidate.chars().count() <= chars && candidate.len() <= bytes;
+    if fits(&text) {
+        return text;
+    }
+    let mut cut = String::new();
+    for word in text.split(' ') {
+        let candidate = if cut.is_empty() { word.to_owned() } else { format!("{cut} {word}") };
+        if fits(&candidate) {
+            cut = candidate;
+            continue;
+        }
+        if cut.is_empty() {
+            cut = word.chars().take(chars).collect();
+            while !cut.is_empty() && cut.len() > bytes {
+                cut.pop();
+            }
+        }
+        break;
+    }
+    cut
+}
+
 /// Working directory for a dsh launch of `card`. The card's own, else the home directory.
 fn card_cwd(card: &Card) -> String {
     if card.source.cwd.is_empty() {
@@ -1024,14 +1069,7 @@ pub(super) fn launch_brief(
             return Ok(format!("dsh:{sid}"));
         }
     }
-    launch_new(
-        launch,
-        &card_cwd(card),
-        brief,
-        &truncate_chars(card.title.clone(), 60),
-        start,
-        image,
-    )
+    launch_new(launch, &card_cwd(card), brief, &card.title, start, image)
 }
 
 /// Start a dsh session on `brief` and return its `dsh:<sid>` pane id.
@@ -1044,20 +1082,19 @@ pub(super) fn launch_new(
     launch: &Launch,
     cwd: &str,
     brief: &Path,
-    title: &str,
+    task: &str,
     start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::LAUNCH_TIMEOUT)?;
-    let title = truncate_chars(title.to_owned(), 60);
+    let name = one_line(task);
     let (mode, executor, executor_effort) = match start {
         Start::Goal => ("goal", None, None),
         Start::Plan => ("plan", None, None),
         Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
     };
     let mut body = json!({
-        "prompt": brief_prompt(brief),
-        "title": title,
+        "prompt": launch_prompt(brief, &name),
         // No model leaves the bridge its host's default from the dsh catalog.
         "model": launch.model.as_deref(),
         "effort": launch.thinking,
@@ -1065,6 +1102,16 @@ pub(super) fn launch_new(
         "executor": executor,
         "executorEffort": executor_effort,
     });
+    // dsh names a session from its first `user` message. A plan launch records the brief
+    // prompt as one. Since a goal launch only creates a goal, whose rounds are not user
+    // messages, dsh has nothing to name it from. Only a goal launch keeps this title.
+    let pinned = match start {
+        Start::Goal => title_words(&name, 60, 80),
+        _ => String::new(),
+    };
+    if !pinned.is_empty() {
+        body["title"] = json!(pinned);
+    }
     if let Some(workspace) = launch.dsh_workspace.as_deref() {
         body["workspace"] = json!(workspace);
     } else {
@@ -1076,6 +1123,8 @@ pub(super) fn launch_new(
     // The session this launch creates is newer than this, so adoption never needs a list of
     // the sessions that were already there, which costs a slow `session/list` round trip.
     let started_at = crate::events::now_ms();
+    let pinned = (!pinned.is_empty()).then_some(pinned.as_str());
+    let dir = launch_dir(launch, cwd);
     match client.launch(&body) {
         Ok(sid) => Ok(format!("dsh:{sid}")),
         // A host older than workspaces rejects the field before it starts anything, so the
@@ -1087,10 +1136,19 @@ pub(super) fn launch_new(
             body["cwd"] = json!(cwd);
             match client.launch(&body) {
                 Ok(sid) => Ok(format!("dsh:{sid}")),
-                Err(error) => adopt_started(&client, started_at, &title, error),
+                Err(error) => adopt_started(&client, started_at, pinned, Path::new(cwd), error),
             }
         }
-        Err(error) => adopt_started(&client, started_at, &title, error),
+        Err(error) => adopt_started(&client, started_at, pinned, &dir, error),
+    }
+}
+
+/// The directory a new session starts in. That is the workspace's own directory when the
+/// launch joins a workspace, else the project directory.
+fn launch_dir(launch: &Launch, cwd: &str) -> PathBuf {
+    match (launch.dsh_workspaces.as_deref(), launch.dsh_workspace.as_deref()) {
+        (Some(root), Some(name)) => root.join(name),
+        _ => PathBuf::from(cwd),
     }
 }
 
@@ -1101,7 +1159,8 @@ pub(super) fn launch_new(
 pub(super) fn adopt_started(
     client: &dsh::Client,
     started_at: i64,
-    title: &str,
+    pinned: Option<&str>,
+    dir: &Path,
     error: String,
 ) -> Result<String, String> {
     if !error.contains("timeout") {
@@ -1109,14 +1168,22 @@ pub(super) fn adopt_started(
     }
     let deadline = Instant::now() + ADOPT_WINDOW;
     loop {
-        if let Ok((_, sessions, _)) = client.sessions()
-            && let Some(session) = sessions.iter().find(|session| {
-                // A session created by this launch is newer than it; a second of slack covers
-                // a clock that lands just under the recorded start.
-                session.title.as_deref() == Some(title) && session.updated_at_ms >= started_at - 1000
-            })
-        {
-            return Ok(format!("dsh:{}", session.session_id));
+        if let Ok((_, sessions, _)) = client.sessions() {
+            // A session created by this launch is newer than it. A second of slack covers a
+            // clock that lands just under the recorded start. It starts in the launch's
+            // directory. A launch that named a title shows that title too. Only one session
+            // may answer, because guessing would hand the card someone else's work.
+            let mut matches = sessions.iter().filter(|session| {
+                session.updated_at_ms >= started_at - 1000
+                    && session.cwd.as_deref().is_none_or(|cwd| dsh::same_path(Path::new(cwd), dir))
+                    && pinned.is_none_or(|title| session.title.as_deref() == Some(title))
+            });
+            let found = matches.next();
+            if found.is_some() && matches.next().is_none()
+                && let Some(session) = found
+            {
+                return Ok(format!("dsh:{}", session.session_id));
+            }
         }
         if Instant::now() >= deadline {
             return Err(error);

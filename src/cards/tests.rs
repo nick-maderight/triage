@@ -7663,7 +7663,9 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
     assert_eq!(launches.len(), 1);
     let body = &launches[0];
     assert_eq!(body["cwd"], "/work/project");
-    assert_eq!(body["title"], "Write the report");
+    // dsh names a plan session from the brief prompt, which opens with the task, so the
+    // launch carries no title that would pin the row to triage's own clip.
+    assert!(body.get("title").is_none(), "{body}");
     assert_eq!(body["model"], "deepseek-v4-pro");
     assert_eq!(body["effort"], "high");
     assert_eq!(body["mode"], "plan-into");
@@ -7671,9 +7673,56 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
     assert_eq!(body["executorEffort"], "max");
     assert!(body.get("sessionId").is_none(), "{body}");
     assert!(
-        body["prompt"].as_str().is_some_and(|prompt| prompt.starts_with("Read the brief at ") && prompt.ends_with(" and carry it out.")),
+        body["prompt"].as_str().is_some_and(|prompt| prompt.starts_with("Write the report: Read the brief at ") && prompt.ends_with(" and carry it out.")),
         "{body}"
     );
+}
+
+#[test]
+fn dsh_goal_launch_names_the_session_itself() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    // A goal launch gives dsh no user message to name from, so triage keeps naming it. The
+    // title ends on a word boundary, never the mid-word cut the bridge would make of 60.
+    let title = "Launch kept dying at startup: the database was locked and the retry logged nothing";
+    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, None);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["title"], "Launch kept dying at startup: the database was locked and");
+    assert!(
+        launches[0]["prompt"].as_str().is_some_and(|prompt| prompt.starts_with(&format!("{title}: Read the brief at "))),
+        "{}",
+        launches[0]
+    );
+}
+
+#[test]
+fn dsh_goal_launch_cuts_its_title_on_a_word_boundary() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let words = "naming a session from a title that runs well past the sidebar width and then some";
+    let pane = start_session(&db, words, "/work/project", &bridge.launch(), Start::Goal, None);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    let title = bridge.posts("/v1/launch")[0]["title"].as_str().unwrap().to_owned();
+    assert!(title.chars().count() <= 60, "{title}");
+    assert!(words.starts_with(&title), "{title}");
+    assert!(!title.ends_with('…'), "{title}");
+    // The next word would have crossed the cap, so the cut sits between words.
+    assert!(words[title.len()..].starts_with(' '), "{title}");
+
+    // A CJK title is capped by bytes as well, because dsh's title limit counts them.
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let cjk = "会话标题".repeat(40);
+    let pane = start_session(&db, &cjk, "/work/project", &bridge.launch(), Start::Goal, None);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    let title = bridge.posts("/v1/launch")[0]["title"].as_str().unwrap().to_owned();
+    assert!(title.len() <= 80, "{title}");
+    assert!(cjk.starts_with(&title), "{title}");
 }
 
 #[test]
@@ -7710,7 +7759,8 @@ fn dsh_launch_adopts_the_session_a_timed_out_launch_started() {
         dsh_track::adopt_started(
             &client,
             started_at,
-            "Ship it",
+            None,
+            Path::new("/work/project"),
             "dsh bridge unreachable: timeout: global".to_owned(),
         ),
         Ok("dsh:session-slow".to_owned())
@@ -7719,10 +7769,96 @@ fn dsh_launch_adopts_the_session_a_timed_out_launch_started() {
     // adopting one would report a launch that never started.
     let reads = bridge.reads("/v1/sessions");
     assert_eq!(
-        dsh_track::adopt_started(&client, started_at, "Ship it", "workspace is invalid".to_owned()),
+        dsh_track::adopt_started(
+            &client,
+            started_at,
+            None,
+            Path::new("/work/project"),
+            "workspace is invalid".to_owned()
+        ),
         Err("workspace is invalid".to_owned())
     );
     assert_eq!(bridge.reads("/v1/sessions"), reads);
+}
+
+#[test]
+fn dsh_launch_adopts_a_goal_launch_by_its_title() {
+    let scratch = Scratch::new();
+    let bridge = FakeBridge::start(scratch.path());
+    let client = dsh::connect(Some(bridge.host()), dsh::TICK_TIMEOUT).unwrap();
+    // A goal launch is the one kind that keeps a title, so a new session in another
+    // directory cannot be mistaken for it while its own session is not listed yet.
+    let mut elsewhere = session(1);
+    elsewhere["sessionId"] = json!("session-other");
+    elsewhere["title"] = json!("Something else");
+    elsewhere["cwd"] = json!("/work/other");
+    elsewhere["updatedAtMs"] = json!(NOW);
+    let mut started = session(2);
+    started["sessionId"] = json!("session-goal");
+    started["title"] = json!("Ship it");
+    started["updatedAtMs"] = json!(NOW);
+    bridge.edit(|data| data.sessions.extend([elsewhere, started]));
+    assert_eq!(
+        dsh_track::adopt_started(
+            &client,
+            NOW - 1_000,
+            Some("Ship it"),
+            Path::new("/work/project"),
+            "dsh bridge unreachable: timeout: global".to_owned(),
+        ),
+        Ok("dsh:session-goal".to_owned())
+    );
+}
+
+#[test]
+fn dsh_launch_leaves_two_fresh_sessions_alone() {
+    let scratch = Scratch::new();
+    let bridge = FakeBridge::start(scratch.path());
+    let client = dsh::connect(Some(bridge.host()), dsh::TICK_TIMEOUT).unwrap();
+    let mut first = session(1);
+    first["sessionId"] = json!("session-one");
+    first["updatedAtMs"] = json!(NOW);
+    let mut second = session(2);
+    second["sessionId"] = json!("session-two");
+    second["updatedAtMs"] = json!(NOW);
+    bridge.edit(|data| data.sessions.extend([first, second]));
+    // Two sessions appeared where the launch asked for one, so neither is certainly this
+    // launch's session. The error stays, and the retry is the caller's decision.
+    assert_eq!(
+        dsh_track::adopt_started(
+            &client,
+            NOW - 1_000,
+            None,
+            Path::new("/work/project"),
+            "dsh bridge unreachable: timeout: global".to_owned(),
+        ),
+        Err("dsh bridge unreachable: timeout: global".to_owned())
+    );
+}
+
+#[test]
+fn dsh_launch_ignores_a_new_session_elsewhere() {
+    let scratch = Scratch::new();
+    let bridge = FakeBridge::start(scratch.path());
+    let client = dsh::connect(Some(bridge.host()), dsh::TICK_TIMEOUT).unwrap();
+    let mut elsewhere = session(1);
+    elsewhere["sessionId"] = json!("session-other");
+    elsewhere["cwd"] = json!("/work/other");
+    elsewhere["updatedAtMs"] = json!(NOW);
+    let mut started = session(2);
+    started["sessionId"] = json!("session-here");
+    started["updatedAtMs"] = json!(NOW);
+    bridge.edit(|data| data.sessions.extend([elsewhere, started]));
+    assert_eq!(
+        dsh_track::adopt_started(
+            &client,
+            NOW - 1_000,
+            None,
+            Path::new("/work/project"),
+            "dsh bridge unreachable: timeout: global".to_owned(),
+        ),
+        Ok("dsh:session-here".to_owned())
+    );
 }
 
 #[test]
@@ -7758,7 +7894,8 @@ fn dsh_launch_does_not_adopt_a_session_older_than_the_launch() {
         dsh_track::adopt_started(
             &client,
             NOW - 1_000,
-            "Ship it",
+            Some("Ship it"),
+            Path::new("/work/project"),
             "dsh bridge unreachable: timeout: global".to_owned(),
         ),
         Ok("dsh:session-fresh".to_owned())
@@ -8251,7 +8388,8 @@ fn startup_launch_that_wrote_a_session_is_not_repeated() {
 fn brief_from_prompt(prompt: &Value) -> String {
     let prompt = prompt.as_str().expect("a launch prompt");
     let path = prompt
-        .strip_prefix("Read the brief at ")
+        .split_once("Read the brief at ")
+        .map(|(_, rest)| rest)
         .and_then(|rest| rest.strip_suffix(" and carry it out."))
         .unwrap_or_else(|| panic!("unexpected launch prompt {prompt}"));
     fs::read_to_string(path).unwrap()
