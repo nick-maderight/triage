@@ -7092,6 +7092,63 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
 }
 
 #[test]
+fn completed_dsh_goal_reports_when_running_flag_is_stale() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let mut completed = session(4);
+    completed["running"] = json!(true);
+    completed["goalPhase"] = json!("complete");
+    bridge.edit(|data| {
+        data.sessions = vec![completed];
+        data.events.insert(
+            SID.to_owned(),
+            vec![reply_event(3, "ENVOY_STATUS: complete\nGoal finished."), turn_end(4, "completed")],
+        );
+    });
+    let mut tracker = Tracker::default();
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
+    assert!(db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().1.is_none());
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
+}
+
+#[test]
+fn completed_dsh_goal_waits_for_its_closing_turn_while_running() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let mut completed = session(5);
+    completed["running"] = json!(true);
+    completed["goalPhase"] = json!("complete");
+    bridge.edit(|data| {
+        data.sessions = vec![completed];
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(3, "Earlier round."),
+                turn_end(4, "completed"),
+                json!({"seq": 5, "type": "tool/result", "name": "update_goal"}),
+            ],
+        );
+    });
+    let mut tracker = Tracker::default();
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 0);
+    assert!(done_cards(&db).is_empty());
+    bridge.edit(|data| {
+        let mut finished = session(7);
+        finished["running"] = json!(true);
+        finished["goalPhase"] = json!("complete");
+        data.sessions = vec![finished];
+        data.events.get_mut(SID).unwrap().extend(vec![
+            reply_event(6, "ENVOY_STATUS: complete\nClosing report."),
+            turn_end(7, "completed"),
+        ]);
+    });
+    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 1);
+    assert!(db.card(&format!("done:dsh:{SID}:7")).unwrap().unwrap().1.is_none());
+}
+
+#[test]
 fn dsh_agent_done_report_closed_with_none_earns_a_done_card() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);

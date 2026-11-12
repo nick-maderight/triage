@@ -507,7 +507,10 @@ fn report_sessions(
             && (session.running || now - session.updated_at_ms <= WATCH_MS)
     }) {
         let entry = memo.sessions.entry(session.session_id.clone()).or_default();
-        if session.running || waiting.contains(session.session_id.as_str()) {
+        // A completed goal can leave running set after its last turn. The cursor check below rejects earlier rounds.
+        if (session.running && session.goal_phase.as_deref() != Some("complete"))
+            || waiting.contains(session.session_id.as_str())
+        {
             entry.idle_since_ms = None;
             continue;
         }
@@ -525,16 +528,21 @@ fn report_sessions(
         }
         reads -= 1;
         let recent = client.events(&session.session_id, 200)?;
-        entry.cursor = session.cursor;
-        entry.waiting_grace = false;
         let reported = entry.reported_seq;
         let Some(end) = recent
             .iter()
             .rev()
             .find(|event| event.kind == "turn/end" && event.seq > reported)
         else {
+            entry.cursor = session.cursor;
+            entry.waiting_grace = false;
             continue;
         };
+        if session.running && session.cursor != end.seq {
+            continue;
+        }
+        entry.cursor = session.cursor;
+        entry.waiting_grace = false;
         if matches!(
             end.reason.as_deref(),
             Some("aborted" | "interrupted" | "forked")
