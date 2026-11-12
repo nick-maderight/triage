@@ -1,8 +1,9 @@
 //! Bridge poll and card actions for dsh sessions.
 
 use super::{
-    GOAL_CONTINUATION_GRACE, Launch, REQUEST_REPORT_TEXT, Start, TickReport, Tracker, finish_cards,
-    headline_of, record_swipe, reply_turn, supersede_info_cards, trail, truncate_chars, turn_card,
+    GOAL_CONTINUATION_GRACE, Launch, REQUEST_REPORT_TEXT, Start, TickReport, Tracker,
+    dispatch_prompt, finish_cards, headline_of, record_swipe, reply_turn, supersede_info_cards,
+    trail, truncate_chars, turn_card,
 };
 use crate::db::Db;
 use crate::dsh;
@@ -746,19 +747,19 @@ fn answer_entry(question: &dsh::Question, answer: &Answer) -> Result<Value, Stri
 
 /// The prompt a dsh session gets for a brief file.
 fn brief_prompt(brief: &Path) -> String {
-    format!("Read the brief at {} and carry it out.", brief.display())
+    dispatch_prompt(brief, Start::Goal)
 }
 
 /// The prompt a new dsh session gets. It opens with the task's name, which gives dsh's
 /// session titler the work itself instead of a brief path. dsh names a session from its
 /// first `user` message. A plan launch records this text as one. An empty `name` gives the
-/// plain brief prompt.
-fn launch_prompt(brief: &Path, name: &str) -> String {
+/// plain prompt for `start`, which an implement launch spells out as implement.
+fn launch_prompt(brief: &Path, name: &str, start: Start) -> String {
     let name = title_words(name, 120, 240);
     if name.is_empty() {
-        return brief_prompt(brief);
+        return dispatch_prompt(brief, start);
     }
-    format!("{name}: Read the brief at {} and carry it out.", brief.display())
+    format!("{name}: {}", dispatch_prompt(brief, start))
 }
 
 /// One line of a title. A card title cannot break the launch prompt, which the bridge
@@ -1049,12 +1050,20 @@ pub(super) fn launch_brief(
     if let Some(sid) = dsh::session_id(card) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
         if let Ok(state) = client.state(sid) {
+            // An implement dispatch on a session still in plan mode goes through the plan
+            // decision: it leaves plan mode, drops read-only access and sends the approved
+            // plan on. A prompt in plan mode is planned again and never carried out.
+            if start == Start::Implement && state.plan_active {
+                client.decide_plan(sid, "approve", None, None, None)?;
+                return Ok(format!("dsh:{sid}"));
+            }
             match start {
-                // A goal brief is queued in the card's session even while it runs or waits for
-                // an answer, because dsh queues a prompt for the session's next turn. The work
-                // then continues where the card came from instead of in a second session.
-                Start::Goal => {
-                    match client.prompt(sid, &brief_prompt(brief), image.map(Upload::dsh_image)) {
+                // A goal or implement brief is queued in the card's session even while it runs
+                // or waits for an answer, because dsh queues a prompt for the session's next
+                // turn. The work then continues where the card came from instead of in a
+                // second session.
+                Start::Goal | Start::Implement => {
+                    match client.prompt(sid, &dispatch_prompt(brief, start), image.map(Upload::dsh_image)) {
                         Ok(()) => return Ok(format!("dsh:{sid}")),
                         // A refused prompt was not taken, so the brief starts a session instead.
                         Err(error) if prompt_refused(&error) => {}
@@ -1115,10 +1124,11 @@ pub(super) fn launch_new(
     let (mode, executor, executor_effort) = match start {
         Start::Goal => ("goal", None, None),
         Start::Plan => ("plan", None, None),
+        Start::Implement => ("goal", None, None),
         Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
     };
     let mut body = json!({
-        "prompt": launch_prompt(brief, &name),
+        "prompt": launch_prompt(brief, &name, start),
         // No model leaves the bridge its host's default from the dsh catalog.
         "model": launch.model.as_deref(),
         "effort": launch.thinking,

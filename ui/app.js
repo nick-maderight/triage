@@ -1391,7 +1391,7 @@ const S = {
           c,
           'dispatch',
           'btn',
-          { 'aria-keyshortcuts': 'i Shift+A p Shift+P' },
+          { 'aria-keyshortcuts': 'i Shift+A p Shift+P I' },
           () => openDispatch(c),
           'Dispatch',
           key('i'),
@@ -1603,7 +1603,7 @@ const S = {
   function resultMessage(c, verb, body, choice) {
     if (verb === 'skip') return `Skipped · ${c.title}`;
     if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
-      return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
+      return `${body.mode === 'act' ? 'Acting' : body.mode === 'implement' ? 'Implementing' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
     if (verb === 'close') return `Closed pane · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
     if (verb === 'restore') return `Restoring run · ${c.title}`;
@@ -2833,6 +2833,8 @@ const S = {
     $('#dispatch-mode-help').textContent = {
       investigate: 'Read-only. The session looks into it and reports back.',
       act: 'The session carries out the action end to end.',
+      implement:
+        'The plan the card holds is approved: the session implements it and leaves plan mode, so nothing is planned twice.',
       plan: 'The session prepares a plan for review before acting.',
       'plan-into':
         'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
@@ -3256,6 +3258,9 @@ const S = {
         break;
       case 'P':
         run(() => openDispatch(c, 'plan-into'));
+        break;
+      case 'I':
+        run(() => openDispatch(c, 'implement'));
         break;
       case 'r':
         run(() => requestReport(c));

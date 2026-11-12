@@ -4083,6 +4083,10 @@ fn dispatch_mode_parse_accepts_known_modes_only() {
         DispatchMode::parse("plan-into"),
         Some(DispatchMode::PlanInto)
     );
+    assert_eq!(
+        DispatchMode::parse("implement"),
+        Some(DispatchMode::Implement)
+    );
     assert_eq!(DispatchMode::parse("Act"), None);
     assert_eq!(DispatchMode::parse("fix"), None);
     assert_eq!(DispatchMode::parse(""), None);
@@ -5704,7 +5708,7 @@ fn finding_question_answers_are_validated_before_anything_is_recorded() {
                     mode: Some("investigate".to_owned()),
                     ..question_req(vec![picked(0), picked(0), picked(0)], None)
                 },
-                "finding questions run act, plan, or plan-into",
+                "finding questions run act, implement, plan, or plan-into",
             ),
         ];
         for (request, message) in rejected {
@@ -8092,6 +8096,86 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     assert!(prompts[0]["text"].as_str().is_some_and(|text| text.starts_with("Read the brief at ")), "{prompts:?}");
     assert!(bridge.posts("/v1/launch").is_empty());
     assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+}
+
+#[test]
+fn dsh_implement_on_a_plan_mode_session_answers_the_plan_instead_of_prompting() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![plan_session(4)];
+        data.states.insert(
+            SID.to_owned(),
+            json!({"running": false, "pendingInput": [], "planActive": true}),
+        );
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Implement, None, &bridge.launch(), None, None, None).unwrap();
+    // A prompt in plan mode is planned again, so the plan decision is what moves the work on:
+    // it leaves plan mode, drops read-only access and sends the approved plan.
+    assert_eq!(
+        bridge.posts("/v1/plan"),
+        vec![json!({"sessionId": SID, "decision": "approve", "feedback": null, "executor": null, "effort": null})]
+    );
+    assert!(bridge.posts("/v1/prompt").is_empty(), "{:?}", bridge.posts("/v1/prompt"));
+    assert!(bridge.posts("/v1/launch").is_empty());
+    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+}
+
+#[test]
+fn dsh_implement_on_an_idle_session_prompts_it_to_implement_the_brief() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.sessions = vec![session(4)]);
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Implement, None, &bridge.launch(), None, None, None).unwrap();
+    let prompts = bridge.posts("/v1/prompt");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["sessionId"], SID);
+    assert!(
+        prompts[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Implement the plan in the brief at ")
+                && text.ends_with(" and report the result.")),
+        "{prompts:?}"
+    );
+    assert!(bridge.posts("/v1/plan").is_empty());
+    assert!(bridge.posts("/v1/launch").is_empty());
+}
+
+#[test]
+fn implement_brief_carries_out_the_plan_without_asking_for_another_one() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    let brief = dispatch_brief(&card, DispatchMode::Implement, None, None);
+    assert!(brief.starts_with("# Implement: "), "{brief}");
+    assert!(brief.contains("the design is settled, so move forward."), "{brief}");
+    assert!(!brief.contains(PLAN_REPORT_STEP), "{brief}");
+    // The plan brief still asks for the review section, so only implement is settled work.
+    let plan = dispatch_brief(&card, DispatchMode::Plan, None, None);
+    assert!(plan.contains(PLAN_REPORT_STEP), "{plan}");
+}
+
+#[test]
+fn implement_launch_on_a_new_dsh_session_says_implement() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let pane = start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Implement, None);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["mode"], "goal");
+    assert!(
+        launches[0]["prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.starts_with("Implement the plan in the brief at ")),
+        "{}",
+        launches[0]
+    );
 }
 
 #[test]
