@@ -663,8 +663,19 @@
             method = (init?.method || request?.method || 'GET').toUpperCase(),
             url = new URL(request?.url || String(input), location.href);
           if (url.origin !== location.origin) return nativeFetch.call(this, input, init);
-          if (method === 'GET' && url.pathname === '/v1/models')
+          if (method === 'GET' && url.pathname === '/v1/models') {
+            if (url.searchParams.get('engine') === 'dsh')
+              return json({
+                engine: 'dsh',
+                models: [{ selector: 'fixture/fast', name: 'Dsh Fast', efforts: ['low', 'high'] }],
+                execution_models: [
+                  { selector: 'fixture/fast', name: 'Dsh Fast', efforts: ['low', 'high'] },
+                ],
+                default: 'fixture/fast',
+                thinking: ['low', 'high'],
+              });
             return json({
+              engine: 'omp',
               models: [
                 { selector: 'fixture/alpha-1', name: 'Alpha One' },
                 { selector: 'fixture/beta-2', name: 'Beta Two' },
@@ -677,6 +688,7 @@
               thinking: ['low', 'high', 'max'],
               default_thinking: 'max',
             });
+          }
           if (method === 'GET' && url.pathname === '/v1/tmux-sessions')
             return json({
               sessions: ['main', 'work'],
@@ -743,6 +755,51 @@
         rows()[0].click();
         await closed(executor, 'execution reset close');
         assert(executor.value === '', 'Default resets the executor');
+        // A dsh sheet offers no execution effort until it names an execution model.
+        const engineField = document.querySelector('#compose-engine');
+        engineField.click();
+        await waitFor(() => picker.open, 'engine picker open on dsh');
+        setQuery('dsh');
+        await waitFor(() => rows().length === 1, 'dsh narrows to one engine row');
+        keydown(document.querySelector('#picker-search'), 'Enter');
+        await closed(engineField, 'engine picker close');
+        assert(engineField.value === 'dsh', 'the compose engine holds dsh');
+        await waitFor(() => text('#compose-model').includes('Dsh Fast'), 'dsh models load');
+        assert(
+          text('#compose-executor-effort').includes('needs an execution model'),
+          'a dsh effort names the execution model it waits for',
+        );
+        effort.click();
+        await waitFor(() => picker.open, 'dsh execution effort picker open');
+        assert(rows().length === 1, 'the dsh execution effort lists only Default');
+        assert(
+          text('#picker-empty').includes('Nothing to choose'),
+          'the dsh effort picker says there is nothing to choose yet',
+        );
+        picker.close();
+        executor.click();
+        await waitFor(() => picker.open, 'dsh execution picker open');
+        setQuery('fast');
+        await waitFor(
+          () => rows().length === 2,
+          'dsh model query narrows to the model and its free-text row',
+        );
+        keydown(document.querySelector('#picker-search'), 'Enter');
+        await closed(executor, 'dsh execution picker close');
+        assert(executor.value === 'fixture/fast', 'the dsh executor holds the chosen model');
+        effort.click();
+        await waitFor(() => picker.open, 'dsh execution effort picker reopens');
+        setQuery('high');
+        await waitFor(() => rows().length === 1, 'the dsh model effort narrows to one row');
+        keydown(document.querySelector('#picker-search'), 'Enter');
+        await closed(effort, 'dsh execution effort picker close');
+        assert(effort.value === 'high', 'the dsh execution effort holds high');
+        engineField.click();
+        await waitFor(() => picker.open, 'engine picker reopens');
+        rows()[0].click();
+        await closed(engineField, 'engine picker reset close');
+        assert(engineField.value === '', 'Default returns the compose engine');
+        await waitFor(() => text('#compose-model').includes('Alpha One'), 'omp models reload');
         document.querySelector('#compose-mode-goal').click();
         assert(compose.querySelector('#compose-models').hidden, 'Goal hides the execution model again');
         document.querySelector('#compose-prompt').value = 'fixture prompt goal';
