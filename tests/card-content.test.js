@@ -269,3 +269,53 @@ test('the source name drops the tmux window prefix and leading emoji from a sess
   assert.equal(sourceName({ uri: 'test://smoke' }), 'test://smoke');
   assert.equal(sourceName({}), 'unknown');
 });
+
+test('a finding question with its own star shows that finding in place of the card', () => {
+  const drafts = new Map(),
+    { cardView } = cardContext({ drafts }, {}, ['cardView', 'draft']),
+    card = {
+      id: 'audit',
+      kind: 'finding',
+      title: 'Rule audit 2026-11-11, 2 findings',
+      star: {
+        situation: 'Every finding at once.',
+        task: 'Answer every finding on this card.',
+        action: 'Read audit.json.',
+        result: 'One session does the accepted work.',
+      },
+      questions: [
+        {
+          label: 'Rotate the deploy key',
+          question: 'Title: Rotate the deploy key\nSituation: The key is 120 days old.',
+          options: [{ label: 'Do as recommended' }],
+          star: {
+            situation: 'The key is 120 days old.',
+            task: 'Keep deploys on a fresh key.',
+            action: 'Run rotate.sh.',
+            result: 'Deploys keep working.',
+          },
+        },
+        { label: 'Supplier', question: 'Delete the supplier?', options: [{ label: 'Keep' }] },
+      ],
+    },
+    shown = () =>
+      Object.fromEntries(
+        findNodes(cardView(card, false), (item) => item.tag === 'section').map((section) => [
+          textOf(section.children[0]),
+          textOf(section.children[1]),
+        ]),
+      );
+
+  const own = shown();
+  assert.ok(own.Situation.includes('120 days old'), 'the step shows the finding situation');
+  assert.ok(!own.Situation.includes('Every finding at once'), 'the card situation stays off that step');
+  assert.ok(own.Task.includes('fresh key'), 'the step shows the finding task');
+  assert.ok(own.Result.includes('Deploys keep working'), 'the step shows the finding result');
+  assert.ok(own.Action.includes('rotate.sh'), 'the step shows the finding action');
+
+  drafts.get(card.id).step = 1;
+  assert.ok(shown().Situation.includes('Every finding at once'), 'a question without a star keeps the card situation');
+
+  drafts.get(card.id).step = 2;
+  assert.ok(shown().Action.includes('Read audit.json'), 'the review step shows the card again');
+});

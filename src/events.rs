@@ -151,6 +151,9 @@ pub struct CardQuestion {
     /// Whether the dialog offers custom text ("Other"). Legacy and dsh asks always do.
     #[serde(default = "default_allow_other")]
     pub allow_other: bool,
+    /// Finding questions only: the question's own STAR, shown on its step in place of the card's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub star: Option<Star>,
 }
 
 fn default_allow_other() -> bool {

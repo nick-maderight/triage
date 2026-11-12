@@ -1310,6 +1310,7 @@ fn add_ask_card(
                         question: question.question.clone(),
                         options: card_options(question),
                         allow_other: *allowed,
+                        star: None,
                     })
                     .collect()
             })

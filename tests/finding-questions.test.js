@@ -191,3 +191,56 @@ test('finding answer dispatch forwards answers, image, mode and plan-into effort
     executor_thinking: 'max',
   });
 });
+
+test('a finding question with its own star is titled by its label and opens at the top', () => {
+  const card = {
+      id: 'finding-star',
+      kind: 'finding',
+      questions: [
+        {
+          label: 'Rotate the deploy key',
+          question: 'Title: Rotate the deploy key\nSituation: The key is 120 days old.',
+          star: { situation: 'The key is 120 days old.' },
+          options: [{ label: 'Do as recommended', recommended: true }, { label: 'Skip' }],
+        },
+        { label: 'Supplier', question: 'Delete the supplier?', options: [{ label: 'Keep' }] },
+      ],
+    },
+    state = {
+      drafts: new Map([[card.id, { step: 0, answers: [{ option: 0 }, { option: 0 }], other: '', open: false }]]),
+    },
+    scrolls = [],
+    context = vm.createContext({
+      S: state,
+      draft: (current) => state.drafts.get(current.id),
+      ident: (name, current) => `${name}-${current.id}`,
+      h: node,
+      el: (tag, props, ...children) => node(tag, props || {}, ...children),
+      button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
+      mdInline: (text) => text,
+      snapshot: () => ({ scroll: 240 }),
+      render: (view) => scrolls.push(view.scroll),
+      focusPrimary() {},
+      announce() {},
+      sendAnswers() {},
+    });
+  vm.runInContext(
+    `${['stepTitle', 'reviewView', 'goStep'].map((name) => functionSource(name)).join('\n')}\nglobalThis.ui = { stepTitle, reviewView, goStep };`,
+    context,
+  );
+  const title = (step) => {
+    state.drafts.get(card.id).step = step;
+    return context.ui.stepTitle(card);
+  };
+
+  assert.equal(title(0), 'Rotate the deploy key', 'its own star moves the finding text out of the title');
+  assert.equal(title(1), 'Delete the supplier?', 'a question without a star stays its own title');
+  assert.equal(title(2), 'Review answers');
+  assert.deepEqual(
+    findNodes(context.ui.reviewView(card), (item) => item.props?.class === 'opt-desc').map((item) => item.children[0]),
+    ['Rotate the deploy key', 'Delete the supplier?'],
+    'the review names a starred finding by its label',
+  );
+  for (const step of [0, 1, 2]) context.ui.goStep(card, step);
+  assert.deepEqual(scrolls, [0, 240, 240], 'only a question with its own text resets the scroll');
+});

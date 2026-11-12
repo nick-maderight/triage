@@ -1144,7 +1144,7 @@ const S = {
               'span',
               'opt-copy',
               el('span', 'opt-label', label),
-              el('span', 'opt-desc', mdInline(question.question)),
+              el('span', 'opt-desc', mdInline(question.star ? question.label : question.question)),
             ),
             el('span', 'tag', 'Change'),
           ),
@@ -1168,8 +1168,10 @@ const S = {
     ];
   }
   function stepTitle(c) {
-    const d = draft(c);
-    return d.step < c.questions.length ? c.questions[d.step].question : 'Review answers';
+    const question = c.questions[draft(c).step];
+    if (!question) return 'Review answers';
+    // A question with its own STAR shows its text in the blocks, so its label is the title.
+    return question.star ? question.label : question.question;
   }
   function pickStep(c, i) {
     if (S.pending) return;
@@ -1193,7 +1195,8 @@ const S = {
     d.step = step;
     d.open = false;
     d.other = d.answers[step]?.text || '';
-    render(v);
+    // A question with its own STAR brings new text, so it opens at the top.
+    render(c.questions[step]?.star ? { ...v, scroll: 0 } : v);
     focusPrimary();
     announce(
       step < c.questions.length
@@ -1455,7 +1458,9 @@ const S = {
     const busy = S.pending?.id === c.id,
       live = answerable(c),
       pane = paneOf(c),
-      star = c.star || {},
+      // A question that carries its own STAR shows it in place of the card's, which covers every
+      // finding and returns on the review step.
+      star = (c.questions?.length && c.questions[draft(c).step]?.star) || c.star || {},
       cls = ['card'];
     if (changed) cls.push('enter', ...(S.direction < 0 ? ['back'] : []));
     if (busy) cls.push('pending');

@@ -297,6 +297,7 @@ fn card_questions(item: &dsh::Pending) -> Vec<CardQuestion> {
             question: question.question.clone(),
             options: question_options(question),
             allow_other: true,
+            star: None,
         })
         .collect()
 }

@@ -503,6 +503,7 @@ fn question_finding_card(root: &Path) -> Card {
         question: format!("{label}?"),
         options,
         allow_other,
+        star: None,
     };
     Card {
         questions: vec![

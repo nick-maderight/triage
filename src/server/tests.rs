@@ -935,7 +935,36 @@ fn finding_questions_become_card_questions_with_custom_text_allowed_by_default()
     assert!(card.questions[0].allow_other);
     assert!(!card.questions[1].allow_other);
 }
-
+#[test]
+fn finding_question_keeps_its_own_star_and_a_malformed_one_makes_no_card() {
+    let data = |star: serde_json::Value| {
+        serde_json::json!({
+            "title": "Two fixes",
+            "questions": [
+                {"label": "Rotate the key", "question": "Title: Rotate the key", "star": star},
+                {"label": "Supplier", "question": "Delete the supplier?"}
+            ]
+        })
+    };
+    let card = card_from_event(&event(
+        crate::events::T_FINDING,
+        "urn:test:finding-question-star",
+        data(serde_json::json!({"situation": "The key is 120 days old.", "action": "Run rotate.sh."})),
+    ))
+    .unwrap();
+    let queued = serde_json::to_value(&card).unwrap();
+    assert_eq!(queued["questions"][0]["star"]["situation"], "The key is 120 days old.");
+    assert_eq!(queued["questions"][0]["star"]["action"], "Run rotate.sh.");
+    assert!(queued["questions"][1].get("star").is_none());
+    assert!(
+        card_from_event(&event(
+            crate::events::T_FINDING,
+            "urn:test:finding-question-star-broken",
+            data(serde_json::json!("not an object")),
+        ))
+        .is_none()
+    );
+}
 #[test]
 fn finding_questions_are_optional_and_malformed_ones_make_no_card() {
     let plain = card_from_event(&event(
