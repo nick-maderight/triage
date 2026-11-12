@@ -611,6 +611,135 @@
         if (dialog.open) dialog.close();
       }
     },
+    // A catalog read can outlive the engine choice that asked for it. A dsh bridge that is timing
+    // out holds its answer for seconds, so an answer for one engine must never fill the model field
+    // that now names another, and the field must still take it when its engine is the chosen one.
+    checkModelEngine = async () => {
+      const dialog = document.querySelector('#compose'),
+        picker = document.querySelector('#picker'),
+        engine = document.querySelector('#compose-engine'),
+        model = document.querySelector('#compose-model'),
+        nativeFetch = window.fetch,
+        omp = {
+          engine: 'omp',
+          models: [
+            { selector: 'fixture/omp-alpha', name: 'OMP Alpha' },
+            { selector: 'fixture/omp-beta', name: 'OMP Beta' },
+          ],
+          default: 'fixture/omp-alpha',
+          thinking: ['high'],
+          default_thinking: 'high',
+          execution_models: [],
+        },
+        dsh = {
+          engine: 'dsh',
+          models: [{ selector: 'dsh/only-model', name: 'DSH Only' }],
+          default: 'dsh/only-model',
+          thinking: ['low'],
+          default_thinking: 'low',
+          execution_models: [],
+        },
+        // The dsh catalog answers only when the check releases it, the way a timing-out bridge
+        // holds its answer while the sheet moves on.
+        held = { answer: null, released: false, requested: false },
+        holdDsh = () =>
+          new Promise((resolve) => {
+            held.requested = true;
+            held.answer = () => {
+              held.released = true;
+              resolve(json(dsh));
+            };
+            if (held.release) held.answer();
+          }),
+        fixtureFetch = function (input, init) {
+          const request = input instanceof Request ? input : null,
+            method = (init?.method || request?.method || 'GET').toUpperCase(),
+            url = new URL(request?.url || String(input), location.href);
+          if (url.origin !== location.origin) return nativeFetch.call(this, input, init);
+          if (method === 'GET' && url.pathname === '/v1/models' && url.searchParams.get('engine') === 'dsh')
+            return holdDsh();
+          if (method === 'GET' && url.pathname === '/v1/models') return json(omp);
+          if (method === 'GET' && url.pathname === '/v1/tmux-sessions')
+            return json({ sessions: ['main'], default: 'main', directories: ['/srv/fixture/a'] });
+          return nativeFetch.call(this, input, init);
+        },
+        // The picker's close event waits on its exit transition, which a page that never paints
+        // never runs, so these waits read the dialog's state rather than that event.
+        closePicker = () => waitFor(() => !picker.open, 'model picker close'),
+        // A held read changes no DOM, so the mutation-driven waitFor would never notice it.
+        until = async (predicate, message) => {
+          for (let i = 0; i < 200; i += 1) {
+            if (predicate()) return;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          fail(message);
+        },
+        chooseEngine = async (value) => {
+          engine.click();
+          await waitFor(() => picker.open, `engine picker open for ${value}`);
+          const row = [...rows()].find((option) => option.textContent.trim() === value);
+          assert(row, `engine row ${value} is offered`);
+          row.click();
+          await waitFor(() => !picker.open && engine.value === value, `engine picker closed on ${value}`);
+        },
+        listed = async () => {
+          model.click();
+          await waitFor(() => picker.open, 'model picker open');
+          return [...rows()].map((row) => row.textContent.trim());
+        };
+      try {
+        window.fetch = fixtureFetch;
+        document.querySelector('#btn-compose').click();
+        await waitFor(
+          () => dialog.open && text('#compose-model').includes('OMP Alpha'),
+          'compose open with the omp catalog',
+        );
+        await chooseEngine('dsh');
+        await until(() => held.requested, 'the dsh catalog read starts');
+        await chooseEngine('omp');
+        await waitFor(
+          () => text('#compose-model').includes('OMP Alpha'),
+          'the omp catalog lands while the dsh read is still held',
+        );
+        // The dsh read answers now, long after the engine went back to omp.
+        held.answer();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert(held.released, 'the held dsh catalog answered');
+        const settled = await listed();
+        assert(
+          settled.some((row) => row.includes('OMP Beta')),
+          'the omp field keeps the omp catalog after a late dsh answer',
+        );
+        assert(
+          !settled.some((row) => row.includes('DSH Only')),
+          'a late dsh catalog never fills the omp model list',
+        );
+        keydown(document.querySelector('#picker-search'), 'Escape');
+        await closePicker();
+        assert(text('#compose-model').includes('OMP Alpha'), 'the omp field names the omp default');
+        // The same held read must land when dsh is the engine the field names.
+        held.release = true;
+        await chooseEngine('dsh');
+        await waitFor(() => text('#compose-model').includes('DSH Only'), 'the dsh catalog fills the dsh field');
+        const dshRows = await listed();
+        assert(
+          dshRows.some((row) => row.includes('DSH Only')),
+          'the dsh field offers the dsh catalog it asked for',
+        );
+        assert(
+          !dshRows.some((row) => row.includes('OMP Beta')),
+          'the dsh field offers no omp models',
+        );
+        keydown(document.querySelector('#picker-search'), 'Escape');
+        await closePicker();
+        assert(engine.value === 'dsh', 'the engine field keeps the chosen engine');
+        return { scenario: 'models', passed: true };
+      } finally {
+        window.fetch = nativeFetch;
+        if (picker.open) picker.close();
+        if (dialog.open) dialog.close();
+      }
+    },
     checkPlanApproval = async () => {
       await waitFor(() => document.querySelector('.card[data-kind="plan"]'), 'a plan card in the queue');
       const picker = document.querySelector('#picker'),
@@ -1167,6 +1296,7 @@
     if (scenario === 'finding-other') return checkFindingOther();
     if (scenario === 'compose-stays') return checkComposeStaysOnQueue();
     if (scenario === 'picker') return checkPicker();
+    if (scenario === 'models') return checkModelEngine();
     if (scenario === 'dispatch') return checkDispatchDraft();
     if (scenario === 'history-retry') return checkHistoryRetry();
     if (scenario === 'pwa') return checkPwa();

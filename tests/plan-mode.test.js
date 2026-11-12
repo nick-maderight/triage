@@ -462,6 +462,7 @@ test('plan picker loads cycle roles without replacing the general model catalog'
     },
     context = vm.createContext({
       PICKERS: pickers,
+      modelLoad: 0,
       $: () => ({ value: '' }),
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async () => data,
@@ -499,6 +500,7 @@ test('each sheet lists the models of the engine its Engine field picks', async (
     requested = [],
     context = vm.createContext({
       PICKERS: pickers,
+      modelLoad: 0,
       $: (selector) => ({ value: selector === '#dispatch-engine' ? 'dsh' : '' }),
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async (path) => {
@@ -570,6 +572,7 @@ test('a dsh execution effort waits for its execution model', async () => {
     options = (id) => Array.from(pickers[id].options, (option) => option.value),
     context = vm.createContext({
       PICKERS: pickers,
+      modelLoad: 0,
       $: (selector) => (fields[selector] ??= { value: '' }),
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async (path) => (path.endsWith('dsh') ? dsh : omp),
@@ -615,6 +618,87 @@ test('a dsh execution effort waits for its execution model', async () => {
   context.refreshEfforts('plan');
   assert.deepEqual(options('plan-executor-effort'), ['low', 'high']);
   assert.equal(pickers['plan-executor-effort'].fallback, 'Planner effort');
+});
+
+test('a catalog that answers late never fills the model field of another engine', async () => {
+  const pickers = Object.fromEntries(
+      ['compose', 'dispatch'].flatMap((sheet) =>
+        ['engine', 'model', 'thinking', 'executor', 'executor-effort'].map((id) => [
+          `${sheet}-${id}`,
+          { options: [], fallback: '' },
+        ]),
+      ).concat([
+        ['plan-executor', { options: [], fallback: '' }],
+        ['plan-executor-effort', { options: [], fallback: '' }],
+      ]),
+    ),
+    fields = { '#compose-engine': { value: '' }, '#dispatch-engine': { value: '' } },
+    omp = {
+      engine: 'omp',
+      models: [{ selector: '@kimi', name: '@kimi' }],
+      execution_models: [],
+      default: '@kimi',
+      thinking: ['high'],
+    },
+    dsh = {
+      engine: 'dsh',
+      models: [{ selector: 'p/slow', name: 'Slow' }],
+      execution_models: [],
+      default: 'p/slow',
+      thinking: ['low'],
+    },
+    held = {},
+    context = vm.createContext({
+      PICKERS: pickers,
+      modelLoad: 0,
+      $: (selector) => (fields[selector] ??= { value: '' }),
+      pickerOption: (value, label, hint) => ({ value, label, hint }),
+      // The dsh catalog answers only when the test says so, the way a timing-out bridge holds
+      // one while the sheet moves on.
+      api: async (path) => {
+        if (path.endsWith('engine=dsh'))
+          return new Promise((resolve) => {
+            held.answer = () => resolve(dsh);
+          });
+        return omp;
+      },
+      refreshPicker() {},
+      setPickerValue() {},
+      current: () => null,
+    }),
+    values = (id) => Array.from(pickers[id].options, (option) => option.value);
+  vm.runInContext(
+    `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\n${functionSource('refreshEfforts')}\n${functionSource('effortLevels')}\nglobalThis.loadModels = loadModels;`,
+    context,
+  );
+
+  // The sheet opens on dsh and its catalog read hangs.
+  fields['#compose-engine'].value = 'dsh';
+  const slow = context.loadModels();
+  for (let i = 0; i < 100 && !held.answer; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(typeof held.answer, 'function', 'the dsh catalog read starts');
+
+  // The engine goes back to omp, whose catalog is already in hand.
+  fields['#compose-engine'].value = 'omp';
+  await context.loadModels();
+  assert.deepEqual(values('compose-model'), ['@kimi'], 'the omp field lists the omp catalog');
+
+  // The dsh read answers now, long after the field moved to omp.
+  held.answer();
+  await slow;
+  assert.deepEqual(values('compose-model'), ['@kimi'], 'a late dsh catalog leaves the omp field alone');
+  assert.deepEqual(values('dispatch-model'), ['@kimi'], 'a late dsh catalog leaves the omp dispatch field alone');
+  assert.equal(pickers['compose-model'].fallback, '@kimi');
+
+  // A read made for dsh itself still fills the field.
+  held.answer = null;
+  fields['#compose-engine'].value = 'dsh';
+  const fresh = context.loadModels();
+  for (let i = 0; i < 100 && !held.answer; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  held.answer();
+  await fresh;
+  assert.deepEqual(values('compose-model'), ['p/slow'], 'the dsh field lists the dsh catalog');
+  assert.equal(pickers['compose-model'].fallback, 'Slow');
 });
 
 test('plan approval sends chosen role while Default and Refine keep their request contracts', () => {

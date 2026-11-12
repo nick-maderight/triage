@@ -2399,11 +2399,19 @@ const S = {
     if (changed) clearModels(p.id.replace(/-engine$/, ''));
     else if (/-model$|-executor$/.test(p.id)) refreshEfforts(sheetOf(p.id));
   }
-  // Model selectors belong to one engine. A new engine clears its sheet's model and executor.
+  // Model selectors belong to one engine. A new engine clears its sheet's model and executor,
+  // and the catalog that stood behind them, so the next picker never offers another engine's
+  // models while the new catalog is still being read.
   function clearModels(sheet) {
     setPickerValue(`${sheet}-model`, '');
     setPickerValue(`${sheet}-executor`, '');
     setPickerValue(`${sheet}-executor-effort`, '');
+    const model = PICKERS[`${sheet}-model`];
+    for (const id of ['model', 'executor', 'executor-effort']) {
+      PICKERS[`${sheet}-${id}`].options = [];
+      refreshPicker(`${sheet}-${id}`);
+    }
+    model.data = null;
     void loadModels();
   }
   // Phones fill the visual viewport, so the on-screen keyboard never hides rows. Wider screens
@@ -2449,19 +2457,26 @@ const S = {
     return ['compose', 'dispatch', 'plan'].find((sheet) => id.startsWith(`${sheet}-`)) || null;
   }
   // Each sheet lists the models of the engine its Engine field picks, or the daemon's when Default.
-  // Its model field keeps the catalog data, so an effort list can follow the model picked.
+  // Its model field keeps the catalog data, so an effort list can follow the model picked. A
+  // catalog read can take seconds, most of all a dsh bridge that is timing out, so the newest read
+  // owns the pickers: an older one answering later must not put its engine's models under a field
+  // that now names another engine.
+  let modelLoad = 0;
   async function loadModels() {
+    const run = ++modelLoad;
     try {
-      const base = await api('/v1/models'),
-        daemon = base.engine || 'omp',
+      const base = await api('/v1/models');
+      if (run !== modelLoad) return;
+      const daemon = base.engine || 'omp',
         lists = { [daemon]: base },
         load = async (engine) => (lists[engine] ??= await api(`/v1/models?engine=${engine}`)),
         options = (list) =>
           (list || []).map(({ selector, name }) => pickerOption(selector, name, name === selector ? null : selector));
       for (const sheet of ['compose', 'dispatch']) {
         const engine = $(`#${sheet}-engine`)?.value || daemon,
-          data = await load(engine),
-          model = PICKERS[`${sheet}-model`],
+          data = await load(engine);
+        if (run !== modelLoad) return;
+        const model = PICKERS[`${sheet}-model`],
           thinking = PICKERS[`${sheet}-thinking`],
           executor = PICKERS[`${sheet}-executor`];
         model.data = data;
@@ -2482,6 +2497,7 @@ const S = {
         planEngine = plan?.kind === 'plan' ? plan.engine || 'omp' : daemon;
       planExecutorLabels(planEngine);
       const planModels = await load(planEngine);
+      if (run !== modelLoad) return;
       PICKERS['plan-executor'].data = planModels;
       PICKERS['plan-executor'].options = options(planModels.execution_models);
       refreshEfforts('plan');
