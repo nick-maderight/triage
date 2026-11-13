@@ -39,7 +39,7 @@ fn extra_allowed_host_is_accepted_only_when_configured() {
 #[test]
 fn roles_from_config_parses_role_names_as_role_selectors() {
     let config = r#"{"key":"modelRoles","value":{"smol":"provider/b","default":"provider/a","plan":"provider/c"},"type":"record","description":""}"#;
-    let roles = super::roles_from_config(config);
+    let roles = super::roles_from_config(config, None);
     let entries: Vec<(&str, &str)> = roles
         .iter()
         .map(|role| (role.selector.as_str(), role.name.as_str()))
@@ -52,8 +52,24 @@ fn roles_from_config_parses_role_names_as_role_selectors() {
             ("@smol", "smol role (provider/b)")
         ]
     );
-    assert!(super::roles_from_config(r#"{"key":"modelRoles","value":null}"#).is_empty());
-    assert!(super::roles_from_config("not json").is_empty());
+    assert!(super::roles_from_config(r#"{"key":"modelRoles","value":null}"#, None).is_empty());
+    assert!(super::roles_from_config("not json", None).is_empty());
+}
+
+#[test]
+fn roles_from_config_leaves_out_roles_outside_the_chat_catalog() {
+    let chat = super::parse_catalog(
+        r#"{"models":[{"selector":"provider/a","name":"Alpha"},{"selector":"provider/model-v1:0","name":"Zero"}]}"#,
+        &[],
+    )
+    .unwrap();
+    let config = r#"{"value":{"default":"provider/a:medium","gone":"provider/gone","web":"web/searxng","worker":"provider/a:auto","zero":"provider/model-v1:0"}}"#;
+    let selectors: Vec<String> = super::roles_from_config(config, Some(chat.as_slice()))
+        .into_iter()
+        .map(|role| role.selector)
+        .collect();
+    assert_eq!(selectors, ["@default", "@worker", "@zero"]);
+    assert_eq!(super::roles_from_config(config, None).len(), 5);
 }
 
 #[test]
@@ -68,6 +84,7 @@ fn string_list_from_config_parses_value_arrays() {
 fn execution_models_follow_cycle_order_and_name_missing_roles() {
     let models = super::roles_from_config(
         r#"{"key":"modelRoles","value":{"smol":"provider/b","default":"provider/a","plan":"provider/c"}}"#,
+        None,
     );
     let cycle = ["smol", "default", "missing", "plan"].map(str::to_owned);
     let execution = super::execution_models(&models, &cycle);
@@ -2554,7 +2571,7 @@ esac
     std::fs::write(&config, "modelRoles: {}\n").unwrap();
     std::fs::write(
         &catalog,
-        r#"{"models":[{"selector":"provider/recovered","name":"Recovered model"}]}"#,
+        r#"{"models":[{"selector":"provider/a","name":"Alpha"},{"selector":"provider/b","name":"Beta"},{"selector":"provider/recovered","name":"Recovered model"}]}"#,
     )
     .unwrap();
 
@@ -2579,7 +2596,13 @@ esac
     assert_eq!(
         snapshot(),
         (
-            vec!["@default".to_owned(), "@smol".to_owned(), "provider/recovered".to_owned()],
+            vec![
+                "@default".to_owned(),
+                "@smol".to_owned(),
+                "provider/a".to_owned(),
+                "provider/b".to_owned(),
+                "provider/recovered".to_owned()
+            ],
             vec!["@smol".to_owned(), "@default".to_owned()]
         )
     );

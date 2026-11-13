@@ -808,14 +808,19 @@ fn refresh_models(dir: Option<&std::path::Path>, loaded: &mut Option<ConfigStamp
 
 /// Parses `omp config get modelRoles --json` output into `@role` picker entries; a missing or
 /// null `value`, or invalid JSON, yields none. The entry name carries the role's model so the
-/// picker can tell roles apart: `smol role (bedrock-mantle/openai.gpt-6-luna:medium)`.
-fn roles_from_config(stdout: &str) -> Vec<Model> {
+/// picker can tell roles apart: `smol role (bedrock-mantle/openai.gpt-6-luna:medium)`. Given the
+/// chat catalog, a role whose model is outside it is left out, such as `web` on `web/searxng`,
+/// which `omp --model @web` rejects.
+fn roles_from_config(stdout: &str, chat: Option<&[Model]>) -> Vec<Model> {
     let parsed: serde_json::Value = serde_json::from_str(stdout).unwrap_or_default();
     let mut roles: Vec<(String, String)> = parsed["value"]
         .as_object()
         .map(|roles| {
             roles
                 .iter()
+                .filter(|(_, model)| {
+                    chat.zip(model.as_str()).is_none_or(|(chat, model)| in_catalog(chat, model))
+                })
                 .map(|(role, model)| {
                     let model = model.as_str().unwrap_or_default();
                     (role.clone(), format!("{role} role ({model})"))
@@ -830,14 +835,24 @@ fn roles_from_config(stdout: &str) -> Vec<Model> {
         .collect()
 }
 
-/// The configured omp model roles; a failed query contributes nothing and the picker keeps the models.
-fn load_roles() -> Vec<Model> {
-    let output = std::process::Command::new("omp").args(["config", "get", "modelRoles", "--json"]).output();
-    let Some(output) = output.ok().filter(|o| o.status.success()) else { return Vec::new() };
-    roles_from_config(&String::from_utf8_lossy(&output.stdout))
+/// Whether `model`, whole or without a trailing `:<thinking level>`, is a selector in `chat`.
+fn in_catalog(chat: &[Model], model: &str) -> bool {
+    let base = model
+        .rsplit_once(':')
+        .filter(|(_, level)| crate::cards::THINKING_LEVELS.contains(level))
+        .map_or(model, |(base, _)| base);
+    chat.iter().any(|entry| entry.selector == model || entry.selector == base)
 }
 
-/// Parses string-array values printed by `omp config get`.
+/// The configured omp model roles, checked against `chat` when the catalog loaded; a failed query
+/// contributes nothing and the picker keeps the models.
+fn load_roles(chat: Option<&[Model]>) -> Vec<Model> {
+    let output = std::process::Command::new("omp").args(["config", "get", "modelRoles", "--json"]).output();
+    let Some(output) = output.ok().filter(|o| o.status.success()) else { return Vec::new() };
+    roles_from_config(&String::from_utf8_lossy(&output.stdout), chat)
+}
+
+
 /// Parses string-array values printed by `omp config get`; invalid JSON is `None`.
 fn string_list_from_config(stdout: &str) -> Option<Vec<String>> {
     let parsed: serde_json::Value = serde_json::from_str(stdout).ok()?;
@@ -908,11 +923,11 @@ fn parse_catalog(stdout: &str, enabled: &[String]) -> Option<Vec<Model>> {
 }
 
 fn load_models() -> (Vec<Model>, bool) {
-    let roles = load_roles();
-    let enabled = load_enabled();
     let output = std::process::Command::new("omp").args(["models", "--json"]).output();
-    let Some(output) = output.ok().filter(|o| o.status.success()) else { return (roles, false) };
-    let Some(catalog) = parse_catalog(&String::from_utf8_lossy(&output.stdout), &enabled) else {
+    let output = output.ok().filter(|o| o.status.success());
+    let stdout = output.as_ref().map(|o| String::from_utf8_lossy(&o.stdout));
+    let roles = load_roles(stdout.as_deref().and_then(|s| parse_catalog(s, &[])).as_deref());
+    let Some(catalog) = stdout.as_deref().and_then(|s| parse_catalog(s, &load_enabled())) else {
         return (roles, false);
     };
     (roles.into_iter().chain(catalog).collect(), true)
