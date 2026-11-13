@@ -5,6 +5,13 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const worker = fs.readFileSync(path.join(__dirname, '..', 'ui', 'sw.js'), 'utf8');
+// The caches this worker replaces are the six versions before its own, so a version bump needs no
+// edit here; the test still proves every one of them goes.
+const version = worker.match(/const VERSION = '([^']+)'/)[1],
+  older = Array.from(
+    { length: 6 },
+    (_, index) => `triage-shell-v${Number(version.match(/v(\d+)$/)[1]) - 6 + index}`,
+  );
 
 // Runs the worker's activate handler against open windows that may or may not answer its ping.
 async function activate(windows) {
@@ -20,7 +27,7 @@ async function activate(windows) {
       clients: { claim: async () => {}, matchAll: async () => windows },
     },
     caches = {
-      keys: async () => ['triage-shell-v11', 'triage-shell-v12', 'triage-shell-v13', 'triage-shell-v14', 'triage-shell-v15', 'triage-shell-v16'],
+      keys: async () => [...older],
       delete: async (key) => deleted.push(key),
     },
     context = vm.createContext({
@@ -66,7 +73,7 @@ test('a worker update reloads only tabs that do not answer its ping', async () =
   const old = window('old', 'https://triage.test/', false),
     current = window('current', 'https://triage.test/?card=1', true),
     result = await activate([old, current]);
-  assert.deepEqual(result.deleted, ['triage-shell-v11', 'triage-shell-v12', 'triage-shell-v13', 'triage-shell-v14', 'triage-shell-v15'], 'every cache but the current one goes');
+  assert.deepEqual(result.deleted, older, 'every cache but the current one goes');
   assert.equal(old.posted[0].type, 'triage-shell-ping', 'every tab is asked once');
   assert.equal(current.posted[0].type, 'triage-shell-ping');
   assert.deepEqual(old.navigated, ['https://triage.test/'], 'a silent tab reloads itself');
@@ -77,7 +84,7 @@ test('a worker update reloads every tab when none answer', async () => {
   const one = window('one', 'https://triage.test/?one', false),
     two = window('two', 'https://triage.test/?two', false),
     result = await activate([one, two]);
-  assert.deepEqual(result.deleted, ['triage-shell-v11', 'triage-shell-v12', 'triage-shell-v13', 'triage-shell-v14', 'triage-shell-v15'], 'every cache but the current one goes');
+  assert.deepEqual(result.deleted, older, 'every cache but the current one goes');
   assert.deepEqual(
     [one.navigated, two.navigated],
     [['https://triage.test/?one'], ['https://triage.test/?two']],
