@@ -1160,6 +1160,51 @@
     return { scenario: 'header', passed: true };
   };
 
+  // A card shortcut names an action, not a button slot: every dock button shows the key its
+  // aria names, the same label keeps that key in whichever slot it sits, and the primary runs on
+  // Enter beside its own key.
+  const checkCardKeys = async () => {
+    await waitFor(() => document.querySelector('.dock button'), 'a card with a dock');
+    const fixed = {
+        Acknowledge: 'a',
+        'Acknowledge & close': 'x',
+        'Plan next step': 'p',
+        'Do next step': 'd',
+        Dispatch: 'i',
+        Skip: 's',
+        Context: 't',
+        Later: 'l',
+        Peek: 'v',
+        Jump: 'J',
+        'Request final report': 'r',
+        'Restore run': 'R',
+      },
+      label = (button) =>
+        [...button.childNodes]
+          .filter((node) => !(node.nodeType === 1 && node.matches('kbd.hint')))
+          .map((node) => node.textContent)
+          .join('')
+          .replace(/\s+/g, ' ')
+          .trim(),
+      shown = [];
+    for (const button of document.querySelectorAll('.dock button')) {
+      const hint = button.querySelector('kbd.hint');
+      if (!hint || !visible(hint)) continue;
+      const name = label(button),
+        key = hint.textContent.trim(),
+        aria = button.getAttribute('aria-keyshortcuts');
+      assert(name, 'every keyed dock button has a label');
+      assert(aria, `${name} advertises the key it shows`);
+      assert(aria.split(' ')[0] === key, `${name} advertises ${key} (${aria})`);
+      if (fixed[name]) assert(key === fixed[name], `${name} keeps ${fixed[name]}, not ${key}`);
+      if (button.hasAttribute('data-primary')) assert(aria === `${key} Enter`, `the primary ${name} runs on Enter beside ${key}`);
+      shown.push(`${name}=${key}`);
+    }
+    if (innerWidth > 639 && matchMedia('(pointer: fine)').matches)
+      assert(shown.length > 0, 'a dock button shows its action key on a pointer screen');
+    return { scenario: 'card-keys', passed: true, keys: shown };
+  };
+
   const checkDshCard = async () => {
     await waitFor(() => document.querySelector('#open-btn'), 'a dsh card with an Open button');
     assert(document.querySelector('#peek-btn, #peek-main'), 'dsh card offers Peek');
@@ -1316,6 +1361,7 @@
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();
     if (scenario === 'header') return checkHeader();
+    if (scenario === 'card-keys') return checkCardKeys();
     if (scenario === 'dsh-card') return checkDshCard();
     if (scenario === 'dictation') return checkDictation();
     fail(`unknown scenario ${String(scenario)}`);

@@ -119,6 +119,29 @@ const S = {
     paneOf = (c) => c.source?.pane || (dshOf(c) ? `dsh:${dshOf(c)}` : null),
     paneApi = (pane) => (pane.startsWith('dsh:') ? `/v1/dsh/${enc(pane.slice(4))}` : `/v1/panes/${enc(pane)}`),
     restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id);
+  // One key per action, never one per button slot: an action shows the same key in the primary
+  // slot, in the dock group and in the keys sheet. Enter runs whichever button the card marks
+  // primary. The dock hints, their aria-keyshortcuts values and the key handler read this table,
+  // so a shortcut cannot drift from the action it names.
+  const KEYS = {
+    ack: 'a',
+    close: 'x',
+    plan: 'p',
+    doNext: 'd',
+    dispatch: 'i',
+    act: 'A',
+    implement: 'I',
+    planInto: 'P',
+    context: 't',
+    later: 'l',
+    note: 'n',
+    other: 'o',
+    peek: 'v',
+    jump: 'J',
+    request: 'r',
+    restore: 'R',
+    skip: 's',
+  };
   const current = () => S.cards[S.idx] || null;
   const recIndex = (c) => {
     const i = (c.options || []).findIndex((o) => o.recommended);
@@ -946,11 +969,11 @@ const S = {
         {
           id: primary ? 'peek-main' : 'peek-btn',
           'data-primary': primary ? 'true' : null,
-          'aria-keyshortcuts': 'v',
+          'aria-keyshortcuts': KEYS.peek,
         },
         () => openPeek(c),
         'Peek',
-        h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'v'),
+        h('kbd', { class: 'hint', 'aria-hidden': 'true' }, KEYS.peek),
       ),
       dshOf(c)
         ? button(c, 'open', 'btn', { id: 'open-btn' }, openDsh, 'Open')
@@ -958,10 +981,10 @@ const S = {
             c,
             'jump',
             'btn',
-            { id: 'jump-btn', 'aria-keyshortcuts': 'Shift+J' },
+            { id: 'jump-btn', 'aria-keyshortcuts': KEYS.jump },
             () => jump(c),
             'Jump',
-            h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'J'),
+            h('kbd', { class: 'hint', 'aria-hidden': 'true' }, KEYS.jump),
           ),
     );
   }
@@ -1325,7 +1348,8 @@ const S = {
     ].map((x) => ({ ...x, local: local(x.at) }));
   }
   function dock(c, withPane) {
-    const key = (k) => h('kbd', { class: 'hint', 'aria-hidden': 'true' }, k),
+    const key = (action) => h('kbd', { class: 'hint', 'aria-hidden': 'true' }, KEYS[action]),
+      shortcut = (action) => `${KEYS[action]} Enter`,
       recommended = c.kind === 'info' && Boolean(c.star?.action),
       menu =
         S.laterOpen &&
@@ -1360,29 +1384,29 @@ const S = {
               c,
               'plan',
               'btn primary',
-              { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter' },
-              () => planRecommended(c),
+              { 'data-primary': 'true', 'aria-keyshortcuts': shortcut('plan') },
+              () => planNext(c),
               'Plan next step',
-              key('a'),
+              key('plan'),
             )
           : paneOf(c)
             ? button(
                 c,
                 'close',
                 'btn primary',
-                { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter x' },
+                { 'data-primary': 'true', 'aria-keyshortcuts': shortcut('close') },
                 () => closePane(c),
                 'Acknowledge & close',
-                key('a'),
+                key('close'),
               )
             : button(
                 c,
                 'ack',
                 'btn primary',
-                { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter' },
+                { 'data-primary': 'true', 'aria-keyshortcuts': shortcut('ack') },
                 () => acknowledge(c),
                 'Acknowledge',
-                key('a'),
+                key('ack'),
               )),
       el(
         'div',
@@ -1391,10 +1415,12 @@ const S = {
           c,
           'dispatch',
           'btn',
-          { 'aria-keyshortcuts': 'i Shift+A p Shift+P I' },
-          () => openDispatch(c),
+          {
+            'aria-keyshortcuts': [KEYS.dispatch, KEYS.act, KEYS.plan, KEYS.planInto, KEYS.implement].join(' '),
+          },
+          () => openDispatch(c, 'investigate'),
           'Dispatch',
-          key('i'),
+          key('dispatch'),
         ),
         c.kind === 'info' &&
           recommended &&
@@ -1402,10 +1428,10 @@ const S = {
             c,
             'do',
             'btn',
-            { 'aria-keyshortcuts': 'd' },
+            { 'aria-keyshortcuts': KEYS.doNext },
             () => doRecommended(c),
             'Do next step',
-            key('d'),
+            key('doNext'),
           ),
         paneOf(c) &&
           (c.kind !== 'info' || recommended) &&
@@ -1413,28 +1439,53 @@ const S = {
             c,
             'close',
             'btn',
-            { 'aria-keyshortcuts': 'x' },
+            { 'aria-keyshortcuts': KEYS.close },
             () => closePane(c),
             'Acknowledge & close',
-            key('x'),
+            key('close'),
           ),
         c.kind === 'info' &&
           c.report_due &&
           paneOf(c) &&
-          button(c, 'request', 'btn', { 'aria-keyshortcuts': 'r' }, () => requestReport(c), 'Request final report', key('r')),
+          button(
+            c,
+            'request',
+            'btn',
+            { 'aria-keyshortcuts': KEYS.request },
+            () => requestReport(c),
+            'Request final report',
+            key('request'),
+          ),
         restorable(c) &&
-          button(c, 'restore', 'btn', { 'aria-keyshortcuts': 'R' }, () => restoreRun(c), 'Restore run', key('R')),
-        (recommended ? !paneOf(c) : paneOf(c)) &&
-          button(c, 'ack', 'btn', {}, () => acknowledge(c), 'Acknowledge'),
-        button(c, 'skip', 'btn', { 'aria-keyshortcuts': 's' }, () => skip(c), 'Skip', key('s')),
+          button(
+            c,
+            'restore',
+            'btn',
+            { 'aria-keyshortcuts': KEYS.restore },
+            () => restoreRun(c),
+            'Restore run',
+            key('restore'),
+          ),
+        c.kind === 'info' &&
+          (recommended || paneOf(c)) &&
+          button(
+            c,
+            'ack',
+            'btn',
+            { 'aria-keyshortcuts': KEYS.ack },
+            () => acknowledge(c),
+            'Acknowledge',
+            key('ack'),
+          ),
+        button(c, 'skip', 'btn', { 'aria-keyshortcuts': KEYS.skip }, () => skip(c), 'Skip', key('skip')),
         button(
           c,
           'context',
           'btn',
-          { 'aria-keyshortcuts': 't' },
+          { 'aria-keyshortcuts': KEYS.context },
           () => openContext(c.id),
           'Context',
-          key('t'),
+          key('context'),
         ),
         el(
           'div',
@@ -1445,14 +1496,14 @@ const S = {
             'btn',
             {
               id: 'later-btn',
-              'aria-keyshortcuts': 'l',
+              'aria-keyshortcuts': KEYS.later,
               'aria-expanded': String(S.laterOpen),
               'aria-controls': S.laterOpen ? 'later-menu' : null,
               'aria-haspopup': 'menu',
             },
             toggleLater,
             'Later',
-            key('l'),
+            key('later'),
           ),
           menu,
         ),
@@ -1739,9 +1790,36 @@ const S = {
     skip = (c) => act(c, 'skip', {}, 'skip'),
     closePane = (c) => paneOf(c) && act(c, 'close', { note: noteValue(c) }, 'close'),
     later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
+  // The Plan action keeps one shape wherever a card offers it: Plan next step on a report with an
+  // open recommended step, which starts a session of its own, and Dispatch with Plan preselected
+  // on every other card.
+  function planNext(c) {
+    return c.kind === 'info' && c.star?.action ? planRecommended(c) : openDispatch(c, 'plan');
+  }
+  // The one place a card shortcut is bound. A key names an action, never a button slot, so the
+  // same key runs the same action from the primary slot, the dock group and the keys sheet.
+  const CARD_KEYS = {
+    [KEYS.ack]: (c) => c.kind === 'info' && acknowledge(c),
+    [KEYS.close]: (c) => closePane(c),
+    [KEYS.plan]: (c) => planNext(c),
+    [KEYS.doNext]: (c) => c.kind === 'info' && Boolean(c.star?.action) && doRecommended(c),
+    [KEYS.dispatch]: (c) => openDispatch(c, 'investigate'),
+    [KEYS.act]: (c) => openDispatch(c, 'act'),
+    [KEYS.implement]: (c) => openDispatch(c, 'implement'),
+    [KEYS.planInto]: (c) => openDispatch(c, 'plan-into'),
+    [KEYS.context]: (c) => openContext(c.id),
+    [KEYS.later]: () => toggleLater(),
+    [KEYS.note]: () => $('#note')?.focus(),
+    [KEYS.other]: (c) => otherAllowed(c) && toggleOther(c),
+    [KEYS.peek]: (c) => openPeek(c),
+    [KEYS.jump]: (c) => jump(c),
+    [KEYS.request]: (c) => requestReport(c),
+    [KEYS.restore]: (c) => restoreRun(c),
+    [KEYS.skip]: (c) => skip(c),
+  };
   function primary(c) {
     if (Date.now() < S.remoteSwapUntil) return;
-    if (c.kind === 'info' && c.star?.action) planRecommended(c);
+    if (c.kind === 'info' && c.star?.action) planNext(c);
     else if (c.kind === 'info' && paneOf(c)) closePane(c);
     else if (c.kind === 'info') acknowledge(c);
     else if (c.questions?.length && answerable(c)) primaryStep(c);
@@ -3241,59 +3319,12 @@ const S = {
       if (!t.closest?.('button,a,select')) run(() => primary(c));
       return;
     }
-    if (key === 'a') return run(() => primary(c));
+    const action = CARD_KEYS[key];
+    if (action) return run(() => action(c));
     switch (key) {
       case 'Escape':
         if (otherAllowed(c) && draft(c).open) toggleOther(c);
         else closeLater(true);
-        break;
-      case 'o':
-        if (otherAllowed(c)) run(() => toggleOther(c));
-        break;
-      case 'n':
-        run(() => $('#note')?.focus());
-        break;
-      case 's':
-        run(() => skip(c));
-        break;
-      case 'i':
-        run(() => openDispatch(c, 'investigate'));
-        break;
-      case 'd':
-        if (c.kind === 'info' && c.star?.action) run(() => doRecommended(c));
-        break;
-      case 'A':
-        run(() => openDispatch(c, 'act'));
-        break;
-      case 'x':
-        run(() => closePane(c));
-        break;
-      case 'l':
-        run(toggleLater);
-        break;
-      case 'p':
-        run(() => openDispatch(c, 'plan'));
-        break;
-      case 'P':
-        run(() => openDispatch(c, 'plan-into'));
-        break;
-      case 'I':
-        run(() => openDispatch(c, 'implement'));
-        break;
-      case 'r':
-        run(() => requestReport(c));
-        break;
-      case 'R':
-        run(() => restoreRun(c));
-        break;
-      case 't':
-        run(() => openContext(c.id));
-        break;
-      case 'v':
-        run(() => openPeek(c));
-        break;
-      case 'J':
-        run(() => jump(c));
         break;
       case 'j':
       case 'ArrowDown':

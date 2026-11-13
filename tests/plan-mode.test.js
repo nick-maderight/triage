@@ -16,6 +16,13 @@ const keydownStart = app.indexOf("  document.addEventListener('keydown', (e) => 
   keydownEnd = app.indexOf('\n  });', keydownStart);
 assert.ok(keydownStart >= 0 && keydownEnd > keydownStart, 'app.js defines the global key handler');
 const keydownSource = app.slice(keydownStart, keydownEnd + '\n  });'.length);
+// The handler routes every card key through the KEYS and CARD_KEYS tables, so both run beside it.
+const tableSource = (name) => {
+  const source = app.match(new RegExp(`^  const ${name} = \\{[\\s\\S]*?^  \\};`, 'm'))?.[0];
+  assert.ok(source, `app.js defines ${name}`);
+  return source;
+};
+const tableSources = `${tableSource('KEYS')}\n${tableSource('CARD_KEYS')}\n${functionSource('planNext')}`;
 
 test('i, A, p and P open dispatch with matching modes while v keeps Peek', () => {
   const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests' },
@@ -80,9 +87,11 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       openPeek: (current) => actions.push(['peek', current.id]),
       pick: (current, index) => actions.push(['pick', current.id, index]),
       primary: (current) => actions.push(['primary', current.id]),
+      acknowledge: (current) => actions.push(['ack', current.id]),
+      planRecommended: (current) => actions.push(['plan-next', current.id]),
     });
   vm.runInContext(
-    `${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${keydownSource}`,
+    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${keydownSource}`,
     context,
   );
 
@@ -136,12 +145,11 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
   ]);
 });
 
-test('a confirms the primary action even when a button holds focus', () => {
-  const card = { id: 'card-1', kind: 'info', title: 'Report' },
-    actions = [],
+test('a acknowledges the shown card even when a button holds focus', () => {
+  const actions = [],
     listeners = {},
     state = {
-      cards: [card],
+      cards: [],
       idx: 0,
       pending: null,
       remoteSwapUntil: 0,
@@ -150,8 +158,9 @@ test('a confirms the primary action even when a button holds focus', () => {
       dispatchId: null,
       composeMode: 'goal',
       drafts: new Map(),
-    },
-    context = vm.createContext({
+    };
+  let card = { id: 'info-card', kind: 'info', title: 'Report' };
+  const context = vm.createContext({
       S: state,
       $: (selector) => (selector === '#peek' ? { open: false } : null),
       document: {
@@ -164,8 +173,11 @@ test('a confirms the primary action even when a button holds focus', () => {
       current: () => card,
       Date: { now: () => 1000 },
       primary: (current) => actions.push(['primary', current.id]),
+      acknowledge: (current) => actions.push(['ack', current.id]),
+      planRecommended: (current) => actions.push(['plan-next', current.id]),
+      openDispatch: (current, mode) => actions.push(['dispatch', current.id, mode]),
     });
-  vm.runInContext(keydownSource, context);
+  vm.runInContext(`${tableSources}\n${keydownSource}`, context);
 
   const press = (key, onButton) => {
     const event = {
@@ -185,18 +197,29 @@ test('a confirms the primary action even when a button holds focus', () => {
   };
 
   const focusedA = press('a', true);
-  assert.deepEqual(actions, [['primary', 'card-1']]);
-  assert.equal(focusedA.defaultPrevented, true);
+  assert.deepEqual(actions, [['ack', 'info-card']], 'a acknowledges rather than running the primary');
+  assert.equal(focusedA.defaultPrevented, true, 'a works while a button holds focus');
   const focusedEnter = press('Enter', true);
-  assert.deepEqual(actions, [['primary', 'card-1']]);
+  assert.deepEqual(actions, [['ack', 'info-card']], 'Enter on a button belongs to that button');
   assert.equal(focusedEnter.defaultPrevented, false);
   press('Enter', false);
   press('a', false);
   assert.deepEqual(actions, [
-    ['primary', 'card-1'],
-    ['primary', 'card-1'],
-    ['primary', 'card-1'],
+    ['ack', 'info-card'],
+    ['primary', 'info-card'],
+    ['ack', 'info-card'],
   ]);
+  // A card with no Acknowledge action never answers because `a` was pressed.
+  card = { id: 'ask-card', kind: 'ask', title: 'Pick one', options: [{ label: 'Red' }] };
+  press('a', false);
+  assert.deepEqual(actions.at(-1), ['ack', 'info-card'], 'a does nothing on an ask card');
+  // The same `p` plans a report's open step and opens Dispatch with Plan on any other card.
+  card = { id: 'report-card', kind: 'info', star: { action: 'Fix it' } };
+  press('p');
+  assert.deepEqual(actions.at(-1), ['plan-next', 'report-card']);
+  card = { id: 'plan-card', kind: 'plan', title: 'Plan' };
+  press('p');
+  assert.deepEqual(actions.at(-1), ['dispatch', 'plan-card', 'plan']);
 });
 
 test('dispatch sheet posts model and thinking for every mode', async () => {

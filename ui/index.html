@@ -149,10 +149,10 @@ try {
 <span id="dispatch-mode-label" data-od-id="dispatch-mode-label">Mode</span>
 <div class="segmented" id="dispatch-mode" role="radiogroup" aria-labelledby="dispatch-mode-label" data-od-id="dispatch-mode">
 <button type="button" role="radio" class="seg" id="dispatch-mode-investigate" data-mode="investigate" aria-checked="true" aria-keyshortcuts="i" data-od-id="dispatch-mode-investigate">Investigate</button>
-<button type="button" role="radio" class="seg" id="dispatch-mode-act" data-mode="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="a" data-od-id="dispatch-mode-act">Act</button>
+<button type="button" role="radio" class="seg" id="dispatch-mode-act" data-mode="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="A" data-od-id="dispatch-mode-act">Act</button>
 <button type="button" role="radio" class="seg" id="dispatch-mode-implement" data-mode="implement" aria-checked="false" tabindex="-1" aria-keyshortcuts="I" data-od-id="dispatch-mode-implement">Implement</button>
 <button type="button" role="radio" class="seg" id="dispatch-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="dispatch-mode-plan">Plan</button>
-<button type="button" role="radio" class="seg" id="dispatch-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="Shift+P" data-od-id="dispatch-mode-plan-into">Plan into</button>
+<button type="button" role="radio" class="seg" id="dispatch-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="dispatch-mode-plan-into">Plan into</button>
 </div>
 <p class="mode-help" id="dispatch-mode-help" data-od-id="dispatch-mode-help"></p>
 <div class="compose-grid" id="dispatch-launch" data-od-id="dispatch-launch">
@@ -213,15 +213,19 @@ try {
 </header>
 <dl class="keys" data-od-id="keys-list">
 <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Pick an option</dd>
-<dt><kbd>a</kbd> <kbd>Enter</kbd></dt><dd>Recommended option / Plan next step / Acknowledge &amp; close</dd>
+<dt><kbd>Enter</kbd></dt><dd>Run the primary action on this card</dd>
+<dt><kbd>a</kbd></dt><dd>Acknowledge</dd>
+<dt><kbd>x</kbd></dt><dd>Acknowledge, exit the session and close its tmux pane</dd>
+<dt><kbd>p</kbd></dt><dd>Plan next step, or Dispatch with Plan preselected</dd>
 <dt><kbd>d</kbd></dt><dd>Do next step: run a report's recommended step as goal work in its own window</dd>
-<dt><kbd>o</kbd></dt><dd>Other answer</dd>
-<dt><kbd>r</kbd></dt><dd>Request the final report from a session whose reply missed it</dd>
+<dt><kbd>i</kbd></dt><dd>Dispatch with Investigate preselected</dd>
 <dt><kbd>A</kbd></dt><dd>Dispatch with Act preselected</dd>
 <dt><kbd>I</kbd></dt><dd>Dispatch with Implement preselected</dd>
-<dt><kbd>p</kbd></dt><dd>Dispatch with Plan preselected</dd>
 <dt><kbd>P</kbd></dt><dd>Dispatch with Plan into preselected</dd>
-<dt><kbd>x</kbd></dt><dd>Acknowledge, exit the session and close its tmux pane</dd>
+<dt><kbd>o</kbd></dt><dd>Other answer</dd>
+<dt><kbd>n</kbd></dt><dd>Note for this action</dd>
+<dt><kbd>r</kbd></dt><dd>Request the final report from a session whose reply missed it</dd>
+<dt><kbd>R</kbd></dt><dd>Restore a run that ended without its report</dd>
 <dt><kbd>s</kbd></dt><dd>Skip</dd>
 <dt><kbd>l</kbd></dt><dd>Later menu, then <kbd>1</kbd>–<kbd>3</kbd></dd>
 <dt><kbd>v</kbd></dt><dd>Peek at pane</dd>
