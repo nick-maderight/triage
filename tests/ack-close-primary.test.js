@@ -48,6 +48,7 @@ function harness() {
       closePane: (card) => actions.push(['close', card]),
       acknowledge: (card) => actions.push(['ack', card]),
       planRecommended: (card) => actions.push(['plan', card]),
+      doRecommended: (card) => actions.push(['do', card]),
       requestReport: (card) => actions.push(['report', card]),
       openDispatch() {},
       toggleLater() {},
@@ -105,13 +106,13 @@ test('info card without a pane keeps plain Acknowledge primary and unique', () =
   assert.equal(actions[1][0], 'ack', 'Enter acknowledges when there is no pane to close');
 });
 
-test('info card with a recommended action makes Plan recommended step primary', () => {
+test('info card with a recommended action makes Plan next step primary', () => {
   const { context, actions } = harness(),
     card = { id: 'info-rec', kind: 'info', source: { pane: '%12' }, star: { action: 'Grant read access.' } },
     dock = context.dock(card, true),
     primary = primaryOf(dock);
   assert.ok(primary, 'the recommended-action card has a primary button');
-  assert.equal(buttonText(primary), 'Plan recommended step');
+  assert.equal(buttonText(primary), 'Plan next step');
   primary.props.onClick();
   assert.equal(actions[0][0], 'plan', 'the primary button opens a plan dispatch');
   assert.ok(
@@ -123,6 +124,13 @@ test('info card with a recommended action makes Plan recommended step primary', 
   );
   context.primary(card);
   assert.equal(actions[1][0], 'plan', 'Enter hands the recommended step back as a plan dispatch');
+  const doButton = findNodes(
+    groupOf(dock),
+    (item) => item.tag === 'button' && buttonText(item) === 'Do next step',
+  )[0];
+  assert.ok(doButton, 'the dock group offers the step as goal-mode work');
+  doButton.props.onClick();
+  assert.equal(actions[2][0], 'do', 'Do next step runs the step instead of planning it');
   const bare = { ...card, source: undefined },
     bareDock = context.dock(bare, false);
   assert.ok(

@@ -259,7 +259,12 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/v1/cards/launch-card/dispatch');
   assert.deepEqual(JSON.parse(requests[0].init.body), {
-    mode: 'plan', note: 'Make a plan', engine: 'dsh', model: 'provider/planner', thinking: 'high',
+    mode: 'plan',
+    note: 'Make a plan',
+    engine: 'dsh',
+    model: 'provider/planner',
+    thinking: 'high',
+    new_window: false,
   });
 
   requests.length = 0;
@@ -277,6 +282,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
     thinking: 'high',
     executor: null,
     executor_thinking: 'max',
+    new_window: false,
   });
 });
 

@@ -1830,13 +1830,13 @@ fn investigation_report_card_carries_its_recommended_action() {
     );
 }
 
-// On 2026-11-08 the %304 investigation's step sat on its card and the user typed "do it" in
-// the pane to move it, which dropped the brief's status contract. A final report whose pane
-// still waits with an empty editor must get its step back there as a plan brief.
+// A finished investigation leaves its recommended step on its card. Triage never types a
+// plan into the session that just reported: the card offers Plan next step and Do next step,
+// and each one opens the choice in a session of its own.
 #[cfg(unix)]
 #[test]
-fn investigation_step_becomes_a_plan_in_its_waiting_pane() {
-    if let Some(root) = child_root("investigation_step_becomes_a_plan_in_its_waiting_pane") {
+fn investigation_step_waits_on_its_card_instead_of_a_plan_brief() {
+    if let Some(root) = child_root("investigation_step_waits_on_its_card_instead_of_a_plan_brief") {
         let (_pty, tty) = new_pty();
         fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
         fs::write(root.join("tmux-waiting"), b"").unwrap();
@@ -1865,80 +1865,11 @@ fn investigation_step_becomes_a_plan_in_its_waiting_pane() {
             at_ms: events::now_ms(),
         })
         .unwrap();
-        Tracker::default().tick(&db);
+        assert_eq!(Tracker::default().tick(&db).written, 1);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
-        let typed: Vec<&str> = keys
-            .lines()
-            .filter_map(|line| line.split_once("-l -- Read the brief at ").map(|(_, rest)| rest))
-            .collect();
-        assert_eq!(keys.lines().filter(|line| line.contains(" M-P")).count(), 1, "{keys}");
-        assert_eq!(typed.len(), 1, "{keys}");
-        let report = current_swipe(&db, "done:%12:assistant-report");
-        assert_eq!(
-            (report.text.as_deref(), report.reason.as_deref()),
-            (Some("Plan"), Some("launched %12"))
-        );
-        let brief =
-            fs::read_to_string(typed[0].strip_suffix(" and carry it out.").unwrap()).unwrap();
-        assert!(brief.starts_with("# Plan: Done: Both users lack the grant.\n"), "{brief}");
-        assert!(brief.contains("## Action\nAdd both as read collaborators.\n"), "{brief}");
-        assert!(brief.contains(PLAN_INSTRUCTION), "{brief}");
-        assert!(brief.ends_with(&format!("\n{PLAN_REPORT_STEP}\n")), "{brief}");
-        assert_eq!(new_window_count(&root), 0);
-        return;
-    }
-
-    let scratch = Scratch::new();
-    let bin = fake_tmux(scratch.path());
-    run_child(
-        "investigation_step_becomes_a_plan_in_its_waiting_pane",
-        scratch.path(),
-        Some(scratch.path()),
-        Some(&bin),
-    );
-}
-
-// omp refuses plan mode while a goal is active or paused, and in vibe mode. The step must
-// then stay on its card for Plan recommended step, with no brief typed and no window opened.
-#[cfg(unix)]
-#[test]
-fn investigation_step_stays_on_its_card_when_plan_mode_refuses() {
-    if let Some(root) = child_root("investigation_step_stays_on_its_card_when_plan_mode_refuses") {
-        let (_pty, tty) = new_pty();
-        fs::write(root.join("tmux-tty"), format!("{tty}\n")).unwrap();
-        fs::write(root.join("tmux-waiting"), b"").unwrap();
-        fs::write(root.join("tmux-idle-screen"), b"").unwrap();
-        fs::write(root.join("tmux-plan-toggle-fails"), b"").unwrap();
-        let transcript = root.join("transcript.jsonl");
-        write_transcript(
-            &root,
-            &tty,
-            &transcript,
-            &[assistant_text_line(
-                "assistant-report",
-                "ENVOY_STATUS: complete\n\nBoth users lack the grant.\n\n**Recommended action:** Add both as read collaborators.\n\nTime used: 9 seconds.",
-            )],
-        );
-        let db = Db::open(&root.join("triage.db")).unwrap();
-        let finding = finding_card(&root);
-        db.insert_card(&finding).unwrap();
-        db.swipe(&Swipe {
-            card: finding.id.clone(),
-            action: "done".to_owned(),
-            option: None,
-            text: Some("Investigate".to_owned()),
-            note: None,
-            until_ms: None,
-            reason: Some("launched %12".to_owned()),
-            at_ms: events::now_ms(),
-        })
-        .unwrap();
-        Tracker::default().tick(&db);
-        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
-        assert_eq!(keys.lines().filter(|line| line.contains(" M-P")).count(), 1, "{keys}");
-        assert!(!keys.contains("-l --"), "{keys}");
+        assert!(keys.is_empty(), "the tracker typed into the finished session: {keys}");
         let (card, swipe) = db.card("done:%12:assistant-report").unwrap().unwrap();
-        assert!(swipe.is_none());
+        assert!(swipe.is_none(), "the step was answered without the user: {swipe:?}");
         assert_eq!(card.star.action, "Add both as read collaborators.");
         assert_eq!(new_window_count(&root), 0);
         return;
@@ -1947,14 +1878,14 @@ fn investigation_step_stays_on_its_card_when_plan_mode_refuses() {
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child(
-        "investigation_step_stays_on_its_card_when_plan_mode_refuses",
+        "investigation_step_waits_on_its_card_instead_of_a_plan_brief",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
     );
 }
 
-#[cfg(unix)]
+
 #[test]
 fn act_complete_report_keeps_its_recommended_line_in_the_body() {
     if let Some(root) = child_root("act_complete_report_keeps_its_recommended_line_in_the_body") {
@@ -3755,7 +3686,8 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let info_swipe = current_swipe(&db, &info.id);
         let repeat = dispatch(
@@ -3766,7 +3698,8 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let ask_result = dispatch(
             &db,
@@ -3776,7 +3709,8 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let ask_swipe = current_swipe(&db, &ask.id);
         let brief_dir = root.join("briefs");
@@ -3836,7 +3770,8 @@ fn dispatch_reuses_waiting_source_pane_instead_of_new_window() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let swipe = current_swipe(&db, &info.id);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
@@ -3853,6 +3788,51 @@ fn dispatch_reuses_waiting_source_pane_instead_of_new_window() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "dispatch_reuses_waiting_source_pane_instead_of_new_window",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+// The next-step buttons ask for a session of their own, so a finished session that still
+// waits is left alone instead of being flipped into plan mode.
+#[cfg(unix)]
+#[test]
+fn new_window_dispatch_opens_a_window_instead_of_the_waiting_pane() {
+    if let Some(root) = child_root("new_window_dispatch_opens_a_window_instead_of_the_waiting_pane")
+    {
+        fs::write(root.join("tmux-waiting"), "").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let info = info_card("done:%12:report", "%12");
+        db.insert_card(&info).unwrap();
+        let result = dispatch(
+            &db,
+            &info,
+            DispatchMode::Plan,
+            None,
+            &in_session("session"),
+            None,
+            None,
+            None,
+            true,
+        );
+        let swipe = current_swipe(&db, &info.id);
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+        assert!(
+            result.is_ok()
+                && swipe.reason.as_deref() == Some("launched %42")
+                && keys.is_empty()
+                && new_window_count(&root) == 1
+                && log.contains("--config ")
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "new_window_dispatch_opens_a_window_instead_of_the_waiting_pane",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -3953,7 +3933,8 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
             &Launch::default(),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let configured = info_card("done:%12:set", "%12");
         db.insert_card(&configured).unwrap();
@@ -3970,7 +3951,8 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
             },
             None,
             None,
-        None,
+            None,
+            false,
         );
         let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
         let launches: Vec<&str> = log
@@ -4020,7 +4002,8 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let look = dispatch(
             &db,
@@ -4030,7 +4013,8 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let swipe = current_swipe(&db, &act_card.id);
         let briefs: Vec<String> = fs::read_dir(root.join("briefs"))
@@ -4110,7 +4094,8 @@ fn dispatch_plan_mode_writes_reviewable_brief_and_config_overlay() {
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let mut brief_path = None;
         let mut overlay_path = None;
@@ -4186,7 +4171,8 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
             &launch,
             Some("provider/executor"),
             None,
-        None,
+            None,
+            false,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
         let brief = fs::read_dir(root.join("briefs"))
@@ -4271,7 +4257,8 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
 
         let on = info_card("done:%12:on", "%12");
@@ -4284,7 +4271,8 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let toggles_after_on = fs::read_to_string(root.join("tmux-keys.log"))
             .unwrap()
@@ -4304,7 +4292,8 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
             &in_session("session"),
             None,
             None,
-        None,
+            None,
+            false,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let toggle_count = keys.lines().filter(|line| line.contains(" M-P")).count();
@@ -4777,6 +4766,7 @@ fn pane_actions_wait_for_the_action_in_flight() {
                         None,
                         None,
                     None,
+                        false,
                     )
                 }),
                 scope.spawn(|| close(&db, &closed, None, &launch)),
@@ -5135,6 +5125,7 @@ fn dispatch_with_an_image_types_it_into_a_waiting_pane() {
             None,
             None,
             Some(&image),
+            false,
         )
         .unwrap();
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
@@ -8089,7 +8080,7 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -8111,7 +8102,7 @@ fn dsh_implement_on_a_plan_mode_session_answers_the_plan_instead_of_prompting() 
         );
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Implement, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Implement, None, &bridge.launch(), None, None, None, false).unwrap();
     // A prompt in plan mode is planned again, so the plan decision is what moves the work on:
     // it leaves plan mode, drops read-only access and sends the approved plan.
     assert_eq!(
@@ -8130,7 +8121,7 @@ fn dsh_implement_on_an_idle_session_prompts_it_to_implement_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Implement, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Implement, None, &bridge.launch(), None, None, None, false).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -8143,6 +8134,27 @@ fn dsh_implement_on_an_idle_session_prompts_it_to_implement_the_brief() {
     );
     assert!(bridge.posts("/v1/plan").is_empty());
     assert!(bridge.posts("/v1/launch").is_empty());
+}
+
+// A next-step dispatch asks for a session of its own, even when the card's dsh session is
+// idle and could take the prompt.
+#[test]
+fn dsh_new_window_dispatch_starts_a_session_of_its_own() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.sessions = vec![session(4)]);
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, true).unwrap();
+    assert!(bridge.posts("/v1/prompt").is_empty(), "{:?}", bridge.posts("/v1/prompt"));
+    assert!(bridge.posts("/v1/plan").is_empty());
+    let launches = bridge.posts("/v1/launch");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["mode"], "plan");
+    assert_eq!(
+        swipe_reason(&db, &card.id),
+        Some("launched dsh:session-new".to_owned())
+    );
 }
 
 #[test]
@@ -8170,9 +8182,9 @@ fn implement_launch_on_a_new_dsh_session_says_implement() {
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["mode"], "goal");
     assert!(
-        launches[0]["prompt"]
-            .as_str()
-            .is_some_and(|prompt| prompt.starts_with("Implement the plan in the brief at ")),
+        launches[0]["prompt"].as_str().is_some_and(|prompt| prompt
+            .starts_with("Ship it: Implement the plan in the brief at ")
+            && prompt.ends_with(" and report the result.")),
         "{}",
         launches[0]
     );
@@ -8200,6 +8212,7 @@ fn dsh_dispatch_carries_the_image() {
         None,
         None,
         Some(&image),
+        false,
     )
     .unwrap();
     let prompts = bridge.posts("/v1/prompt");
@@ -8221,6 +8234,7 @@ fn dsh_dispatch_carries_the_image() {
         None,
         None,
         Some(&image),
+        false,
     )
     .unwrap();
     let prompts = bridge.posts("/v1/prompt");
@@ -8238,7 +8252,7 @@ fn dsh_plan_on_an_idle_session_relaunches_it_in_plan_mode() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -8254,7 +8268,7 @@ fn dsh_plan_into_dispatch_relaunches_an_idle_session() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -8274,7 +8288,7 @@ fn dsh_plan_into_dispatch_starts_a_new_session_when_the_card_session_runs() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -8293,7 +8307,7 @@ fn dsh_dispatch_to_a_running_session_queues_the_brief_in_it() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
     // dsh queues a prompt for the session's next turn, so a running session keeps the work
     // the card came from instead of opening a second session on the same brief.
     let prompts = bridge.posts("/v1/prompt");
@@ -8314,7 +8328,7 @@ fn dsh_dispatch_to_a_session_waiting_for_an_answer_queues_the_brief_in_it() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": ["question"]}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Investigate, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Investigate, None, &bridge.launch(), None, None, None, false).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -8327,7 +8341,7 @@ fn dsh_dispatch_starts_a_new_session_when_the_card_session_is_gone() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
     assert!(bridge.posts("/v1/prompt").is_empty());
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8345,7 +8359,7 @@ fn dsh_dispatch_starts_a_new_session_when_the_prompt_is_refused() {
         data.prompt_refusal = Some((409, "session is busy".to_owned()));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
     // A refused prompt was never queued, so the brief still starts.
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8363,7 +8377,7 @@ fn dsh_dispatch_reports_a_prompt_error_that_is_not_a_refusal() {
         data.prompt_refusal = Some((502, "dsh bridge unreachable: timeout".to_owned()));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    let error = dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None)
+    let error = dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false)
         .unwrap_err();
     assert_eq!(error, "dsh bridge unreachable: timeout");
     // A prompt that may have been queued must not start a second session on the same brief.
@@ -8381,7 +8395,7 @@ fn dsh_plan_on_a_running_session_starts_a_new_session() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -8797,7 +8811,7 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     let bridge = FakeBridge::start(scratch.path());
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &launch, None, None, None).unwrap();
+    dispatch(&db, &card, DispatchMode::Act, None, &launch, None, None, None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["workspace"], "triage");
@@ -8822,7 +8836,7 @@ fn dsh_plan_on_an_existing_session_archives_nothing_when_the_launch_fails() {
     // The session was the card's before the launch. Failing to start a plan in it must
     // not archive the session the user already had.
     assert_eq!(
-        super::dsh_track::launch_brief(&card, &bridge.launch(), &brief, Start::Plan, None),
+        super::dsh_track::launch_brief(&card, &bridge.launch(), &brief, Start::Plan, None, false),
         Err("plan mode did not turn on".to_owned())
     );
     assert!(bridge.posts("/v1/archive").is_empty());

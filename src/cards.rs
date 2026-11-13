@@ -313,8 +313,8 @@ impl Tracker {
     ///   status line is titled with its first non-empty line and has the reply as body.
     ///   A pane first seen Waiting gets the same check, so a short run whose Working
     ///   window fell between polls still reports; the card id makes the check idempotent.
-    ///   A new final report from an investigation whose step moved under Action goes back to
-    ///   its waiting pane as a plan brief when the pane can take one (`plan_recommended_step`).
+    ///   A new final report from an investigation whose step moved under Action waits on
+    ///   its card: the tracker never types a plan into a finished session.
     ///   A reply keeps one card across pane ids: when tmux restarts and omp resumes under
     ///   a new pane id, an already-handled reply stays handled. A card closed because its
     ///   pane exited may return. A pane's omp breadcrumb counts only when it was written
@@ -732,7 +732,7 @@ impl Tracker {
 }
 
 /// Card actions for a pane run one at a time. Lock order is pane, then card. The tracker takes
-/// a pane lock before any card lock only to audit a gone pane or type an investigation's plan brief.
+/// a pane lock before any card lock only to audit a gone pane.
 fn pane_lock(db: &Db, pane: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     db.answer_lock(&format!("pane:{pane}"))
 }
@@ -877,7 +877,9 @@ impl DispatchMode {
 /// The session's final report comes back as an info card through the tracker. `executor` is the
 /// execution model a plan-into dispatch hands its approved plan to, omp's `smol` role when
 /// unset, and `executor_thinking` is the effort it takes; the server refuses both with any
-/// other mode.
+/// other mode. `new_window` starts the brief in a session of its own instead of the card's
+/// waiting source session.
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     db: &Db,
     card: &Card,
@@ -887,6 +889,7 @@ pub fn dispatch(
     executor: Option<&str>,
     executor_thinking: Option<&str>,
     image: Option<&Upload>,
+    new_window: bool,
 ) -> Result<(), String> {
     let target_mutex = target_lock(db, card);
     let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
@@ -906,7 +909,7 @@ pub fn dispatch(
         DispatchMode::Implement => Start::Implement,
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
-    let pane = launch_brief(card, launch, &path, start, image)?;
+    let pane = launch_brief(card, launch, &path, start, image, new_window)?;
     let recorded = if card.kind == Kind::Ask {
         let doing = match mode {
             DispatchMode::Investigate => "investigating",
@@ -1131,19 +1134,22 @@ fn dispatch_prompt(brief: &Path, start: Start) -> String {
 /// a plan dispatch, which starts in read-only plan mode, and a plan-into dispatch, which
 /// runs `--plan-yolo` and hands the approved plan to the execution model. A waiting source
 /// pane keeps its own modes and receives the brief as typed text, except that a plan-into
-/// dispatch always opens a new window, because only launch flags turn plan-yolo on.
+/// dispatch always opens a new window, because only launch flags turn plan-yolo on, and a
+/// caller that asks for `new_window` starts its own session instead.
 fn launch_brief(
     card: &Card,
     launch: &Launch,
     brief: &Path,
     start: Start,
     image: Option<&Upload>,
+    new_window: bool,
 ) -> Result<String, String> {
     if launch.engine == Engine::Dsh {
-        return dsh_track::launch_brief(card, launch, brief, start, image);
+        return dsh_track::launch_brief(card, launch, brief, start, image, new_window);
     }
     // Only launch flags turn plan-yolo on, so a Plan into dispatch never reuses a running pane.
-    let source = card.source.pane.as_deref().filter(|_| !matches!(start, Start::PlanInto(..)));
+    let source =
+        card.source.pane.as_deref().filter(|_| !new_window && !matches!(start, Start::PlanInto(..)));
     if let Some(pane) = source {
         let waiting = tmux::list_panes()
             .map_err(|error| error.to_string())?
@@ -1464,7 +1470,7 @@ fn add_info_card(
     }
     let succeeded = match end {
         None => true,
-        Some(end) => queue_turn_card(db, pane, panes, &path, end, true, written),
+        Some(end) => queue_turn_card(db, pane, panes, &path, end, written),
     };
     if succeeded {
         stalled.insert(pane.id.clone(), (path, length));
@@ -1602,15 +1608,12 @@ fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<
 
 /// Queue the card a live pane gets when its run ends as `end`: a reply card, a
 /// `Stopped with error` card, or nothing for an interrupt or a run still going.
-/// `live` is false for the exit audit, which may run under the pane lock and has no omp
-/// left to type into; only a live investigation gets its step back as a plan brief.
 fn queue_turn_card(
     db: &Db,
     pane: &tmux::Pane,
     panes: &[tmux::Pane],
     path: &Path,
     end: omp::TurnEnd,
-    live: bool,
     written: &mut usize,
 ) -> bool {
     let (trail, investigation) = pane_trail(db, pane);
@@ -1658,14 +1661,7 @@ fn queue_turn_card(
         Some(false) => {}
     }
     match db.insert_card(&card) {
-        Ok(inserted) => {
-            *written += usize::from(inserted);
-            // Investigations alone get the automatic plan handoff; other reports keep
-            // any unapproved step in Action when the pane cannot take the plan.
-            if inserted && live && investigation && !card.report_due && !card.star.action.is_empty() {
-                *written += usize::from(plan_recommended_step(db, &card, &pane.id, path));
-            }
-        }
+        Ok(inserted) => *written += usize::from(inserted),
         Err(_) => return false,
     }
     succeeded
@@ -1792,38 +1788,6 @@ fn reply_turn(
         Some(_) => "warn",
     };
     Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail }
-}
-
-/// Hand an investigation's recommended step back to its pane as a plan. The pane must still
-/// wait with an empty editor and no active goal: omp refuses plan mode during a goal, and a
-/// draft in the editor belongs to the user. Triage enables Plan mode, types a brief built from
-/// the report, then resolves the report as a Plan launch. Any failure leaves the step on the
-/// card. The caller must not hold the pane lock.
-fn plan_recommended_step(db: &Db, card: &Card, pane: &str, transcript: &Path) -> bool {
-    if !matches!(omp::goal_active(transcript), Ok(false)) {
-        return false;
-    }
-    let pane_mutex = pane_lock(db, pane);
-    let _pane_guard = pane_mutex.lock().unwrap();
-    let answer_lock = db.answer_lock(&card.id);
-    let _answer_guard = answer_lock.lock().unwrap();
-    let queued = matches!(db.card(&card.id), Ok(Some((_, swipe))) if queued_for_answer(swipe.as_ref()));
-    if !queued || !tmux::screen(pane).is_ok_and(|screen| omp::editor_empty(&screen)) {
-        return false;
-    }
-    let Ok(brief) = write_brief(db, dispatch_brief(card, DispatchMode::Plan, None, None)) else {
-        return false;
-    };
-    type_brief(pane, &brief, Start::Plan, None).is_ok()
-        && record_swipe(
-            db,
-            &card.id,
-            "done",
-            None,
-            Some(DispatchMode::Plan.swipe_text().to_owned()),
-            None,
-            Some(format!("launched {pane}")),
-        )
 }
 
 /// Where a launched session's work came from. The situation is the title of the card whose
@@ -1969,7 +1933,7 @@ fn audit_ended_session(
         Ok(Some(omp::TurnEnd::Running)) => {
             queue_ended_card(db, pane, panes, path, "Ended mid-turn", audit.entry_id, audit.last_text, written)
         }
-        Ok(Some(end)) => queue_turn_card(db, pane, panes, path, end, false, written),
+        Ok(Some(end)) => queue_turn_card(db, pane, panes, path, end, written),
     }
 }
 
@@ -3007,7 +2971,7 @@ fn finding_pane_for_answer(
         (pane, true)
     } else {
         let path = write_brief(db, brief())?;
-        let pane = launch_brief(card, launch, &path, start, image)?;
+        let pane = launch_brief(card, launch, &path, start, image, false)?;
         let pending = record_pending_finding_pane(db, &card.id, option, note, &pane, mode);
         if !is_dsh {
             tmux::tag_finding_pane(&pane, &card.id, option, note, mode)

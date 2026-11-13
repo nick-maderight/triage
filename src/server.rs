@@ -553,6 +553,9 @@ struct DispatchRequest {
     executor_thinking: Option<String>,
     #[serde(default)]
     image: Option<ImageRequest>,
+    /// Start the brief in a session of its own instead of the card's waiting source session.
+    #[serde(default)]
+    new_window: bool,
 }
 
 async fn dispatch(
@@ -597,6 +600,7 @@ async fn dispatch(
         }
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
+    let new_window = request.new_window;
     let executor = request.executor;
     let executor_thinking = request.executor_thinking;
     let image = match store_image(state.db.path(), request.image).await {
@@ -613,6 +617,7 @@ async fn dispatch(
             executor.as_deref(),
             executor_thinking.as_deref(),
             image.as_ref(),
+            new_window,
         )
     })
     .await

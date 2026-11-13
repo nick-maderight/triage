@@ -1362,7 +1362,7 @@ const S = {
               'btn primary',
               { 'data-primary': 'true', 'aria-keyshortcuts': 'a Enter' },
               () => planRecommended(c),
-              'Plan recommended step',
+              'Plan next step',
               key('a'),
             )
           : paneOf(c)
@@ -1396,6 +1396,17 @@ const S = {
           'Dispatch',
           key('i'),
         ),
+        c.kind === 'info' &&
+          recommended &&
+          button(
+            c,
+            'do',
+            'btn',
+            { 'aria-keyshortcuts': 'd' },
+            () => doRecommended(c),
+            'Do next step',
+            key('d'),
+          ),
         paneOf(c) &&
           (c.kind !== 'info' || recommended) &&
           button(
@@ -1721,7 +1732,8 @@ const S = {
   }
   const acknowledge = (c) =>
       act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),
-    planRecommended = (c) => openDispatch(c, 'plan', true),
+    planRecommended = (c) => openDispatch(c, 'plan', true, null, null, true),
+    doRecommended = (c) => openDispatch(c, 'act', true, null, null, true),
     requestReport = (c) => { if (c.kind === 'info' && c.report_due && paneOf(c)) act(c, 'report', {}, 'request'); },
     restoreRun = (c) => { if (restorable(c)) act(c, 'restore', {}, 'restore'); },
     skip = (c) => act(c, 'skip', {}, 'skip'),
@@ -2841,12 +2853,15 @@ const S = {
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
   }
-  function openDispatch(c, mode, fromCard = false, option = null, answers = null) {
+  // `newWindow` starts the brief in a session of its own instead of the session that just
+  // reported, so the next step never flips a finished session into another mode.
+  function openDispatch(c, mode, fromCard = false, option = null, answers = null, newWindow = false) {
     if (!c || S.pending || Date.now() < S.remoteSwapUntil) return;
     const d = draft(c);
     S.dispatchId = c.id;
     d.dispatchOption = option;
     d.dispatchAnswers = answers;
+    d.dispatchWindow = newWindow;
     d.dispatchMode = mode || d.dispatchMode || 'investigate';
     if (fromCard) d.dispatch = d.note;
     if (dshOf(c) && $('#dispatch-engine').value !== 'dsh') {
@@ -2886,7 +2901,7 @@ const S = {
     }
     start.disabled = true;
     hint.textContent = 'Launching…';
-    const body = { mode, note, engine, model, thinking };
+    const body = { mode, note, engine, model, thinking, new_window: Boolean(d.dispatchWindow) };
     if (image) body.image = image;
     if (mode === 'plan-into') {
       body.executor = $('#dispatch-executor').value.trim() || null;
@@ -3243,6 +3258,9 @@ const S = {
         break;
       case 'i':
         run(() => openDispatch(c, 'investigate'));
+        break;
+      case 'd':
+        if (c.kind === 'info' && c.star?.action) run(() => doRecommended(c));
         break;
       case 'A':
         run(() => openDispatch(c, 'act'));

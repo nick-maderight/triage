@@ -1046,8 +1046,11 @@ pub(super) fn launch_brief(
     brief: &Path,
     start: Start,
     image: Option<&Upload>,
+    new_window: bool,
 ) -> Result<String, String> {
-    if let Some(sid) = dsh::session_id(card) {
+    // A caller that asks for a new window gets a session of its own, even when the card's
+    // session could take the brief.
+    if let Some(sid) = dsh::session_id(card).filter(|_| !new_window) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
         if let Ok(state) = client.state(sid) {
             // An implement dispatch on a session still in plan mode goes through the plan

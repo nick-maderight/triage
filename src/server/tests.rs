@@ -1745,6 +1745,77 @@ esac
     server.abort();
 }
 
+// The inbox asks for a new window from a report card, so the daemon must not type the brief
+// into the session that just finished.
+#[cfg(unix)]
+#[tokio::test]
+async fn new_window_dispatch_starts_a_window_from_a_waiting_pane() {
+    if run_with_fake_tmux_child(
+        "server::tests::new_window_dispatch_starts_a_window_from_a_waiting_pane",
+    ) {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmux = PathBuf::from(std::env::var_os("PATH").unwrap()).join("tmux");
+    std::fs::write(
+        &tmux,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$TRIAGE_BUGHUNT_1792294661_TMUX_LOG.args"
+case "$1" in
+list-panes) printf '%%12\tπ > session\tomp\t/dev/pts/12\tsession:1.0\t/tmp\tsession\t80\t24\t0\t\n' ;;
+new-window) printf '%%42\n' ;;
+capture-pane) printf '────────────────\n' ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&tmux).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&tmux, permissions).unwrap();
+
+    let directory = TestDir::new("triage-new-window-dispatch");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let mut card = test_plan_card("%12");
+    card.id = "info-next-step".to_owned();
+    card.kind = Kind::Info;
+    card.star = crate::events::Star {
+        action: "Add both as read collaborators.".to_owned(),
+        ..crate::events::Star::default()
+    };
+    card.options = vec![crate::events::CardOption {
+        label: "Acknowledge".to_owned(),
+        ..crate::events::CardOption::default()
+    }];
+    db.insert_card(&card).unwrap();
+    let (address, server) = start_http_server(state(db, None)).await;
+    let response = http_request(
+        address,
+        "POST",
+        &format!("/v1/cards/{}/dispatch", card.id),
+        r#"{"mode":"act","new_window":true}"#,
+    )
+    .await;
+    let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
+    args.push(".args");
+    let log = std::fs::read_to_string(args).unwrap();
+    assert_eq!(response.status, StatusCode::OK, "{:?}", response.body);
+    assert!(
+        log.lines().any(|line| line.starts_with("new-window ")),
+        "the brief opened no window: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line.starts_with("send-keys ")),
+        "the brief was typed into the waiting pane: {log}"
+    );
+    assert!(
+        response.body.is_null() || response.body.get("error").is_none(),
+        "{:?}",
+        response.body
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     let db = Db::open(Path::new(":memory:")).unwrap();
