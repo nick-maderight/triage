@@ -136,10 +136,6 @@ pub struct State {
     pub running: bool,
     #[serde(default)]
     pub pending_input: Vec<String>,
-    /// Plan mode is on. An implement dispatch leaves it through the plan decision, because a
-    /// prompt in plan mode is only planned, never carried out.
-    #[serde(default)]
-    pub plan_active: bool,
 }
 
 /// One model the host offers. `selector` is "provider/model", the value a launch

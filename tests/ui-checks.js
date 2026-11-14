@@ -1129,6 +1129,37 @@
       assert(clamped, 'a long toast clamps instead of covering the screen');
       return { scenario: 'long-title', passed: true };
     };
+  // Every card states its outcome above the title, in the color the label carries, and the
+  // title drops the prefix the daemon put on it. A card stored before the daemon wrote the
+  // outcome reads it from the title prefix and its transcript refs.
+  const checkCardStatus = async () => {
+    await waitFor(() => document.querySelector('.card h2.title'), 'a card');
+    const tones = {
+        Complete: 'positive',
+        'Step left open': 'warning',
+        Incomplete: 'negative',
+        'No final report': 'warning',
+        'No status line': 'warning',
+        'Plan ready': null,
+        'Waiting on you': null,
+        Notice: null,
+      },
+      prefix = /^(Done|Agent done|Incomplete|Unreported|Plan ready): /,
+      line = document.querySelector('.card .report-status'),
+      prop = (name) => line?.dataset[name] || null,
+      title = text('.card h2.title');
+    assert(line && visible(line), 'the card states its status above the title');
+    const label = line.textContent.trim();
+    assert(label in tones, `the card names a known status (${label})`);
+    assert(prop('tone') === tones[label], `${label} carries tone ${tones[label]} (${prop('tone')})`);
+    assert(!prefix.test(title), `the title drops its status prefix (${title})`);
+    assert(
+      document.documentElement.scrollWidth <= innerWidth,
+      'the status line causes no horizontal overflow',
+    );
+    return { scenario: 'card-status', passed: true, status: label, title };
+  };
+
   const checkPwa = async () => {
     await waitFor(() => document.querySelector('link[rel="manifest"]'), 'manifest link');
     assert(
@@ -1358,6 +1389,7 @@
     if (scenario === 'landscape') return checkLandscape();
     if (scenario === 'mobile-card') return checkMobileCard();
     if (scenario === 'long-title') return checkLongTitle();
+    if (scenario === 'card-status') return checkCardStatus();
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();
     if (scenario === 'header') return checkHeader();

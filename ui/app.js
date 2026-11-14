@@ -157,7 +157,6 @@ const S = {
     doNext: 'd',
     dispatch: 'i',
     act: 'A',
-    implement: 'I',
     planInto: 'P',
     context: 't',
     later: 'l',
@@ -1443,7 +1442,7 @@ const S = {
           'dispatch',
           'btn',
           {
-            'aria-keyshortcuts': [KEYS.dispatch, KEYS.act, KEYS.plan, KEYS.planInto, KEYS.implement].join(' '),
+            'aria-keyshortcuts': [KEYS.dispatch, KEYS.act, KEYS.plan, KEYS.planInto].join(' '),
           },
           () => openDispatch(c, 'investigate'),
           'Dispatch',
@@ -1692,7 +1691,7 @@ const S = {
   function resultMessage(c, verb, body, choice) {
     if (verb === 'skip') return `Skipped · ${c.title}`;
     if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
-      return `${body.mode === 'act' ? 'Acting' : body.mode === 'implement' ? 'Implementing' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
+      return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
     if (verb === 'close') return `Closed pane · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
     if (verb === 'restore') return `Restoring run · ${c.title}`;
@@ -1832,7 +1831,6 @@ const S = {
     [KEYS.doNext]: (c) => c.kind === 'info' && Boolean(c.star?.action) && doRecommended(c),
     [KEYS.dispatch]: (c) => openDispatch(c, 'investigate'),
     [KEYS.act]: (c) => openDispatch(c, 'act'),
-    [KEYS.implement]: (c) => openDispatch(c, 'implement'),
     [KEYS.planInto]: (c) => openDispatch(c, 'plan-into'),
     [KEYS.context]: (c) => openContext(c.id),
     [KEYS.later]: () => toggleLater(),
@@ -2950,8 +2948,6 @@ const S = {
     $('#dispatch-mode-help').textContent = {
       investigate: 'Read-only. The session looks into it and reports back.',
       act: 'The session carries out the action end to end.',
-      implement:
-        'The plan the card holds is approved: the session implements it and leaves plan mode, so nothing is planned twice.',
       plan: 'The session prepares a plan for review before acting.',
       'plan-into':
         'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',

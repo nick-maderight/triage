@@ -56,7 +56,6 @@ const EXPECTED = {
   doNext: 'd',
   dispatch: 'i',
   act: 'A',
-  implement: 'I',
   planInto: 'P',
   context: 't',
   later: 'l',
@@ -260,6 +259,6 @@ test('one key runs one action on every card shape', () => {
   assert.deepEqual(press('doNext', cards.ask), [], 'do next step needs a report with an open step');
   assert.deepEqual(press('plan', cards.report), [['plan', 'report']], 'p plans a report as its next step');
   assert.deepEqual(press('plan', cards.ask), [['dispatch', 'ask', 'plan']], 'p opens Dispatch with Plan elsewhere');
-  for (const [action, mode] of Object.entries({ dispatch: 'investigate', act: 'act', implement: 'implement', planInto: 'plan-into' }))
+  for (const [action, mode] of Object.entries({ dispatch: 'investigate', act: 'act', planInto: 'plan-into' }))
     assert.deepEqual(press(action, cards.ask), [['dispatch', 'ask', mode]], `${action} opens Dispatch as ${mode}`);
 });

@@ -804,10 +804,6 @@ pub enum Start<'a> {
     /// or to its `smol` role when unset. The effort names the execution model's own level:
     /// omp appends it to the selector, and dsh applies it at approval.
     PlanInto(Option<&'a str>, Option<&'a str>),
-    /// Carries out a plan the session already holds. Full permissions, no second review: a
-    /// dsh session still in plan mode leaves it through the plan decision, because a prompt
-    /// in plan mode is planned again instead of carried out.
-    Implement,
 }
 
 impl<'a> Start<'a> {
@@ -833,17 +829,13 @@ impl<'a> Start<'a> {
     }
 }
 
-/// A dispatch can investigate, act, implement a plan it already holds, plan for review, or plan
-/// into an execution model.
+/// A dispatch can investigate, act on the card, plan for review, or plan into an execution model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
     Investigate,
     Plan,
     Act,
     PlanInto,
-    /// Carry out the plan the card holds. The design is settled, so the session moves forward
-    /// instead of planning again.
-    Implement,
 }
 
 impl DispatchMode {
@@ -853,7 +845,6 @@ impl DispatchMode {
             "act" => Some(Self::Act),
             "plan" => Some(Self::Plan),
             "plan-into" => Some(Self::PlanInto),
-            "implement" => Some(Self::Implement),
             _ => None,
         }
     }
@@ -865,7 +856,6 @@ impl DispatchMode {
             Self::Act => "Act",
             Self::Plan => "Plan",
             Self::PlanInto => "Plan into",
-            Self::Implement => "Implement",
         }
     }
 }
@@ -906,7 +896,6 @@ pub fn dispatch(
     let start = match mode {
         DispatchMode::Plan => Start::Plan,
         DispatchMode::PlanInto => Start::PlanInto(executor, executor_thinking),
-        DispatchMode::Implement => Start::Implement,
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
     let pane = launch_brief(card, launch, &path, start, image, new_window)?;
@@ -914,7 +903,6 @@ pub fn dispatch(
         let doing = match mode {
             DispatchMode::Investigate => "investigating",
             DispatchMode::Plan | DispatchMode::PlanInto => "planning",
-            DispatchMode::Implement => "implementing",
             DispatchMode::Act => "acting",
         };
         db.swipe(&Swipe {
@@ -1107,24 +1095,15 @@ pub fn start_session(
     tmux::new_window(session, cwd, &command).map_err(|error| error.to_string())
 }
 
-/// Whether a launch has a plan to review, which adds the plan report section to its brief. An
-/// implement launch carries out a plan that is already settled, so it is not one.
+/// Whether a launch has a plan to review, which adds the plan report section to its brief.
 fn plans_for_review(start: Start) -> bool {
     matches!(start, Start::Plan | Start::PlanInto(..))
 }
 
-/// The prompt a session gets for a brief. Every dispatch reads the brief; an implement dispatch
-/// says outright that the plan is approved and the work starts, so the harness prompts the next
-/// step as implement instead of asking for the brief again.
-fn dispatch_prompt(brief: &Path, start: Start) -> String {
-    if start == Start::Implement {
-        format!(
-            "Implement the plan in the brief at {}: carry out every step and report the result.",
-            brief.display()
-        )
-    } else {
-        format!("Read the brief at {} and carry it out.", brief.display())
-    }
+/// The prompt a session gets for a brief. Every dispatch reads the brief, which holds the
+/// direction and the report format.
+fn dispatch_prompt(brief: &Path) -> String {
+    format!("Read the brief at {} and carry it out.", brief.display())
 }
 
 /// Give the brief to the card's own pane while that pane is an omp pane waiting for input,
@@ -1184,7 +1163,7 @@ fn type_brief(
     if start == Start::Plan {
         ensure_plan_mode(pane)?;
     }
-    let mut text = dispatch_prompt(brief, start);
+    let mut text = dispatch_prompt(brief);
     if let Some(image) = image {
         text.push_str(&format!(
             " The attached image: @{}.",
@@ -2980,7 +2959,6 @@ fn finding_pane_for_answer(
         DispatchMode::PlanInto => {
             Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
         }
-        DispatchMode::Implement => Start::Implement,
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
     let (pane, needs_tag) = if let Some(pane) = tagged_pane {
@@ -3025,7 +3003,7 @@ fn answer_finding_questions(
         None => DispatchMode::Act,
         Some(value) => match DispatchMode::parse(value) {
             Some(DispatchMode::Investigate) | None => {
-                return Err("finding questions run act, implement, plan, or plan-into".to_owned());
+                return Err("finding questions run act, plan, or plan-into".to_owned());
             }
             Some(mode) => mode,
         },
@@ -3303,9 +3281,7 @@ fn option_mode(option: &CardOption) -> DispatchMode {
 fn action_heading(mode: DispatchMode) -> &'static str {
     match mode {
         DispatchMode::Investigate => "Proposed action, not approved",
-        DispatchMode::Act | DispatchMode::Plan | DispatchMode::PlanInto | DispatchMode::Implement => {
-            "Action"
-        }
+        DispatchMode::Act | DispatchMode::Plan | DispatchMode::PlanInto => "Action",
     }
 }
 
@@ -3328,15 +3304,11 @@ fn push_instructions(brief: &mut String, mode: DispatchMode) {
         DispatchMode::Act => ACT_INSTRUCTION,
         DispatchMode::Plan => PLAN_INSTRUCTION,
         DispatchMode::PlanInto => PLAN_INTO_INSTRUCTION,
-        DispatchMode::Implement => IMPLEMENT_INSTRUCTION,
     });
     brief.push_str("\n\n");
     brief.push_str(match mode {
         DispatchMode::Investigate => INVESTIGATE_STATUS_CONTRACT,
-        DispatchMode::Act
-        | DispatchMode::Plan
-        | DispatchMode::PlanInto
-        | DispatchMode::Implement => ENVOY_STATUS_CONTRACT,
+        DispatchMode::Act | DispatchMode::Plan | DispatchMode::PlanInto => ENVOY_STATUS_CONTRACT,
     });
 }
 
@@ -3375,7 +3347,6 @@ const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and an
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 const PLAN_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The plan arrives in the triage inbox for approval. After approval, carry out the work end to end.";
 const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The harness approves the plan on its own and hands it to the execution model, which carries out the work end to end.";
-const IMPLEMENT_INSTRUCTION: &str = "The plan in this card is approved, so carry it out end to end. Confirm that its steps still hold, then make the changes it lists, run its checks, and ship them through the project's normal pipeline. Do not write a new plan, propose one for review, or ask for approval again: the design is settled, so move forward. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 /// Plan approval hands the work to a model that may see only the plan. omp's default
 /// "Approve and execute" starts a fresh session, and Plan into switches to the execution
 /// model, so the plan has to carry the status contract.
@@ -3727,19 +3698,6 @@ fn omp_command(
                 shell_quote(&overlay.to_string_lossy()),
                 shell_quote(&brief.to_string_lossy())
             ))
-        }
-        // An implement dispatch runs like a goal, at full permission, with a brief that
-        // carries out the plan instead of a prompt that asks for one.
-        Start::Implement => {
-            let text = fs::read_to_string(brief)
-                .map_err(|error| format!("could not read brief: {error}"))?;
-            let heading = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
-            let objective = format!(
-                "{}\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you mark the goal complete; the plan in it is approved and settled, so implement it rather than planning again.{mention}",
-                truncate_chars(heading.to_owned(), 120),
-                brief.display()
-            );
-            Ok(format!("omp {flags}--goal {}", shell_quote(&objective)))
         }
         Start::PlanInto(executor, effort) => {
             let into = omp_execution_model(executor, executor_effort(Engine::Omp, effort)?)?
