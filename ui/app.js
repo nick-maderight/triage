@@ -107,7 +107,9 @@ const S = {
     'step-open': ['Step left open', 'warning'],
     incomplete: ['Incomplete', 'negative'],
     'no-final-report': ['No final report', 'warning'],
-    'no-status': ['No status line', 'warning'],
+    // Cards written before a reply without a status line read as no final report keep their
+    // stored word and show the same line.
+    'no-status': ['No final report', 'warning'],
     'plan-ready': ['Plan ready'],
     waiting: ['Waiting on you'],
     notice: ['Notice'],
@@ -121,25 +123,27 @@ const S = {
   ];
   // A card stored before the daemon wrote `status` names its outcome in the title alone. Only
   // a report card is titled that way. A question starting with `Done:` keeps its title. An
-  // info card without a transcript ref came from a producer's event instead of a turn, and an
-  // ask or finding card waits on a decision.
+  // info card without a transcript ref came from a producer's event instead of a turn. An ask
+  // or finding card waits on a decision.
   const legacyStatus = (c) => {
-    if (c.kind === 'info') return c.refs?.length ? 'no-status' : 'notice';
-    return c.kind === 'ask' || c.kind === 'finding' ? 'waiting' : null;
+    if (c.kind === 'info') return c.refs?.length ? 'no-final-report' : 'notice';
+    if (c.kind === 'plan') return 'plan-ready';
+    return c.kind === 'ask' || c.kind === 'finding' ? 'waiting' : 'notice';
   };
+  // Every card gets a line. A card can never draw its head without one. An outcome this build
+  // does not know falls back to what the card's kind and title say.
   const cardStatus = (c) => {
     const title = String(c.title || ''),
       report = c.kind === 'info' || c.kind === 'plan',
       hit = report && REPORT_STATUS.find(([prefix]) => title.startsWith(prefix)),
-      key = c.status || hit?.[1] || legacyStatus(c),
-      [label, tone] = STATUS_LABELS[key] || [];
-    return label
-      ? { label, tone, title: hit ? heading(c.body) || title.slice(hit[0].length) : titleOf(c) }
-      : null;
+      stated = c.status || hit?.[1] || legacyStatus(c),
+      key = STATUS_LABELS[stated] ? stated : hit?.[1] || legacyStatus(c),
+      [label, tone] = STATUS_LABELS[key] || STATUS_LABELS.notice;
+    return { label, tone, title: hit ? heading(c.body) || title.slice(hit[0].length) : titleOf(c) };
   };
   const rowStatus = (c) => {
     const status = cardStatus(c);
-    return status && h('span', { class: 'row-status', 'data-tone': status.tone }, status.label);
+    return h('span', { class: 'row-status', 'data-tone': status.tone }, status.label);
   };
   const answerable = (c) => (c.kind !== 'ask' && c.kind !== 'plan') || c.answerable !== false,
     dshOf = (c) => (c.engine === 'dsh' && c.source?.uri?.startsWith('dsh://session/') ? c.source.uri.slice(14) : null),

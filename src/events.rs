@@ -77,9 +77,11 @@ pub enum CardStatus {
     StepOpen,
     /// The run reported `ENVOY_STATUS: incomplete`.
     Incomplete,
-    /// A run that owed a report ended with none, as `Unreported:` and `Ended mid-turn:` do.
+    /// A run that owed a report ended with none, as `Unreported:` and `Ended mid-turn:` do, or
+    /// replied without the status line that starts a final report.
     NoFinalReport,
-    /// A reply without a status line leaves its outcome unstated.
+    /// Stored by cards written before a reply without a status line was read as no final
+    /// report. Nothing writes it now. The inbox shows it the same way.
     NoStatus,
     /// A plan waiting on review.
     PlanReady,

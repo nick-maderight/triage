@@ -1674,7 +1674,8 @@ pub async fn serve(
                 let before = state.db.queue(last_poll_ms)?;
                 let mut tracker = state.tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let written = tracker.tick(&state.db).written
-                    + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written;
+                    + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written
+                    + tracker.chase_missing_reports(&state.db, &state.launch).written;
                 let after = state.db.queue(now_ms)?;
                 let previous: std::collections::HashSet<_> = before.iter().map(|card| card.id.as_str()).collect();
                 let added = after.iter().any(|card| !previous.contains(card.id.as_str()));

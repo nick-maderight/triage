@@ -106,7 +106,7 @@ test('a context item states the card status beside its kind', () => {
   assert.equal(textOf(waiting), 'Waiting on you');
   assert.equal(
     textOf(status({ id: 'x', kind: 'info', created_ms: 1, source: {}, title: 'Older row', refs: ['/tmp/t.jsonl'] })),
-    'No status line',
+    'No final report',
     'a row stored before the status field reads its outcome from the title and refs',
   );
 });

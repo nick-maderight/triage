@@ -43,6 +43,10 @@ pub struct Tracker {
     /// Launch commands already relaunched once after a no-model start. A repeat start of the same
     /// command raises a card instead (see `recover_no_model_launch`).
     relaunched: HashSet<String>,
+    /// Sessions asked for the status line their report was missing, keyed by pane id or
+    /// `dsh:<session id>`. One ask per session per daemon run keeps a session that answers
+    /// without a status line again from being asked in a loop.
+    chased: HashSet<String>,
     /// Launches seen running omp with no session yet, keyed by their shell command (see
     /// `watch_startup`). A window that dies inside `STARTUP_WINDOW` with omp's SQLITE_BUSY
     /// startup crash is relaunched after a backoff (see `recover_dead_startup`).
@@ -136,6 +140,7 @@ impl Tracker {
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
             relaunched: HashSet::new(),
+            chased: HashSet::new(),
             startup: HashMap::new(),
             startup_panes: HashMap::new(),
             dsh: dsh_track::Memo::default(),
@@ -150,6 +155,44 @@ impl Tracker {
     /// Leave the sessions of the ignored dsh workspaces out of the inbox.
     pub fn set_dsh_ignore(&mut self, ignore: crate::dsh::Ignore) {
         self.dsh_ignore = ignore;
+    }
+
+    /// Ask a session for the status line its report was missing. Every card states an outcome.
+    /// A run triage briefed owes one. The session gets one ask instead of the inbox keeping a
+    /// report whose outcome nobody knows. Only a card that owes a report and arrived without one
+    /// is chased. Its session must still be young enough to answer. The card stays queued. The
+    /// report that answers the ask replaces it.
+    pub fn chase_missing_reports(&mut self, db: &Db, launch: &Launch) -> TickReport {
+        let now = crate::events::now_ms();
+        let Ok(cards) = db.queue(now) else {
+            return TickReport { written: 0 };
+        };
+        for card in cards {
+            if !card.report_due || card.kind != Kind::Info {
+                continue;
+            }
+            if !matches!(
+                card.status,
+                Some(events::CardStatus::NoFinalReport | events::CardStatus::NoStatus)
+            ) {
+                continue;
+            }
+            if now.saturating_sub(card.created_ms) > CHASE_WINDOW_MS {
+                continue;
+            }
+            let Some(key) = ask_key(&card) else {
+                continue;
+            };
+            // A session that cannot take the ask is not asked again in this run. A failed
+            // tmux or bridge call is not worth a fork on every tick.
+            if !self.chased.insert(key) {
+                continue;
+            }
+            if let Err(error) = ask_for_report(&card, launch) {
+                eprintln!("triage: no final report for {}: {error}", card.id);
+            }
+        }
+        TickReport { written: 0 }
     }
 
     fn refresh_ask_cache(&mut self, pane: &tmux::Pane) {
@@ -998,17 +1041,44 @@ pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), Strin
     if let Some(sid) = dsh::session_id(card) {
         return dsh_track::request_report(db, card, sid, launch);
     }
-    let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
-    let panes = tmux::list_panes().map_err(|error| error.to_string())?;
-    if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
-        return Err("pane is not waiting".to_owned());
-    }
-    send(pane, REQUEST_REPORT_TEXT)?;
+    ask_for_report(card, launch)?;
+    let pane = card.source.pane.as_deref().unwrap_or_default();
     if record_swipe(db, &card.id, "done", None, Some("Request final report".to_owned()), None, Some(format!("report requested {pane}"))) {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
+}
+
+/// How long after its card appears a session can still be asked for the status line it left
+/// out. An older card belongs to a session that has long since stopped.
+const CHASE_WINDOW_MS: i64 = 10 * 60 * 1000;
+
+/// The session a card can ask for its final report is the dsh session the card came from, or
+/// its tmux pane.
+fn ask_key(card: &Card) -> Option<String> {
+    dsh::session_id(card)
+        .map(|sid| format!("dsh:{sid}"))
+        .or_else(|| card.source.pane.clone())
+}
+
+/// Ask the card's session for the final report without changing the card. An omp pane must be
+/// waiting. A dsh session must be idle. Anything else refuses and sends nothing.
+fn ask_for_report(card: &Card, launch: &Launch) -> Result<(), String> {
+    if let Some(sid) = dsh::session_id(card) {
+        let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
+        let state = client.state(sid)?;
+        if state.running || !state.pending_input.is_empty() {
+            return Err("session is busy".to_owned());
+        }
+        return client.prompt(sid, REQUEST_REPORT_TEXT, None);
+    }
+    let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
+    let panes = tmux::list_panes().map_err(|error| error.to_string())?;
+    if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
+        return Err("pane is not waiting".to_owned());
+    }
+    send(pane, REQUEST_REPORT_TEXT)
 }
 
 /// Open a new window that resumes an ended session with `omp --restore`. A crashed or
@@ -1773,9 +1843,10 @@ fn reply_turn(
         Some(_) => "warn",
     };
     // The same reading fills the status line above the title. A report then states its outcome
-    // even when its title carries no prefix.
+    // even when its title carries no prefix. A reply that opens with no status line is not a
+    // final report, so its card reads that way instead of naming a line the run never wrote.
     let status = match reported {
-        None => events::CardStatus::NoStatus,
+        None => events::CardStatus::NoFinalReport,
         Some((_, _)) if missing_report => events::CardStatus::NoFinalReport,
         Some((omp::FinalStatus::Complete, _)) => events::CardStatus::Complete,
         Some((omp::FinalStatus::AgentDone, _)) if closed_report => events::CardStatus::Complete,

@@ -192,8 +192,8 @@ test('every card states the status the daemon gives it', () => {
 
   assert.deepEqual(
     head({ id: 'r', kind: 'info', title: 'Nothing is left to run', body: 'Details follow.', star: {}, status: 'no-status' }),
-    { status: ['No status line', 'warning'], title: 'Nothing is left to run' },
-    'a reply that missed its status line says so',
+    { status: ['No final report', 'warning'], title: 'Nothing is left to run' },
+    'a reply that missed its status line reads as no final report',
   );
   assert.deepEqual(
     head({ id: 'q', kind: 'ask', title: 'Which branch ships?', star: {}, options: [], status: 'waiting' }),
@@ -214,6 +214,16 @@ test('every card states the status the daemon gives it', () => {
     head({ id: 'e', kind: 'info', title: 'Stopped with error: model down', body: 'Details.', star: {}, status: 'incomplete' }),
     { status: ['Incomplete', 'negative'], title: 'Stopped with error: model down' },
     'a failed run reads incomplete',
+  );
+  assert.deepEqual(
+    head({ id: 'old-plan', kind: 'plan', title: 'Split the parser', body: 'Steps follow.', star: {} }),
+    { status: ['Plan ready', undefined], title: 'Split the parser' },
+    'a plan card stored with no status still states one',
+  );
+  assert.deepEqual(
+    head({ id: 'odd', kind: 'finding', title: 'Odd card', star: {}, status: 'no-such-status' }),
+    { status: ['Waiting on you', undefined], title: 'Odd card' },
+    'a card with a status this build does not know still states one',
   );
 });
 

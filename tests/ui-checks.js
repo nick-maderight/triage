@@ -1139,7 +1139,6 @@
         'Step left open': 'warning',
         Incomplete: 'negative',
         'No final report': 'warning',
-        'No status line': 'warning',
         'Plan ready': null,
         'Waiting on you': null,
         Notice: null,

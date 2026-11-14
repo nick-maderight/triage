@@ -2130,7 +2130,11 @@ fn every_reply_states_its_outcome_for_the_card_status() {
     assert_eq!(status(closed, None), events::CardStatus::Complete);
     assert_eq!(status(incomplete, None), events::CardStatus::Incomplete);
     assert_eq!(status(no_body, None), events::CardStatus::NoFinalReport);
-    assert_eq!(status(no_line, None), events::CardStatus::NoStatus);
+    assert_eq!(
+        status(no_line, None),
+        events::CardStatus::NoFinalReport,
+        "a reply with no status line is not a final report"
+    );
     assert_eq!(
         status("Closing note.", Some(complete)),
         events::CardStatus::Complete,
@@ -2167,6 +2171,43 @@ fn launched_reply_without_status_line_offers_report_request() {
     let bin = fake_tmux(scratch.path());
     run_child("launched_reply_without_status_line_offers_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
 }
+#[cfg(unix)]
+#[test]
+fn a_report_without_a_status_line_asks_its_session_once() {
+    if let Some(root) = child_root("a_report_without_a_status_line_asks_its_session_once") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-keys.log"), b" ").unwrap();
+        fs::create_dir_all(root.join("tmux-screens")).unwrap();
+        fs::write(root.join("tmux-screens/0"), "──────\n  ←←  \n──────\n").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "All done. Listing live.")]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut finding = finding_card(&root);
+        finding.title = "The delivery team has an unexpected CI grant".to_owned();
+        db.insert_card(&finding).unwrap();
+        db.swipe(&Swipe { card: finding.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some("launched %12".to_owned()), at_ms: events::now_ms() }).unwrap();
+        let mut tracker = Tracker::default();
+        tracker.tick(&db);
+        let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
+        assert_eq!(
+            card.status,
+            Some(events::CardStatus::NoFinalReport),
+            "a reply with no status line is not a final report: {card:?}"
+        );
+        let asks = || fs::read_to_string(root.join("tmux-keys.log")).unwrap().matches(REQUEST_REPORT_TEXT).count();
+        assert_eq!(asks(), 0, "the card alone asks nothing");
+        tracker.chase_missing_reports(&db, &Launch::default());
+        assert_eq!(asks(), 1, "the session is asked for the report it owes");
+        assert!(db.card(&card.id).unwrap().unwrap().1.is_none(), "the card stays queued for the answer");
+        tracker.chase_missing_reports(&db, &Launch::default());
+        assert_eq!(asks(), 1, "a session is asked once");
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("a_report_without_a_status_line_asks_its_session_once", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
 #[cfg(unix)]
 #[test]
 fn unlaunched_reply_does_not_offer_report_request() {
