@@ -16,16 +16,14 @@ const keydownStart = app.indexOf("  document.addEventListener('keydown', (e) => 
   keydownEnd = app.indexOf('\n  });', keydownStart);
 assert.ok(keydownStart >= 0 && keydownEnd > keydownStart, 'app.js defines the global key handler');
 const keydownSource = app.slice(keydownStart, keydownEnd + '\n  });'.length);
-// The handler routes every card key through the KEYS and CARD_KEYS tables, so both run beside it.
-const tableSource = (name) => {
-  const source = app.match(new RegExp(`^  const ${name} = \\{[\\s\\S]*?^  \\};`, 'm'))?.[0];
-  assert.ok(source, `app.js defines ${name}`);
-  return source;
-};
-const tableSources = `${tableSource('KEYS')}\n${tableSource('CARD_KEYS')}\n${functionSource('planNext')}`;
+// The handler routes every card key through the action table, which runs beside it here.
+const tableStart = app.indexOf('  const answerable ='),
+  tableEnd = app.indexOf('  const current =', tableStart);
+assert.ok(tableStart >= 0 && tableEnd > tableStart, 'app.js defines the action table');
+const tableSources = app.slice(tableStart, tableEnd);
 
 test('i, A, p and P open dispatch with matching modes while v keeps Peek', () => {
-  const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests' },
+  const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests', source: { pane: '%7' } },
     buttons = ['investigate', 'act', 'plan', 'plan-into'].map((mode) => ({
       dataset: { mode },
       attrs: { 'aria-checked': String(mode === 'investigate') },
@@ -46,6 +44,7 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       '#dispatch-mode-investigate': { hidden: false },
       '#dispatch-models': { hidden: true },
       '#dispatch-note': { value: '', focus() {} },
+      '#dispatch-engine': { value: '' },
       '#dispatch-executor-effort': { value: 'max' },
       '#dispatch-start': { disabled: false },
       '#dispatch': dialog,
@@ -61,12 +60,17 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       countsExpanded: false,
       dispatchId: card.id,
       composeMode: 'goal',
-      drafts: new Map([[card.id, { dispatchMode: 'investigate', dispatch: 'Review the plan', dispatchAnswers: null }]]),
+      drafts: new Map([[card.id, { dispatchMode: 'investigate', note: 'Review the plan', dispatchAnswers: null }]]),
     },
     context = vm.createContext({
       S: state,
-      PICKERS: { 'dispatch-model': { options: [] } },
+      PICKERS: { 'dispatch-engine': { fallback: 'omp' }, 'dispatch-model': { options: [] } },
       loadModels() {},
+      clearModels() {},
+      setPickerValue: (id, value) => {
+        elements[`#${id}`].value = value;
+      },
+      enc: encodeURIComponent,
       Date: { now: () => 1000 },
       document: {
         addEventListener(type, listener) {
@@ -79,7 +83,6 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       $: (selector) => elements[selector] || null,
       textField: () => false,
       current: () => card,
-      dshOf: () => null,
       draft: (current) => state.drafts.get(current.id),
       showDialog: (current) => {
         current.open = true;
@@ -87,8 +90,6 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       openPeek: (current) => actions.push(['peek', current.id]),
       pick: (current, index) => actions.push(['pick', current.id, index]),
       primary: (current) => actions.push(['primary', current.id]),
-      acknowledge: (current) => actions.push(['ack', current.id]),
-      planRecommended: (current) => actions.push(['plan-next', current.id]),
     });
   vm.runInContext(
     `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${keydownSource}`,
@@ -173,9 +174,11 @@ test('a acknowledges the shown card even when a button holds focus', () => {
       current: () => card,
       Date: { now: () => 1000 },
       primary: (current) => actions.push(['primary', current.id]),
-      acknowledge: (current) => actions.push(['ack', current.id]),
-      planRecommended: (current) => actions.push(['plan-next', current.id]),
-      openDispatch: (current, mode) => actions.push(['dispatch', current.id, mode]),
+      enc: encodeURIComponent,
+      noteValue: () => null,
+      act: (current, _verb, _body, control) => actions.push([control, current.id]),
+      openDispatch: (current, mode, { newWindow = false } = {}) =>
+        actions.push(['dispatch', current.id, mode, newWindow]),
     });
   vm.runInContext(`${tableSources}\n${keydownSource}`, context);
 
@@ -213,13 +216,14 @@ test('a acknowledges the shown card even when a button holds focus', () => {
   card = { id: 'ask-card', kind: 'ask', title: 'Pick one', options: [{ label: 'Red' }] };
   press('a', false);
   assert.deepEqual(actions.at(-1), ['ack', 'info-card'], 'a does nothing on an ask card');
-  // The same `p` plans a report's open step and opens Dispatch with Plan on any other card.
+  // The same `p` plans a report's open step in its own session and opens Dispatch with Plan on
+  // any other card.
   card = { id: 'report-card', kind: 'info', star: { action: 'Fix it' } };
   press('p');
-  assert.deepEqual(actions.at(-1), ['plan-next', 'report-card']);
+  assert.deepEqual(actions.at(-1), ['dispatch', 'report-card', 'plan', true]);
   card = { id: 'plan-card', kind: 'plan', title: 'Plan' };
   press('p');
-  assert.deepEqual(actions.at(-1), ['dispatch', 'plan-card', 'plan']);
+  assert.deepEqual(actions.at(-1), ['dispatch', 'plan-card', 'plan', false]);
 });
 
 test('dispatch sheet posts model and thinking for every mode', async () => {
@@ -228,8 +232,8 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
       cards: [card],
       counts: { finding: 1 },
       drafts: new Map([
-        [card.id, { dispatchMode: 'plan', dispatch: 'Make a plan' }],
-        ['plan-into-card', { dispatchMode: 'plan-into', dispatch: 'Make a plan' }],
+        [card.id, { dispatchMode: 'plan', note: '' }],
+        ['plan-into-card', { dispatchMode: 'plan-into', note: '' }],
       ]),
       dispatchId: card.id,
       pending: null,
@@ -261,6 +265,7 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
       window: { matchMedia: () => ({ matches: true }) },
       $: (selector) => elements[selector] || null,
       draft: (current) => state.drafts.get(current.id),
+      noteValue: (current) => state.drafts.get(current.id).note.trim() || null,
       snapshot: () => ({}),
       render() {},
       enc: encodeURIComponent,
@@ -342,21 +347,24 @@ test('finding options open the launch sheet and answer with its choices', async 
       '#dispatch': dialog,
     },
     state = {
-      cards: [card], counts: { finding: 1 }, drafts: new Map(), dispatchId: null,
+      cards: [card], counts: { finding: 1 }, drafts: new Map(), dispatchId: null, dispatchEngine: '',
       pending: null, remoteSwapUntil: 0, inflight: new Set(), actionRevision: 0,
       dirty: false, idx: 0, history: { loaded: true, error: null },
     },
     requests = [],
     context = vm.createContext({
       S: state,
-      PICKERS: { 'dispatch-model': { options: [{ value: 'provider/chosen' }] } },
+      PICKERS: {
+        'dispatch-engine': { fallback: 'omp' },
+        'dispatch-model': { options: [{ value: 'provider/chosen' }] },
+      },
       Date: { now: () => 1000 },
       window: { matchMedia: () => ({ matches: true }) },
       document: { activeElement: null },
       $: (selector) => elements[selector] || null,
       draft: (current) => {
         if (!state.drafts.has(current.id)) state.drafts.set(current.id, {
-          note: 'Do the safe thing', dispatch: '', dispatchMode: 'investigate', dispatchOption: null, dispatchAnswers: null,
+          note: 'Do the safe thing', dispatchMode: 'investigate', dispatchOption: null, dispatchAnswers: null,
         });
         return state.drafts.get(current.id);
       },
@@ -364,6 +372,9 @@ test('finding options open the launch sheet and answer with its choices', async 
       showDialog: (current) => { current.open = true; },
       loadModels() {},
       dshOf: () => null,
+      setPickerValue() {},
+      clearModels() {},
+      noteValue: (current) => state.drafts.get(current.id).note.trim() || null,
       snapshot: () => ({}),
       render() {},
       enc: encodeURIComponent,
@@ -380,12 +391,6 @@ test('finding options open the launch sheet and answer with its choices', async 
     `${functionSource('optionMode')}\n${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${functionSource('pick')}\n${functionSource('api', true)}\n${functionSource('act', true)}\n${functionSource('settle', true)}\n${functionSource('submitDispatch', true)}\nglobalThis.pick = pick; globalThis.submitDispatch = submitDispatch;`,
     context,
   );
-  context.setDispatchMode = (mode) => {
-    const selected = buttons.find((button) => button.dataset.mode === mode);
-    buttons.forEach((button) => button.setAttribute('aria-checked', String(button === selected)));
-    state.drafts.get(card.id).dispatchMode = mode;
-  };
-
   context.pick(card, 0);
   assert.equal(dialog.open, true);
   assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'act');
@@ -402,6 +407,7 @@ test('finding options open the launch sheet and answer with its choices', async 
   state.counts.finding = 1;
   context.pick(card, 1);
   assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'investigate');
+  // Picking another Mode in the sheet changes what Launch sends.
   context.setDispatchMode('plan');
   await context.submitDispatch({ preventDefault() {} });
   assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
@@ -647,6 +653,48 @@ test('a dsh execution effort waits for its execution model', async () => {
   context.refreshEfforts('plan');
   assert.deepEqual(options('plan-executor-effort'), ['low', 'high']);
   assert.equal(pickers['plan-executor-effort'].fallback, 'Planner effort');
+});
+
+// The last catalog read can belong to another card. The field must describe the card it sits on.
+test('the effort field of a dsh plan card describes that card, whatever catalog was read last', () => {
+  const pickers = {
+      'plan-executor': { options: [], fallback: 'current Plan Review role' },
+      'plan-executor-effort': { options: [{ value: 'max' }], fallback: 'Role level' },
+    },
+    dsh = { engine: 'dsh', models: [{ selector: 'p/fast', efforts: ['low', 'high'] }], default: 'p/fast', thinking: ['low', 'high'] },
+    drafts = { waiting: { executor: '', executorThinking: '' }, chosen: { executor: 'p/fast', executorThinking: '' } },
+    shown = {},
+    context = vm.createContext({
+      PICKERS: pickers,
+      draft: (c) => drafts[c.id],
+      pickerOption: (value) => ({ value }),
+      ident: (name) => name,
+      h: () => ({}),
+      el: () => ({}),
+      bindPicker() {},
+      // An unset field shows its picker's Default row.
+      setPickerValue: (id) => {
+        shown[id] = pickers[id].fallback;
+      },
+    }),
+    effort = (id) => {
+      context.planExecutorView({ id, kind: 'plan', engine: 'dsh' });
+      return [shown['plan-executor-effort'], Array.from(pickers['plan-executor-effort'].options, (option) => option.value)];
+    };
+  vm.runInContext(
+    `${functionSource('planExecutorView')}\n${functionSource('planExecutorLabels')}\n${functionSource('effortLevels')}\nglobalThis.planExecutorView = planExecutorView;`,
+    context,
+  );
+
+  // The catalog of an omp plan card was read last and left the omp label and levels behind.
+  pickers['plan-executor'].data = { engine: 'omp', models: [], thinking: ['max'] };
+  assert.deepEqual(effort('waiting'), ['needs an execution model', []]);
+  // A card that names a model lists that model's levels once the dsh catalog is read.
+  assert.deepEqual(effort('chosen'), ['Planner effort', []]);
+  pickers['plan-executor'].data = dsh;
+  assert.deepEqual(effort('chosen'), ['Planner effort', ['low', 'high']]);
+  // Back on the card without a model, the levels of the other card are gone.
+  assert.deepEqual(effort('waiting'), ['needs an execution model', []]);
 });
 
 test('a catalog that answers late never fills the model field of another engine', async () => {

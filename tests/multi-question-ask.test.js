@@ -103,6 +103,7 @@ test('multi-question asks are answered step by step and sent from the review', a
       'sendAnswers',
       'primaryStep',
       'otherRow',
+      'oneLine',
       'noteRow',
       'toggleOther',
       'sendOther',
@@ -135,7 +136,6 @@ test('multi-question asks are answered step by step and sent from the review', a
       reloadIfStale: () => false,
       enc: encodeURIComponent,
       ident: (name, item) => `${name}-${item.id}`,
-      paneButtons: () => null,
       h: node,
       el: (tag, props, ...children) => node(tag, props || {}, ...children),
       button: (_item, _action, className, props, onClick, ...children) =>

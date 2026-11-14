@@ -51,7 +51,7 @@ test('custom answers are hidden from findings and available on ask and plan card
       recIndex: () => 0,
       ident: (name, card) => `${name}-${card.id}`,
       paneOf: () => null,
-      paneButtons: () => null,
+      ACTIONS: { other: { key: 'o' } },
       planExecutorView: () => null,
       h: node,
       el: (tag, props, ...children) => node(tag, props || {}, ...children),
@@ -143,6 +143,16 @@ test('custom answers are hidden from findings and available on ask and plan card
   assert.equal(requests[1][2].option, null);
   assert.equal(requests[1][2].text, 'Plan answer');
   assert.equal(requests[1][2].note, 'Plan note');
+  // A prompt answered in its pane takes no answer here. Its custom answer never leaves the inbox.
+  const readOnly = { ...ask, id: 'read-only', answerable: false };
+  state.drafts.set(readOnly.id, { note: '', other: 'typed anyway', open: false });
+  assert.equal(
+    findNodes(context.optionsView(readOnly), (item) => item.props?.id === 'other-btn').length,
+    0,
+    'a read-only ask exposes no Other button',
+  );
+  context.sendOther(readOnly);
+  assert.equal(requests.length, 2, 'a read-only ask never submits a custom answer');
 });
 test('plan cards from the queue render and answer through the answer route', async () => {
   const card = {
@@ -190,6 +200,7 @@ test('plan cards from the queue render and answer through the answer route', asy
       'otherAllowed',
       'questionView',
       'otherRow',
+      'oneLine',
       'noteRow',
       'toggleOther',
       'sendOther',
@@ -223,12 +234,11 @@ test('plan cards from the queue render and answer through the answer route', asy
       enc: encodeURIComponent,
       draft(item) {
         if (!state.drafts.has(item.id))
-          state.drafts.set(item.id, { note: '', other: '', open: false, dispatch: '', dispatchMode: 'investigate' });
+          state.drafts.set(item.id, { note: '', other: '', open: false, dispatchMode: 'investigate' });
         return state.drafts.get(item.id);
       },
       recIndex: (item) => Math.max(0, item.options.findIndex((option) => option.recommended)),
       ident: (name, item) => `${name}-${item.id}`,
-      paneButtons: () => null,
       planExecutorView: () => null,
       h: node,
       el: (tag, props, ...children) => node(tag, props || {}, ...children),

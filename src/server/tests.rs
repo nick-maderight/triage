@@ -1648,7 +1648,9 @@ esac
     std::fs::set_permissions(&tmux, permissions).unwrap();
 
     let db = Db::open(Path::new(":memory:")).unwrap();
-    let card = test_plan_card("%42");
+    // Only a report's waiting pane takes a typed brief.
+    let mut card = test_plan_card("%42");
+    card.kind = Kind::Info;
     db.insert_card(&card).unwrap();
     let id = card.id.clone();
     let state = state(db, None);

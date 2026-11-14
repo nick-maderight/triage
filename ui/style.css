@@ -2129,15 +2129,9 @@ dialog.picker::backdrop {
     margin: 0 0 8px;
   }
   .action-block .notice {
-    display: flex;
-    flex-direction: column;
     order: -2;
     margin: 0 0 8px;
     padding: 8px;
-  }
-  .action-block .notice .pane-actions {
-    order: -1;
-    margin: 0 0 8px;
   }
   .options {
     gap: 4px;

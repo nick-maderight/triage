@@ -905,8 +905,9 @@ impl DispatchMode {
 
 /// Launch an omp session for any card and resolve the card.
 ///
-/// An ask stays queued for an hour with reason `investigating %N`, `planning %N`, or `acting %N`
-/// while its dialog remains open. Findings and info cards finish with reason `launched %N`.
+/// An ask or a plan stays queued for an hour with reason `investigating %N`, `planning %N`, or
+/// `acting %N`, because its dialog or review is still open and waiting for its answer. Findings
+/// and info cards finish with reason `launched %N`.
 /// The session's final report comes back as an info card through the tracker. `executor` is the
 /// execution model a plan-into dispatch hands its approved plan to, omp's `smol` role when
 /// unset, and `executor_thinking` is the effort it takes; the server refuses both with any
@@ -942,7 +943,7 @@ pub fn dispatch(
         DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
     };
     let pane = launch_brief(card, launch, &path, start, image, new_window)?;
-    let recorded = if card.kind == Kind::Ask {
+    let recorded = if matches!(card.kind, Kind::Ask | Kind::Plan) {
         let doing = match mode {
             DispatchMode::Investigate => "investigating",
             DispatchMode::Plan | DispatchMode::PlanInto => "planning",
@@ -1176,7 +1177,7 @@ fn dispatch_prompt(brief: &Path) -> String {
     format!("Read the brief at {} and carry it out.", brief.display())
 }
 
-/// Give the brief to the card's own pane while that pane is an omp pane waiting for input,
+/// Give the brief to an info card's own pane while that pane is an omp pane waiting for input,
 /// so the work continues in the session that already has the context. Otherwise open a new
 /// window in the daemon's launch session; a window another launch left behind is never
 /// taken. A new window starts in omp goal mode with an objective that names the brief, except
@@ -1196,9 +1197,12 @@ fn launch_brief(
     if launch.engine == Engine::Dsh {
         return dsh_track::launch_brief(card, launch, brief, start, image, new_window);
     }
-    // Only launch flags turn plan-yolo on, so a Plan into dispatch never reuses a running pane.
-    let source =
-        card.source.pane.as_deref().filter(|_| !new_window && !matches!(start, Start::PlanInto(..)));
+    // Only a pane that finished its turn takes typed text. A plan review also reads as waiting,
+    // where a typed brief would run as overlay keys. An ask or a plan card opens a window for
+    // that reason. Plan into opens one as well, because only launch flags turn plan-yolo on.
+    let source = card.source.pane.as_deref().filter(|_| {
+        card.kind == Kind::Info && !new_window && !matches!(start, Start::PlanInto(..))
+    });
     if let Some(pane) = source {
         let waiting = tmux::list_panes()
             .map_err(|error| error.to_string())?

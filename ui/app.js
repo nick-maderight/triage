@@ -35,6 +35,7 @@ const S = {
   history: { loading: false, loaded: false, dayStart: null, error: null, today: 0, lastAt: null },
   dialogFocus: new WeakMap(),
   dispatchId: null,
+  dispatchEngine: '',
   composeMode: 'goal',
   peekPane: null,
   peekToken: 0,
@@ -149,29 +150,92 @@ const S = {
     dshOf = (c) => (c.engine === 'dsh' && c.source?.uri?.startsWith('dsh://session/') ? c.source.uri.slice(14) : null),
     paneOf = (c) => c.source?.pane || (dshOf(c) ? `dsh:${dshOf(c)}` : null),
     paneApi = (pane) => (pane.startsWith('dsh:') ? `/v1/dsh/${enc(pane.slice(4))}` : `/v1/panes/${enc(pane)}`),
-    restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id);
-  // One key per action, never one per button slot: an action shows the same key in the primary
-  // slot, in the dock group and in the keys sheet. Enter runs whichever button the card marks
-  // primary. The dock hints, their aria-keyshortcuts values and the key handler read this table,
-  // so a shortcut cannot drift from the action it names.
-  const KEYS = {
-    ack: 'a',
-    close: 'x',
-    plan: 'p',
-    doNext: 'd',
-    dispatch: 'i',
-    act: 'A',
-    planInto: 'P',
-    context: 't',
-    later: 'l',
-    note: 'n',
-    other: 'o',
-    peek: 'v',
-    jump: 'J',
-    request: 'r',
-    restore: 'R',
-    skip: 's',
+    restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id),
+    // The step a report left open, named by its `Recommended action:` line.
+    hasStep = (c) => c.kind === 'info' && Boolean(c.star?.action);
+  // Every card action in dock order. Each entry holds its key, its button label, the cards that
+  // offer it and what it does. An action without a label has no button. The dock, Enter and the
+  // key handler all read this table. A card that offers an action shows one button for it under
+  // one key, while a card that does not offer it answers neither.
+  const ACTIONS = {
+    // Plan keeps one shape wherever a card offers it. A report with an open step plans that step
+    // in a session of its own. Every other card opens Dispatch with Plan preselected.
+    plan: {
+      key: 'p',
+      label: (c) => hasStep(c) && 'Plan next step',
+      run: (c) => openDispatch(c, 'plan', { newWindow: hasStep(c) }),
+    },
+    // Dispatch is the sheet's only button and also names the keys that open the sheet in
+    // another mode.
+    dispatch: {
+      key: 'i',
+      label: 'Dispatch',
+      also: ['act', 'plan', 'planInto'],
+      run: (c) => openDispatch(c, 'investigate'),
+    },
+    act: { key: 'A', run: (c) => openDispatch(c, 'act') },
+    planInto: { key: 'P', run: (c) => openDispatch(c, 'plan-into') },
+    doNext: {
+      key: 'd',
+      label: 'Do next step',
+      offered: hasStep,
+      run: (c) => openDispatch(c, 'act', { newWindow: true }),
+    },
+    close: {
+      key: 'x',
+      label: 'Acknowledge & close',
+      offered: paneOf,
+      run: (c) => act(c, 'close', { note: noteValue(c) }, 'close'),
+    },
+    request: {
+      key: 'r',
+      label: 'Request final report',
+      offered: (c) => c.kind === 'info' && c.report_due && paneOf(c),
+      run: (c) => act(c, 'report', {}, 'request'),
+    },
+    restore: {
+      key: 'R',
+      label: 'Restore run',
+      offered: restorable,
+      run: (c) => act(c, 'restore', {}, 'restore'),
+    },
+    ack: {
+      key: 'a',
+      label: 'Acknowledge',
+      offered: (c) => c.kind === 'info',
+      run: (c) => act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),
+    },
+    skip: { key: 's', label: 'Skip', run: (c) => act(c, 'skip', {}, 'skip') },
+    context: { key: 't', label: 'Context', run: (c) => openContext(c.id) },
+    later: { key: 'l', label: 'Later', run: () => toggleLater() },
+    peek: { key: 'v', label: 'Peek', offered: paneOf, run: (c) => openPeek(c) },
+    // A dsh session has no tmux pane to jump to. Its card opens the dsh web UI instead.
+    jump: {
+      key: 'J',
+      label: (c) => (dshOf(c) ? 'Open' : 'Jump'),
+      offered: paneOf,
+      run: (c) => (dshOf(c) ? openDsh() : jump(c)),
+    },
+    note: { key: 'n', run: () => $('#note')?.focus() },
+    other: { key: 'o', offered: (c) => otherAllowed(c), run: (c) => toggleOther(c) },
   };
+  const offers = (c, id) => !ACTIONS[id].offered || Boolean(ACTIONS[id].offered(c)),
+    // The action a key runs on a card. A card that does not offer the action has none.
+    actionOf = (c, key) => Object.keys(ACTIONS).find((id) => ACTIONS[id].key === key && offers(c, id)),
+    // The label of the button a card shows for an action, or null when it shows none.
+    labelOf = (c, id) => {
+      const { label } = ACTIONS[id];
+      return (offers(c, id) && (typeof label === 'function' ? label(c) : label)) || null;
+    },
+    // The action a card's dock leads with, which Enter runs as well. A report leads with its
+    // open step, else with closing its session, else with a plain acknowledge. A prompt that
+    // takes its answer in the pane leads with Peek. Every other card's primary is an option.
+    leadOf = (c) =>
+      c.kind === 'info'
+        ? ['plan', 'close', 'ack'].find((id) => labelOf(c, id))
+        : !answerable(c) && offers(c, 'peek')
+          ? 'peek'
+          : null;
   const current = () => S.cards[S.idx] || null;
   const recIndex = (c) => {
     const i = (c.options || []).findIndex((o) => o.recommended);
@@ -207,7 +271,6 @@ const S = {
         note: '',
         other: '',
         open: false,
-        dispatch: '',
         dispatchMode: 'investigate',
         dispatchOption: null,
         dispatchAnswers: null,
@@ -285,14 +348,10 @@ const S = {
   }
   function snapshot() {
     const d = S.shownId && S.drafts.get(S.shownId),
-      note = $('#note'),
       other = $('#other-text'),
       active = document.activeElement,
       inside = Boolean($('.card')?.contains(active));
-    if (d) {
-      if (note) d.note = note.value;
-      if (other) d.other = other.value;
-    }
+    if (d && other) d.other = other.value;
     const selection =
       inside && typeof active?.selectionStart === 'number'
         ? [active.selectionStart, active.selectionEnd, active.selectionDirection]
@@ -422,7 +481,7 @@ const S = {
       return false;
     }
     if (q.shell === S.shell || S.inflight.size || S.dictating || $('dialog[open]')) return false;
-    const typed = [...S.drafts.values()].some((d) => d.note.trim() || d.other.trim() || d.dispatch.trim());
+    const typed = [...S.drafts.values()].some((d) => d.note.trim() || d.other.trim());
     if (typed || $('#compose-prompt')?.value.trim()) return false;
     location.reload();
     return true;
@@ -988,36 +1047,6 @@ const S = {
       updateReport(w);
     });
   }
-  function paneButtons(c, primary = false) {
-    return el(
-      'div',
-      'pane-actions',
-      button(
-        c,
-        'peek',
-        `btn${primary ? ' primary' : ''}`,
-        {
-          id: primary ? 'peek-main' : 'peek-btn',
-          'data-primary': primary ? 'true' : null,
-          'aria-keyshortcuts': KEYS.peek,
-        },
-        () => openPeek(c),
-        'Peek',
-        h('kbd', { class: 'hint', 'aria-hidden': 'true' }, KEYS.peek),
-      ),
-      dshOf(c)
-        ? button(c, 'open', 'btn', { id: 'open-btn' }, openDsh, 'Open')
-        : button(
-            c,
-            'jump',
-            'btn',
-            { id: 'jump-btn', 'aria-keyshortcuts': KEYS.jump },
-            () => jump(c),
-            'Jump',
-            h('kbd', { class: 'hint', 'aria-hidden': 'true' }, KEYS.jump),
-          ),
-    );
-  }
   async function openDsh() {
     try {
       await api('/v1/dsh/open', {});
@@ -1028,6 +1057,8 @@ const S = {
   }
   function planExecutorView(c) {
     const engine = c.engine || 'omp',
+      executor = draft(c).executor,
+      catalog = PICKERS['plan-executor'].data,
       pair = (id, label, value) => {
         const field = h('button', {
           type: 'button',
@@ -1045,11 +1076,18 @@ const S = {
         return el('div', 'pair', h('label', { id: `${id}-label`, for: id }, label), field);
       };
     planExecutorLabels(engine);
+    // A dsh effort rides on its execution model. The field describes the shown card, whichever
+    // card's catalog was read last. It lists no level until this card names a model.
+    if (engine === 'dsh')
+      Object.assign(PICKERS['plan-executor-effort'], {
+        fallback: executor ? 'Planner effort' : 'needs an execution model',
+        options: (executor && catalog?.engine === 'dsh' ? effortLevels(catalog, executor) : []).map((level) => pickerOption(level)),
+      });
     // An omp Plan Review slider lists roles only, so its role keeps its own thinking level.
     return el(
       'div',
       'plan-executor',
-      pair('plan-executor', 'Execution model', draft(c).executor),
+      pair('plan-executor', 'Execution model', executor),
       engine === 'dsh' && pair('plan-executor-effort', 'Execution effort', draft(c).executorThinking),
     );
   }
@@ -1065,8 +1103,9 @@ const S = {
   function otherAllowed(c) {
     const questions = c.questions?.length ? c.questions : null,
       question = questions ? questions[draft(c).step] : null;
-    // A plain finding takes no custom answer, and past the last question the review step takes over.
-    if (c.kind === 'finding' && !questions) return false;
+    // Other requires a prompt the inbox can answer. A plain finding takes only its listed
+    // options. Past the last question the review step takes over.
+    if (!answerable(c) || (c.kind === 'finding' && !questions)) return false;
     if (questions && !question) return false;
     return Boolean(c.allow_other && question?.allow_other !== false && (c.kind === 'ask' || c.kind === 'plan' || c.kind === 'finding'));
   }
@@ -1086,17 +1125,15 @@ const S = {
           a.i - b.i,
       );
     const rows = opts.map(({ option: o, i }) => {
-      const label = c.kind === 'finding' ? `Do: ${o.label}` : o.label,
-        copy = el(
-          'span',
-          'opt-copy',
-          el('span', 'opt-label', mdInline(label)),
-          o.description && el('span', 'opt-desc', mdInline(o.description)),
-          o.direction && el('span', 'opt-dir', mdInline(o.direction)),
-        );
       const kids = [
           h('kbd', { class: 'num', 'aria-hidden': 'true' }, i < 9 ? String(i + 1) : '·'),
-          copy,
+          el(
+            'span',
+            'opt-copy',
+            el('span', 'opt-label', mdInline(o.label)),
+            o.description && el('span', 'opt-desc', mdInline(o.description)),
+            o.direction && el('span', 'opt-dir', mdInline(o.direction)),
+          ),
           o.recommended && el('span', 'tag', 'Recommended'),
         ],
         cls = `option${o.recommended || i === recIndex(c) ? ' rec' : ''}`;
@@ -1115,7 +1152,7 @@ const S = {
           : el('div', `${cls} readonly`, ...kids),
       );
     });
-    if (live && otherAllowed(c)) rows.push(otherRow(c));
+    if (otherAllowed(c)) rows.push(otherRow(c));
     const out = [
       c.kind === 'plan' && live && planExecutorView(c),
       h('ol', { class: 'options', 'aria-label': live ? 'Options' : 'Options, read only' }, ...rows),
@@ -1131,7 +1168,6 @@ const S = {
             el('strong', null, c.engine === 'dsh' ? 'Answer in the dsh web UI. ' : 'Answer in the pane. '),
             'This prompt is read only here.',
           ),
-          paneOf(c) && paneButtons(c, true),
         ),
       );
     return out;
@@ -1270,7 +1306,7 @@ const S = {
   function sendAnswers(c) {
     const d = draft(c);
     if (c.questions.some((_, i) => d.answers[i] == null)) return;
-    if (c.kind === 'finding') openDispatch(c, 'act', true, null, d.answers);
+    if (c.kind === 'finding') openDispatch(c, 'act', { answers: d.answers });
     else act(c, 'answer', { answers: d.answers, note: noteValue(c) }, 'send');
   }
   function primaryStep(c) {
@@ -1295,7 +1331,7 @@ const S = {
           'option',
           { id: 'other-btn' },
           () => toggleOther(c),
-          h('kbd', { class: 'num', 'aria-hidden': 'true' }, 'o'),
+          h('kbd', { class: 'num', 'aria-hidden': 'true' }, ACTIONS.other.key),
           el(
             'span',
             'opt-copy',
@@ -1335,13 +1371,17 @@ const S = {
       ),
     );
   }
+  // A single-line field shows the line breaks of a note as spaces.
+  function oneLine(text) {
+    return text.replace(/\s*\n\s*/g, ' ');
+  }
   function noteRow(c) {
     const d = draft(c),
       busy = S.pending?.id === c.id;
     return el(
       'div',
       'note',
-      h('label', { for: 'note' }, 'Note', h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'n')),
+      h('label', { for: 'note' }, 'Note', h('kbd', { class: 'hint', 'aria-hidden': 'true' }, ACTIONS.note.key)),
       el(
         'div',
         'field-row',
@@ -1352,7 +1392,7 @@ const S = {
           autocomplete: 'off',
           enterkeyhint: 'done',
           placeholder: 'Optional note for this action',
-          value: d.note,
+          value: oneLine(d.note),
           disabled: busy,
           oninput: (e) => {
             draft(c).note = e.target.value;
@@ -1377,10 +1417,30 @@ const S = {
       },
     ].map((x) => ({ ...x, local: local(x.at) }));
   }
-  function dock(c, withPane) {
-    const key = (action) => h('kbd', { class: 'hint', 'aria-hidden': 'true' }, KEYS[action]),
-      shortcut = (action) => `${KEYS[action]} Enter`,
-      recommended = c.kind === 'info' && Boolean(c.star?.action),
+  // The dock draws the card's actions from the table. The lead becomes the primary button. Every
+  // other labeled action the card offers follows it.
+  function dock(c) {
+    const lead = leadOf(c),
+      hint = (text) => h('kbd', { class: 'hint', 'aria-hidden': 'true' }, text),
+      control = (id, attrs = {}) => {
+        const { key, run, also = [] } = ACTIONS[id],
+          primary = id === lead,
+          keys = [key, ...also.filter((other) => !labelOf(c, other)).map((other) => ACTIONS[other].key)];
+        return button(
+          c,
+          id,
+          primary ? 'btn primary' : 'btn',
+          {
+            id: `${id}-btn`,
+            'data-primary': primary ? 'true' : null,
+            'aria-keyshortcuts': (primary ? [...keys, 'Enter'] : keys).join(' '),
+            ...attrs,
+          },
+          () => run(c),
+          labelOf(c, id),
+          hint(key),
+        );
+      },
       menu =
         S.laterOpen &&
         h(
@@ -1401,150 +1461,41 @@ const S = {
               () => later(c, x),
               h('span', { class: 'later-label' }, x.label),
               h('span', { class: 'later-time' }, x.local),
-              key(String(i + 1)),
+              hint(String(i + 1)),
             ),
           ),
-        );
+        ),
+      group = Object.keys(ACTIONS).filter((id) => id !== lead && labelOf(c, id)),
+      pane = group.filter((id) => id === 'peek' || id === 'jump');
     return el(
       'footer',
       'dock',
-      c.kind === 'info' &&
-        (recommended
-          ? button(
-              c,
-              'plan',
-              'btn primary',
-              { 'data-primary': 'true', 'aria-keyshortcuts': shortcut('plan') },
-              () => planNext(c),
-              'Plan next step',
-              key('plan'),
-            )
-          : paneOf(c)
-            ? button(
-                c,
-                'close',
-                'btn primary',
-                { 'data-primary': 'true', 'aria-keyshortcuts': shortcut('close') },
-                () => closePane(c),
-                'Acknowledge & close',
-                key('close'),
-              )
-            : button(
-                c,
-                'ack',
-                'btn primary',
-                { 'data-primary': 'true', 'aria-keyshortcuts': shortcut('ack') },
-                () => acknowledge(c),
-                'Acknowledge',
-                key('ack'),
-              )),
+      lead && control(lead),
       el(
         'div',
         'dock-group',
-        button(
-          c,
-          'dispatch',
-          'btn',
-          {
-            'aria-keyshortcuts': [KEYS.dispatch, KEYS.act, KEYS.plan, KEYS.planInto].join(' '),
-          },
-          () => openDispatch(c, 'investigate'),
-          'Dispatch',
-          key('dispatch'),
-        ),
-        c.kind === 'info' &&
-          recommended &&
-          button(
-            c,
-            'do',
-            'btn',
-            { 'aria-keyshortcuts': KEYS.doNext },
-            () => doRecommended(c),
-            'Do next step',
-            key('doNext'),
+        group
+          .filter((id) => !pane.includes(id))
+          .map((id) =>
+            id === 'later'
+              ? el(
+                  'div',
+                  'later',
+                  control(id, {
+                    'aria-expanded': String(S.laterOpen),
+                    'aria-controls': S.laterOpen ? 'later-menu' : null,
+                    'aria-haspopup': 'menu',
+                  }),
+                  menu,
+                )
+              : control(id),
           ),
-        paneOf(c) &&
-          (c.kind !== 'info' || recommended) &&
-          button(
-            c,
-            'close',
-            'btn',
-            { 'aria-keyshortcuts': KEYS.close },
-            () => closePane(c),
-            'Acknowledge & close',
-            key('close'),
-          ),
-        c.kind === 'info' &&
-          c.report_due &&
-          paneOf(c) &&
-          button(
-            c,
-            'request',
-            'btn',
-            { 'aria-keyshortcuts': KEYS.request },
-            () => requestReport(c),
-            'Request final report',
-            key('request'),
-          ),
-        restorable(c) &&
-          button(
-            c,
-            'restore',
-            'btn',
-            { 'aria-keyshortcuts': KEYS.restore },
-            () => restoreRun(c),
-            'Restore run',
-            key('restore'),
-          ),
-        c.kind === 'info' &&
-          (recommended || paneOf(c)) &&
-          button(
-            c,
-            'ack',
-            'btn',
-            { 'aria-keyshortcuts': KEYS.ack },
-            () => acknowledge(c),
-            'Acknowledge',
-            key('ack'),
-          ),
-        button(c, 'skip', 'btn', { 'aria-keyshortcuts': KEYS.skip }, () => skip(c), 'Skip', key('skip')),
-        button(
-          c,
-          'context',
-          'btn',
-          { 'aria-keyshortcuts': KEYS.context },
-          () => openContext(c.id),
-          'Context',
-          key('context'),
-        ),
-        el(
-          'div',
-          'later',
-          button(
-            c,
-            'later',
-            'btn',
-            {
-              id: 'later-btn',
-              'aria-keyshortcuts': KEYS.later,
-              'aria-expanded': String(S.laterOpen),
-              'aria-controls': S.laterOpen ? 'later-menu' : null,
-              'aria-haspopup': 'menu',
-            },
-            toggleLater,
-            'Later',
-            key('later'),
-          ),
-          menu,
-        ),
-        withPane && paneButtons(c),
+        pane.length > 0 && el('div', 'pane-actions', pane.map((id) => control(id))),
       ),
     );
   }
   function cardView(c, changed) {
     const busy = S.pending?.id === c.id,
-      live = answerable(c),
-      pane = paneOf(c),
       // A question that carries its own STAR shows it in place of the card's, which covers every
       // finding and returns on the review step.
       star = (c.questions?.length && c.questions[draft(c).step]?.star) || c.star || {},
@@ -1567,7 +1518,7 @@ const S = {
         'Action',
         prose(star.action),
         optionsView(c),
-        (live || c.kind === 'info') && noteRow(c),
+        noteRow(c),
       ),
       split = c.kind !== 'info' && evidence.length > 0;
     return h(
@@ -1589,7 +1540,7 @@ const S = {
         split ? el('div', 'context', evidence) : evidence,
         action,
       ),
-      dock(c, Boolean(pane && live)),
+      dock(c),
     );
   }
   function emptyView() {
@@ -1694,9 +1645,10 @@ const S = {
   }
   function resultMessage(c, verb, body, choice) {
     if (verb === 'skip') return `Skipped · ${c.title}`;
+    if (verb === 'later') return `Later ${choice.label} · ${c.title}`;
     if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
       return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
-    if (verb === 'close') return `Closed pane · ${c.title}`;
+    if (verb === 'close') return `Closed · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
     if (verb === 'restore') return `Restoring run · ${c.title}`;
     if (c.kind === 'info') return `Acknowledged · ${c.title}`;
@@ -1758,10 +1710,10 @@ const S = {
     if (c.questions?.length && answerable(c)) return pickStep(c, i);
     const options = c.options || [];
     // The Other row follows the last option; its digit opens it for an ask or plan card.
-    if (i === options.length && otherAllowed(c) && answerable(c)) return toggleOther(c);
+    if (i === options.length && otherAllowed(c)) return toggleOther(c);
     const option = options[i];
     if (!option || !answerable(c) || c.kind === 'info') return;
-    if (c.kind === 'finding') return openDispatch(c, optionMode(option), true, i);
+    if (c.kind === 'finding') return openDispatch(c, optionMode(option), { option: i });
     const needsOther = c.kind === 'plan' && option.label === 'Refine',
       text = needsOther ? draft(c).other.trim() : null;
     if (needsOther && !text) {
@@ -1799,7 +1751,7 @@ const S = {
   // An empty Other is a slip, not a submit: keep the field open and say what it wants.
   function sendOther(c) {
     const text = draft(c).other.trim();
-    if (!otherAllowed(c) || !answerable(c)) return;
+    if (!otherAllowed(c)) return;
     if (!text) {
       if (!draft(c).open) toggleOther(c);
       else $('#other-text')?.focus({ preventScroll: true });
@@ -1811,49 +1763,15 @@ const S = {
     if (c.questions?.length) answerStep(c, { text });
     else act(c, 'answer', { option: null, text, note: noteValue(c) }, 'other');
   }
-  const acknowledge = (c) =>
-      act(c, 'answer', { option: null, text: null, note: noteValue(c) }, 'ack'),
-    planRecommended = (c) => openDispatch(c, 'plan', true, null, null, true),
-    doRecommended = (c) => openDispatch(c, 'act', true, null, null, true),
-    requestReport = (c) => { if (c.kind === 'info' && c.report_due && paneOf(c)) act(c, 'report', {}, 'request'); },
-    restoreRun = (c) => { if (restorable(c)) act(c, 'restore', {}, 'restore'); },
-    skip = (c) => act(c, 'skip', {}, 'skip'),
-    closePane = (c) => paneOf(c) && act(c, 'close', { note: noteValue(c) }, 'close'),
-    later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
-  // The Plan action keeps one shape wherever a card offers it: Plan next step on a report with an
-  // open recommended step, which starts a session of its own, and Dispatch with Plan preselected
-  // on every other card.
-  function planNext(c) {
-    return c.kind === 'info' && c.star?.action ? planRecommended(c) : openDispatch(c, 'plan');
-  }
-  // The one place a card shortcut is bound. A key names an action, never a button slot, so the
-  // same key runs the same action from the primary slot, the dock group and the keys sheet.
-  const CARD_KEYS = {
-    [KEYS.ack]: (c) => c.kind === 'info' && acknowledge(c),
-    [KEYS.close]: (c) => closePane(c),
-    [KEYS.plan]: (c) => planNext(c),
-    [KEYS.doNext]: (c) => c.kind === 'info' && Boolean(c.star?.action) && doRecommended(c),
-    [KEYS.dispatch]: (c) => openDispatch(c, 'investigate'),
-    [KEYS.act]: (c) => openDispatch(c, 'act'),
-    [KEYS.planInto]: (c) => openDispatch(c, 'plan-into'),
-    [KEYS.context]: (c) => openContext(c.id),
-    [KEYS.later]: () => toggleLater(),
-    [KEYS.note]: () => $('#note')?.focus(),
-    [KEYS.other]: (c) => otherAllowed(c) && toggleOther(c),
-    [KEYS.peek]: (c) => openPeek(c),
-    [KEYS.jump]: (c) => jump(c),
-    [KEYS.request]: (c) => requestReport(c),
-    [KEYS.restore]: (c) => restoreRun(c),
-    [KEYS.skip]: (c) => skip(c),
-  };
+  const later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
+  // Enter runs the card's primary. That is the action its dock leads with, else the recommended
+  // option.
   function primary(c) {
     if (Date.now() < S.remoteSwapUntil) return;
-    if (c.kind === 'info' && c.star?.action) planNext(c);
-    else if (c.kind === 'info' && paneOf(c)) closePane(c);
-    else if (c.kind === 'info') acknowledge(c);
+    const lead = leadOf(c);
+    if (lead) ACTIONS[lead].run(c);
     else if (c.questions?.length && answerable(c)) primaryStep(c);
-    else if (answerable(c)) pick(c, recIndex(c));
-    else openPeek(c);
+    else pick(c, recIndex(c));
   }
   function toggleLater() {
     if (S.pending) return;
@@ -1869,14 +1787,6 @@ const S = {
   }
   async function jump(c) {
     const pane = paneOf(c);
-    if (!pane) {
-      toast('This card has no tmux pane.', true);
-      return;
-    }
-    if (pane.startsWith('dsh:')) {
-      toast('dsh sessions open in the dsh web UI.', true);
-      return;
-    }
     if (S.pending) return;
     const v = begin(c, 'jump');
     try {
@@ -2366,10 +2276,6 @@ const S = {
   }
   async function openPeek(c) {
     const pane = paneOf(c);
-    if (!pane) {
-      toast('This card has no tmux pane.', true);
-      return;
-    }
     clearInterval(S.peekTimer);
     S.peekPane = pane;
     S.peekFollowBottom = true;
@@ -2608,6 +2514,7 @@ const S = {
     if (!row) return;
     const changed = p.id.endsWith('-engine') && $(`#${p.id}`).value !== row.value;
     setPickerValue(p.id, row.value);
+    if (p.id === 'dispatch-engine') S.dispatchEngine = row.value;
     if (p.id === 'plan-executor' && current()?.kind === 'plan') draft(current()).executor = row.value;
     if (p.id === 'plan-executor-effort' && current()?.kind === 'plan') draft(current()).executorThinking = row.value;
     $('#picker').close();
@@ -2946,6 +2853,8 @@ const S = {
   function setDispatchMode(mode) {
     const d = S.drafts.get(S.dispatchId);
     if (d?.dispatchAnswers && mode === 'investigate') mode = 'act';
+    // The draft keeps the mode the sheet shows, which is the mode Launch sends.
+    if (d) d.dispatchMode = mode;
     selectSegment($('#dispatch-mode'), mode);
     const investigate = $('#dispatch-mode-investigate');
     if (investigate) investigate.hidden = Boolean(d?.dispatchAnswers);
@@ -2958,23 +2867,28 @@ const S = {
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
   }
-  // `newWindow` starts the brief in a session of its own instead of the session that just
-  // reported, so the next step never flips a finished session into another mode.
-  function openDispatch(c, mode, fromCard = false, option = null, answers = null, newWindow = false) {
+  // Opens the Dispatch sheet for a card. `newWindow` starts the brief in a session of its own
+  // instead of the session that just reported. The next step then never flips a finished session
+  // into another mode. `option` and `answers` make Launch answer a finding with that choice.
+  function openDispatch(c, mode, { newWindow = false, option = null, answers = null } = {}) {
     if (!c || S.pending || Date.now() < S.remoteSwapUntil) return;
-    const d = draft(c);
+    const d = draft(c),
+      field = $('#dispatch-engine'),
+      // A card with a session of its own preselects that session's engine, which lets the brief
+      // continue there. Every other card keeps the engine last picked in the sheet.
+      engine = dshOf(c) ? 'dsh' : c.source?.pane ? 'omp' : S.dispatchEngine,
+      // Default names the daemon's engine. A move between those two keeps the model list.
+      daemon = PICKERS['dispatch-engine'].fallback,
+      same = (field.value || daemon) === (engine || daemon);
     S.dispatchId = c.id;
     d.dispatchOption = option;
     d.dispatchAnswers = answers;
     d.dispatchWindow = newWindow;
-    d.dispatchMode = mode || d.dispatchMode || 'investigate';
-    if (fromCard) d.dispatch = d.note;
-    if (dshOf(c) && $('#dispatch-engine').value !== 'dsh') {
-      setPickerValue('dispatch-engine', 'dsh');
-      clearModels('dispatch');
-    } else if (!PICKERS['dispatch-model'].options.length) void loadModels();
-    setDispatchMode(d.dispatchMode);
-    $('#dispatch-note').value = d.dispatch;
+    if (field.value !== engine) setPickerValue('dispatch-engine', engine);
+    if (!same) clearModels('dispatch');
+    else if (!PICKERS['dispatch-model'].options.length) void loadModels();
+    setDispatchMode(mode);
+    $('#dispatch-note').value = d.note;
     $('#dispatch-hint').textContent = '';
     $('#dispatch-start').disabled = false;
     showDialog($('#dispatch'));
@@ -2991,12 +2905,15 @@ const S = {
       return;
     }
     const d = draft(c),
-      mode = d.dispatchMode,
-      note = $('#dispatch-note').value.trim() || null,
-      model = $('#dispatch-model').value.trim() || null,
-      thinking = $('#dispatch-thinking').value.trim() || null,
-      engine = $('#dispatch-engine').value || null;
-    d.dispatch = $('#dispatch-note').value;
+      mode = d.dispatchMode;
+    d.note = $('#dispatch-note').value;
+    const launch = {
+      mode,
+      note: noteValue(c),
+      engine: $('#dispatch-engine').value || null,
+      model: $('#dispatch-model').value.trim() || null,
+      thinking: $('#dispatch-thinking').value.trim() || null,
+    };
     let image;
     try {
       image = await sheetImageBody('dispatch');
@@ -3006,34 +2923,17 @@ const S = {
     }
     start.disabled = true;
     hint.textContent = 'Launching…';
-    const body = { mode, note, engine, model, thinking, new_window: Boolean(d.dispatchWindow) };
-    if (image) body.image = image;
+    if (image) launch.image = image;
     if (mode === 'plan-into') {
-      body.executor = $('#dispatch-executor').value.trim() || null;
-      body.executor_thinking = $('#dispatch-executor-effort').value.trim() || null;
+      launch.executor = $('#dispatch-executor').value.trim() || null;
+      launch.executor_thinking = $('#dispatch-executor-effort').value.trim() || null;
     }
-    let ok;
-    if (d.dispatchAnswers) {
-      d.note = $('#dispatch-note').value;
-      const answer = { answers: d.dispatchAnswers, note, mode, engine, model, thinking };
-      if (image) answer.image = image;
-      if (mode === 'plan-into') {
-        answer.executor = body.executor;
-        answer.executor_thinking = body.executor_thinking;
-      }
-      ok = await act(c, 'answer', answer, 'send');
-    } else if (d.dispatchOption != null) {
-      d.note = $('#dispatch-note').value;
-      const answer = { option: d.dispatchOption, text: null, note, mode, engine, model, thinking };
-      if (image) answer.image = image;
-      if (mode === 'plan-into') {
-        answer.executor = body.executor;
-        answer.executor_thinking = body.executor_thinking;
-      }
-      ok = await act(c, 'answer', answer, `option-${d.dispatchOption}`);
-    } else {
-      ok = await act(c, 'dispatch', body, 'dispatch');
-    }
+    // A finding launches through its answer, which names the option or the answers it chose.
+    const ok = d.dispatchAnswers
+      ? await act(c, 'answer', { answers: d.dispatchAnswers, ...launch }, 'send')
+      : d.dispatchOption != null
+        ? await act(c, 'answer', { option: d.dispatchOption, text: null, ...launch }, `option-${d.dispatchOption}`)
+        : await act(c, 'dispatch', { ...launch, new_window: Boolean(d.dispatchWindow) }, 'dispatch');
     start.disabled = false;
     if (ok || !S.cards.some((x) => x.id === c.id)) {
       hint.textContent = '';
@@ -3348,8 +3248,8 @@ const S = {
       if (!t.closest?.('button,a,select')) run(() => primary(c));
       return;
     }
-    const action = CARD_KEYS[key];
-    if (action) return run(() => action(c));
+    const id = actionOf(c, key);
+    if (id) return run(() => ACTIONS[id].run(c));
     switch (key) {
       case 'Escape':
         if (otherAllowed(c) && draft(c).open) toggleOther(c);
@@ -3480,7 +3380,10 @@ const S = {
   $('#dispatch-form').addEventListener('submit', submitDispatch);
   $('#dispatch-note').addEventListener('input', (e) => {
     const d = S.drafts.get(S.dispatchId);
-    if (d) d.dispatch = e.target.value;
+    if (!d) return;
+    d.note = e.target.value;
+    // The card's Note field shows the same note.
+    if (S.shownId === S.dispatchId && $('#note')) $('#note').value = oneLine(d.note);
   });
   $('#dispatch').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {

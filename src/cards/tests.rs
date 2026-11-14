@@ -3909,6 +3909,53 @@ fn new_window_dispatch_opens_a_window_instead_of_the_waiting_pane() {
     );
 }
 
+// A pane with an open Plan Review reads as waiting, where a typed brief would run as the
+// overlay's keys. The dispatch opens a window instead. The plan card stays deferred because its
+// review is still waiting for an answer.
+#[cfg(unix)]
+#[test]
+fn plan_card_dispatch_opens_a_window_and_keeps_the_review_card() {
+    if let Some(root) = child_root("plan_card_dispatch_opens_a_window_and_keeps_the_review_card") {
+        fs::write(root.join("tmux-waiting"), "").unwrap();
+        fs::write(root.join("tmux-plan-review"), "").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let plan = plan_card(&pane(&root, "%12", "/dev/pts/12", "π > session"), 1);
+        db.insert_card(&plan).unwrap();
+        let result = dispatch(
+            &db,
+            &plan,
+            DispatchMode::Investigate,
+            None,
+            &in_session("session"),
+            None,
+            None,
+            None,
+            false,
+        );
+        let swipe = current_swipe(&db, &plan.id);
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        assert!(
+            result.is_ok()
+                && keys.is_empty()
+                && new_window_count(&root) == 1
+                && swipe.action == "later"
+                && swipe.reason.as_deref() == Some("investigating %42")
+                && swipe.until_ms.is_some_and(|until| until > events::now_ms()),
+            "result: {result:?}, keys: {keys:?}, swipe: {swipe:?}"
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "plan_card_dispatch_opens_a_window_and_keeps_the_review_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn finding_answer_opens_new_window_and_leaves_idle_dispatched_window_alone() {

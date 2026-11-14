@@ -1,4 +1,4 @@
-const VERSION = 'triage-shell-v20';
+const VERSION = 'triage-shell-v21';
 const SHELL = [
   '/',
   '/style.css',

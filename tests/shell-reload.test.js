@@ -55,7 +55,7 @@ test('a queue from a daemon serving another shell reloads the page instead of ap
 
 test('typed text, an open dialog or an action in flight holds the reload', async () => {
   const { state, page, refresh } = inbox(),
-    draft = { note: '', other: 'half typed', dispatch: '' };
+    draft = { note: '', other: 'half typed' };
   await refresh();
   page.shell = 'W/"upgraded"';
   state.drafts.set('card', draft);

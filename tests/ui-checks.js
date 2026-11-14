@@ -979,9 +979,14 @@
       await waitFor(() => document.querySelector('.card'), 'a card to dispatch');
       const dialog = document.querySelector('#dispatch'),
         note = document.querySelector('#dispatch-note'),
+        cardNote = () => document.querySelector('#note'),
         mode = (name) => document.querySelector(`#dispatch-mode-${name}`),
         press = (key) =>
-          document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+          document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
+        type = (field, value) => {
+          field.value = value;
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+        };
       try {
         press('i');
         await waitFor(() => dialog.open, 'dispatch dialog open');
@@ -990,21 +995,24 @@
         mode('act').click();
         assert(mode('act').getAttribute('aria-checked') === 'true', 'Act is selected after click');
         assert(mode('investigate').getAttribute('aria-checked') === 'false', 'Investigate is cleared');
-        note.value = 'fixture instruction\nsecond line';
-        note.dispatchEvent(new Event('input', { bubbles: true }));
+        type(note, 'fixture instruction\nsecond line');
         dialog.close();
         assert(!dialog.open, 'the dispatch dialog closes');
-        document.querySelector('.dock .btn[data-od-id^="button-dispatch"]').click();
+        assert(cardNote().value === 'fixture instruction second line', 'the card shows the instruction as its note');
+        document.querySelector('#dispatch-btn').click();
         await waitFor(() => dialog.open, 'dispatch dialog reopened from the dock');
-        assert(note.value === 'fixture instruction\nsecond line', 'the instruction draft persists');
-        assert(mode('act').getAttribute('aria-checked') === 'true', 'Act mode persists');
+        assert(note.value === 'fixture instruction\nsecond line', 'the instruction persists');
+        assert(mode('investigate').getAttribute('aria-checked') === 'true', 'Dispatch preselects Investigate again');
         dialog.close();
+        type(cardNote(), 'note from the card');
         press('A');
         await waitFor(() => dialog.open, 'dispatch dialog open from A');
         assert(mode('act').getAttribute('aria-checked') === 'true', 'A preselects Act');
+        assert(note.value === 'note from the card', 'the sheet opens on the card note');
         return { scenario: 'dispatch', passed: true };
       } finally {
         if (dialog.open) dialog.close();
+        if (cardNote()) type(cardNote(), '');
       }
     },
     checkPortrait = async () => {
@@ -1083,7 +1091,12 @@
         const y = Math.round(b.getBoundingClientRect().top);
         rows.set(y, (rows.get(y) || 0) + 1);
       });
-      assert(new Set(rows.values()).size === 1, 'dock rows hold the same number of buttons');
+      // The number of dock actions varies by card. Only the last row may run short.
+      const counts = [...rows.values()];
+      assert(
+        counts.every((count, i) => (i < counts.length - 1 ? count === counts[0] : count <= counts[0])),
+        `every dock row but the last is full (${counts})`,
+      );
       const small = [...document.querySelectorAll('header button, .card button, .card input')]
         .filter(visible)
         .filter((e) => {
@@ -1206,6 +1219,7 @@
         Later: 'l',
         Peek: 'v',
         Jump: 'J',
+        Open: 'J',
         'Request final report': 'r',
         'Restore run': 'R',
       },
@@ -1235,11 +1249,12 @@
     return { scenario: 'card-keys', passed: true, keys: shown };
   };
 
+  // A dsh session has no tmux pane. Its card offers Open on the Jump key instead.
   const checkDshCard = async () => {
-    await waitFor(() => document.querySelector('#open-btn'), 'a dsh card with an Open button');
-    assert(document.querySelector('#peek-btn, #peek-main'), 'dsh card offers Peek');
-    assert(!document.querySelector('#jump-btn'), 'dsh card offers no Jump');
-    if (document.querySelector('#peek-main')) {
+    await waitFor(() => text('#jump-btn').startsWith('Open'), 'a dsh card with an Open button');
+    assert(text('#jump-btn kbd') === 'J', 'Open runs on the Jump key');
+    assert(document.querySelector('#peek-btn'), 'dsh card offers Peek');
+    if (document.querySelector('#peek-btn[data-primary]')) {
       assert(
         [...document.querySelectorAll('.notice strong')].some((item) =>
           item.textContent.startsWith('Answer in the dsh web UI'),

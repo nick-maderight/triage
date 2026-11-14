@@ -56,6 +56,7 @@ test('finding question review allows per-question Other and opens Act dispatch',
       el: (tag, props, ...children) => node(tag, props || {}, ...children),
       button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
       mdInline: (text) => text,
+      ACTIONS: { other: { key: 'o' } },
       noteValue: () => null,
       openDispatch: (...args) => calls.push(args),
       goStep() {},
@@ -78,7 +79,7 @@ test('finding question review allows per-question Other and opens Act dispatch',
     dispatchButton = findNodes(review, (item) => item.props?.id === 'send-answers')[0];
   assert.equal(dispatchButton.children.includes('Dispatch answers'), true);
   dispatchButton.props.onClick();
-  assert.deepEqual(calls, [[card, 'act', true, null, [{ option: 0 }]]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[card, 'act', { answers: [{ option: 0 }] }]]);
 });
 test('finding question without Other hides custom text', () => {
   const card = {
@@ -130,6 +131,7 @@ test('Other on a finding question records typed text and moves to the next quest
       el: (tag, props, ...children) => node(tag, props || {}, ...children),
       button: (_current, _action, className, props, onClick, ...children) => node('button', { ...props, class: className, onClick }, ...children),
       mdInline: (text) => text,
+      ACTIONS: { other: { key: 'o' } },
       render() {},
       micButton: () => null,
       $: () => ({ focus() {} }),
@@ -249,6 +251,7 @@ test('finding answer dispatch forwards answers, image, mode and plan-into effort
       S: { cards: [card], dispatchId: card.id, drafts: new Map([[card.id, draft]]), pending: null, remoteSwapUntil: 0 },
       $: (selector) => elements[selector],
       draft: () => draft,
+      noteValue: () => draft.note.trim() || null,
       sheetImageBody: async () => ({ media_type: 'image/png', data: 'encoded' }),
       act: async (...args) => { requests.push(args); return true; },
     });
