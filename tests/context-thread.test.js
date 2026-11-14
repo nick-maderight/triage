@@ -52,6 +52,7 @@ function itemContext(state = {}) {
   vm.runInContext(
     slice('  const el =', '\n  function draft') +
       slice('  const tf =', '  const heading =') +
+      slice('  const heading =', '  const recIndex =') +
       slice('  const clampable =', '  function block') +
       [functionSource('sourceName'), functionSource('mdNodes'), functionSource('md'), functionSource('block'), functionSource('contextItem')].join('\n') +
       '\nObject.assign(globalThis, { contextItem });',
@@ -95,8 +96,22 @@ test('a context item shows the latest swipe with its steering note', () => {
   assert.ok(textOf(queued).includes('queued'), 'a card without swipes reads as queued');
 });
 
-test('a superseded report dims in the thread', () => {
-  const superseded = item(
+test('a context item states the card status beside its kind', () => {
+  const status = (card) =>
+    findNodes(item({ card, swipes: [{ action: 'done', at_ms: 2 }] }, 'other'), (n) => n.props.class === 'row-status')[0];
+  const complete = status({ id: 'done:%5:a2', kind: 'info', created_ms: 1, source: {}, title: 'Done: Shipped', body: 'Shipped.', status: 'complete' });
+  assert.equal(textOf(complete), 'Complete');
+  assert.equal(complete.props['data-tone'], 'positive');
+  const waiting = status({ id: 'ask:%5:q1', kind: 'ask', created_ms: 1, source: {}, title: 'Which branch?', status: 'waiting' });
+  assert.equal(textOf(waiting), 'Waiting on you');
+  assert.equal(
+    textOf(status({ id: 'x', kind: 'info', created_ms: 1, source: {}, title: 'Older row', refs: ['/tmp/t.jsonl'] })),
+    'No status line',
+    'a row stored before the status field reads its outcome from the title and refs',
+  );
+});
+
+test('a superseded report dims in the thread', () => {  const superseded = item(
     { card: { id: 'done:%5:a1', kind: 'info', created_ms: 1, source: {}, title: 'Answer' }, swipes: [{ action: 'done', reason: 'superseded', at_ms: 2 }] },
     'done:%5:a2',
   );

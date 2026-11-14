@@ -263,6 +263,7 @@ fn prompt_card(
             tool_call_id: Some(item.event_id.clone()),
             report_due: false,
             engine: Some("dsh".to_owned()),
+            status: Some(events::CardStatus::PlanReady),
         });
     }
     let question = item.questions.first()?;
@@ -297,6 +298,7 @@ fn prompt_card(
         tool_call_id: Some(item.event_id.clone()),
         report_due: false,
         engine: Some("dsh".to_owned()),
+        status: Some(events::CardStatus::Waiting),
     })
 }
 
@@ -420,6 +422,7 @@ fn plan_card(
         tool_call_id: None,
         report_due: false,
         engine: Some("dsh".to_owned()),
+        status: Some(events::CardStatus::PlanReady),
     }
 }
 
@@ -645,6 +648,7 @@ fn report_card(
     if reason == "error" {
         turn.report_due = false;
         turn.action.clear();
+        turn.status = events::CardStatus::Incomplete;
     }
     if matches!(reason, "error" | "blocked" | "max-tokens") {
         turn.level = "warn";
@@ -666,6 +670,7 @@ fn report_card(
         }
         turn.action.clear();
         turn.report_due = false;
+        turn.status = events::CardStatus::PlanReady;
     }
     let source = dsh_source(sid, Some(session));
     let refs = vec![source.uri.clone()];

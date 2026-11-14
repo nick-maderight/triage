@@ -353,6 +353,7 @@ fn ask_card(pane: &str, call_id: &str) -> Card {
         tool_call_id: Some(call_id.to_owned()),
         report_due: false,
         engine: None,
+        status: None,
     }
 }
 
@@ -375,6 +376,7 @@ fn finding_card(root: &Path) -> Card {
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: None,
     }
 }
 
@@ -400,6 +402,7 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: None,
     }
 }
 
@@ -438,6 +441,7 @@ fn info_card(id: &str, pane: &str) -> Card {
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: None,
     }
 }
 
@@ -2107,6 +2111,31 @@ fn carried_agent_done_report_takes_the_closing_step() {
     assert_eq!(turn.title, "Agent done: Waited on the suite.");
     assert_eq!(turn.level, "warn");
     assert_eq!(turn.action, "Publish the release.");
+}
+
+#[test]
+fn every_reply_states_its_outcome_for_the_card_status() {
+    let status = |text: &str, report: Option<&str>| {
+        reply_turn(text.to_owned(), report.map(str::to_owned), true, false).status
+    };
+    let complete = "ENVOY_STATUS: complete\n\nShipped.";
+    let step_open = "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.";
+    let closed = "ENVOY_STATUS: agent-done\n\nShipped.\n\nRecommended action: none.";
+    let incomplete = "ENVOY_STATUS: incomplete\n\nBlocked on the account.";
+    let no_body = "ENVOY_STATUS: complete";
+    let no_line = "Nothing is left to run: the fix is applied, verified and pushed.";
+
+    assert_eq!(status(complete, None), events::CardStatus::Complete);
+    assert_eq!(status(step_open, None), events::CardStatus::StepOpen);
+    assert_eq!(status(closed, None), events::CardStatus::Complete);
+    assert_eq!(status(incomplete, None), events::CardStatus::Incomplete);
+    assert_eq!(status(no_body, None), events::CardStatus::NoFinalReport);
+    assert_eq!(status(no_line, None), events::CardStatus::NoStatus);
+    assert_eq!(
+        status("Closing note.", Some(complete)),
+        events::CardStatus::Complete,
+        "a closing reply carries the report written before it"
+    );
 }
 
 #[cfg(unix)]
@@ -5288,6 +5317,7 @@ fn tracker_creates_plan_card_and_reconciles_closed_and_superseded_proposals() {
             .0;
         assert_eq!(first_tick.written, 1);
         assert_eq!(first.title, "Plan ready: planverify-proof");
+        assert_eq!(first.status, Some(events::CardStatus::PlanReady));
         assert_eq!(first.source.pane.as_deref(), Some("%12"));
         assert_eq!(first.options[0].label, "Approve");
         assert!(first.options[0].recommended);
@@ -6985,6 +7015,7 @@ fn dsh_card(db: &Db, id: &str, kind: Kind) -> Card {
         tool_call_id: None,
         report_due: true,
         engine: Some("dsh".to_owned()),
+        status: None,
     };
     db.insert_card(&card).unwrap();
     card
@@ -7104,6 +7135,7 @@ fn dsh_agent_done_report_closed_with_none_earns_a_done_card() {
     let (card, swipe) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
     assert!(swipe.is_none());
     assert_eq!(card.title, "Done: Block key shipped and pushed.");
+    assert_eq!(card.status, Some(events::CardStatus::Complete));
     assert_eq!(card.level.as_deref(), Some("info"));
     assert!(card.star.action.is_empty(), "action: {}", card.star.action);
 }
@@ -7192,6 +7224,7 @@ fn plan_mode_turn_with_a_status_line_does_not_read_done() {
     });
     assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
     let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
+    assert_eq!(card.status, Some(events::CardStatus::PlanReady));
     assert_eq!(card.title, "Plan ready: Planned the split. No code changed.");
     assert!(!card.title.starts_with("Done:"), "{card:?}");
 }
@@ -7526,6 +7559,7 @@ fn dsh_question_queues_an_ask_card_with_its_options() {
     assert!(card.answerable && card.allow_other, "{card:?}");
     assert_eq!(card.tool_call_id.as_deref(), Some("ev-1"));
     assert_eq!(card.engine.as_deref(), Some("dsh"));
+    assert_eq!(card.status, Some(events::CardStatus::Waiting));
     assert!(card.questions.is_empty());
 }
 
@@ -8514,6 +8548,7 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: None,
     };
     db.insert_card(&finding).unwrap();
     db.swipe(&Swipe {

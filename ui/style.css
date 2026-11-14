@@ -647,6 +647,29 @@ main {
   background: currentColor;
   content: '';
 }
+/* A history or context row names the same outcome the card head shows, in the same colors. */
+.row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.row-status::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+.row-status[data-tone='positive'] {
+  color: var(--positive);
+}
+.row-status[data-tone='warning'] {
+  color: var(--warning);
+}
+.row-status[data-tone='negative'] {
+  color: var(--negative);
+}
 
 /* Inside the card body the evidence comes first and the answer after it. From 1100px they sit side by side. */
 .card-scroll {

@@ -169,13 +169,51 @@ test('a session report states its outcome above a title without the status prefi
   );
   assert.deepEqual(
     head(info('Nightly backup finished')),
-    { status: null, title: 'Nightly backup finished' },
-    'a job result carries no session outcome',
+    { status: ['Notice', undefined], title: 'Nightly backup finished' },
+    'a card stored without a status reads as a notice when it has no transcript',
   );
   assert.deepEqual(
     head({ id: 'ask', kind: 'ask', title: 'Done: which branch ships?', star: {}, options: [{ label: 'main' }] }),
-    { status: null, title: 'Done: which branch ships?' },
-    'only an info card reads its title as an outcome',
+    { status: ['Waiting on you', undefined], title: 'Done: which branch ships?' },
+    'a question titled like a report keeps its title and still waits on you',
+  );
+});
+
+test('every card states the status the daemon gives it', () => {
+  const { titleRow } = cardContext({}, { stepTitle: () => '' }, ['titleRow']),
+    head = (card) => {
+      const row = titleRow(card),
+        status = findNodes(row, (item) => item.props.class === 'report-status')[0];
+      return {
+        status: status ? [textOf(status), status.props['data-tone']] : null,
+        title: textOf(findNodes(row, (item) => item.tag === 'h2')[0]),
+      };
+    };
+
+  assert.deepEqual(
+    head({ id: 'r', kind: 'info', title: 'Nothing is left to run', body: 'Details follow.', star: {}, status: 'no-status' }),
+    { status: ['No status line', 'warning'], title: 'Nothing is left to run' },
+    'a reply that missed its status line says so',
+  );
+  assert.deepEqual(
+    head({ id: 'q', kind: 'ask', title: 'Which branch ships?', star: {}, options: [], status: 'waiting' }),
+    { status: ['Waiting on you', undefined], title: 'Which branch ships?' },
+    'a decision card states it waits on you',
+  );
+  assert.deepEqual(
+    head({ id: 'p', kind: 'plan', title: 'Plan ready: Split the parser', body: 'Steps follow.', star: {}, status: 'plan-ready' }),
+    { status: ['Plan ready', undefined], title: 'Split the parser' },
+    'a plan card states the plan and drops the title prefix',
+  );
+  assert.deepEqual(
+    head({ id: 'n', kind: 'info', title: 'Nightly backup finished', body: 'The job sent its result.', star: {}, status: 'notice' }),
+    { status: ['Notice', undefined], title: 'Nightly backup finished' },
+    'a producer card states it is a notice',
+  );
+  assert.deepEqual(
+    head({ id: 'e', kind: 'info', title: 'Stopped with error: model down', body: 'Details.', star: {}, status: 'incomplete' }),
+    { status: ['Incomplete', 'negative'], title: 'Stopped with error: model down' },
+    'a failed run reads incomplete',
   );
 });
 

@@ -1293,7 +1293,7 @@ async fn history(
                     let options: Vec<_> =
                         card.options.iter().map(|option| serde_json::json!({"label": option.label})).collect();
                     serde_json::json!({
-                        "card": {"id": card.id, "kind": card.kind, "title": card.title, "source": card.source, "options": options},
+                        "card": {"id": card.id, "kind": card.kind, "title": card.title, "source": card.source, "options": options, "status": card.status, "refs": card.refs},
                         "swipe": swipe,
                     })
                 })
@@ -1644,6 +1644,12 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
         tool_call_id: None,
         report_due: false,
         engine: None,
+        // A producer sends its own result, which reports no run of its own. A finding card
+        // waits on the user's decision.
+        status: Some(match kind {
+            Kind::Finding => crate::events::CardStatus::Waiting,
+            _ => crate::events::CardStatus::Notice,
+        }),
     })
 }
 

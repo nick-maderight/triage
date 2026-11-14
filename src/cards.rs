@@ -1352,6 +1352,7 @@ fn add_ask_card(
         tool_call_id: Some(call.tool_call_id.clone()),
         report_due: false,
         engine: None,
+        status: Some(events::CardStatus::Waiting),
     };
     match db.insert_card(&card) {
         Ok(inserted) => {
@@ -1530,6 +1531,7 @@ fn queue_startup_card(db: &Db, pane: &tmux::Pane, entry: &Startup, written: &mut
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: Some(events::CardStatus::Notice),
     };
     match db.insert_card(&card) {
         Ok(inserted) => {
@@ -1596,6 +1598,7 @@ fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: Some(events::CardStatus::Notice),
     };
     match db.insert_card(&card) {
         Ok(inserted) => {
@@ -1634,6 +1637,7 @@ fn queue_turn_card(
                 level: "error",
                 action: String::new(),
                 report_due: false,
+                status: events::CardStatus::Incomplete,
             };
             (entry_id, turn)
         }
@@ -1682,6 +1686,7 @@ struct Turn {
     level: &'static str,
     action: String,
     report_due: bool,
+    status: events::CardStatus,
 }
 
 /// The info card for a finished turn. Its launch trail becomes the star. Its one option is
@@ -1710,6 +1715,7 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
         tool_call_id: None,
         report_due: turn.report_due,
         engine: None,
+        status: Some(turn.status),
     }
 }
 
@@ -1787,7 +1793,17 @@ fn reply_turn(
         Some((omp::FinalStatus::AgentDone, _)) if closed_report && !missing_report => "info",
         Some(_) => "warn",
     };
-    Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail }
+    // The same reading fills the status line above the title. A report then states its outcome
+    // even when its title carries no prefix.
+    let status = match reported {
+        None => events::CardStatus::NoStatus,
+        Some((_, _)) if missing_report => events::CardStatus::NoFinalReport,
+        Some((omp::FinalStatus::Complete, _)) => events::CardStatus::Complete,
+        Some((omp::FinalStatus::AgentDone, _)) if closed_report => events::CardStatus::Complete,
+        Some((omp::FinalStatus::AgentDone, _)) => events::CardStatus::StepOpen,
+        Some((omp::FinalStatus::Incomplete, _)) => events::CardStatus::Incomplete,
+    };
+    Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail, status }
 }
 
 /// Where a launched session's work came from. The situation is the title of the card whose
@@ -1989,6 +2005,7 @@ fn queue_ended_card(
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: Some(events::CardStatus::NoFinalReport),
     };
     if entry != "-" {
         match reply_has_card(db, panes, "exited", &entry, &card.id, written) {
@@ -2060,6 +2077,7 @@ fn add_plan_card(
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: Some(events::CardStatus::PlanReady),
     };
     match db.insert_card(&card) {
         Ok(inserted) => *written += usize::from(inserted),

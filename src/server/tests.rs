@@ -170,6 +170,7 @@ fn test_plan_card(pane: &str) -> crate::events::Card {
         tool_call_id: None,
         report_due: false,
         engine: None,
+        status: None,
     }
 }
 

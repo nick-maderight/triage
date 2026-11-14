@@ -99,20 +99,47 @@ const S = {
       .find(Boolean)
       ?.match(/^#{1,6}\s+(.+)/)?.[1] || '';
   const titleOf = (c) => (c.kind === 'info' ? heading(c.body) || c.title : c.title);
-  // The daemon opens each session report's title with its outcome, such as `Done`, `Agent done`
-  // or `Plan ready`. The card head shows the outcome as a colored line above the title and drops
-  // it from the title.
+  // Every card states its outcome in `status`, which the card head shows as a colored line
+  // above the title. A report title still carries the outcome as a prefix. The head drops that
+  // prefix. A title then reads the same whichever way the outcome arrived.
+  const STATUS_LABELS = {
+    complete: ['Complete', 'positive'],
+    'step-open': ['Step left open', 'warning'],
+    incomplete: ['Incomplete', 'negative'],
+    'no-final-report': ['No final report', 'warning'],
+    'no-status': ['No status line', 'warning'],
+    'plan-ready': ['Plan ready'],
+    waiting: ['Waiting on you'],
+    notice: ['Notice'],
+  };
   const REPORT_STATUS = [
-    ['Done: ', 'Complete', 'positive'],
-    ['Agent done: ', 'Step left open', 'warning'],
-    ['Incomplete: ', 'Incomplete', 'negative'],
-    ['Unreported: ', 'No final report', 'warning'],
-    ['Plan ready: ', 'Plan ready'],
+    ['Done: ', 'complete'],
+    ['Agent done: ', 'step-open'],
+    ['Incomplete: ', 'incomplete'],
+    ['Unreported: ', 'no-final-report'],
+    ['Plan ready: ', 'plan-ready'],
   ];
-  const reportStatus = (c) => {
+  // A card stored before the daemon wrote `status` names its outcome in the title alone. Only
+  // a report card is titled that way. A question starting with `Done:` keeps its title. An
+  // info card without a transcript ref came from a producer's event instead of a turn, and an
+  // ask or finding card waits on a decision.
+  const legacyStatus = (c) => {
+    if (c.kind === 'info') return c.refs?.length ? 'no-status' : 'notice';
+    return c.kind === 'ask' || c.kind === 'finding' ? 'waiting' : null;
+  };
+  const cardStatus = (c) => {
     const title = String(c.title || ''),
-      hit = c.kind === 'info' && REPORT_STATUS.find(([prefix]) => title.startsWith(prefix));
-    return hit ? { label: hit[1], tone: hit[2], title: heading(c.body) || title.slice(hit[0].length) } : null;
+      report = c.kind === 'info' || c.kind === 'plan',
+      hit = report && REPORT_STATUS.find(([prefix]) => title.startsWith(prefix)),
+      key = c.status || hit?.[1] || legacyStatus(c),
+      [label, tone] = STATUS_LABELS[key] || [];
+    return label
+      ? { label, tone, title: hit ? heading(c.body) || title.slice(hit[0].length) : titleOf(c) }
+      : null;
+  };
+  const rowStatus = (c) => {
+    const status = cardStatus(c);
+    return status && h('span', { class: 'row-status', 'data-tone': status.tone }, status.label);
   };
   const answerable = (c) => (c.kind !== 'ask' && c.kind !== 'plan') || c.answerable !== false,
     dshOf = (c) => (c.engine === 'dsh' && c.source?.uri?.startsWith('dsh://session/') ? c.source.uri.slice(14) : null),
@@ -831,7 +858,7 @@ const S = {
   function titleRow(c) {
     const key = `${c.id}:Title`,
       open = S.openBlocks.has(key),
-      status = reportStatus(c);
+      status = cardStatus(c);
     return [
       status &&
         h(
@@ -3080,6 +3107,7 @@ const S = {
         'div',
         'h-meta',
         chip(c.kind || 'unknown'),
+        rowStatus(c),
         el('span', 'h-source', sourceName(c.source || {})),
         at == null
           ? el('span', null, 'Time unknown')
@@ -3202,6 +3230,7 @@ const S = {
         'div',
         'h-meta',
         chip(c.kind || 'unknown'),
+        rowStatus(c),
         el('span', 'h-source', sourceName(c.source || {})),
         at == null
           ? el('span', null, 'Time unknown')

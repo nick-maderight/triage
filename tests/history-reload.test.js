@@ -34,6 +34,7 @@ function harness(apiImpl) {
     h: node,
     el: (tag, cls, ...kids) => node(tag, cls || {}, ...kids),
     chip: (k) => node('span', `chip chip-${k}`, k),
+    rowStatus: () => null,
     sourceName: () => 'proj',
     stamp: () => null,
     clock: () => '12:00',

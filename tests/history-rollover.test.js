@@ -99,6 +99,7 @@ function makeHistoryHarness(now) {
     el: (tag, props, ...children) => makeNode(tag, props || {}, ...children),
     h: makeNode,
     chip: (kind) => makeNode('span', `chip chip-${kind}`, kind),
+    rowStatus: () => null,
     sourceName: (source) => source.label || source.uri || 'unknown',
     clock: (ms) => String(ms),
     showDialog() {},

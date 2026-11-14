@@ -66,6 +66,29 @@ pub struct Star {
     pub result: String,
 }
 
+/// What became of the work a card is about, shown above the card's title. Every card states
+/// one. A reader never has to infer the outcome from a title or a body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CardStatus {
+    /// The run reported `ENVOY_STATUS: complete`.
+    Complete,
+    /// The run reported `ENVOY_STATUS: agent-done` with a step still open.
+    StepOpen,
+    /// The run reported `ENVOY_STATUS: incomplete`.
+    Incomplete,
+    /// A run that owed a report ended with none, as `Unreported:` and `Ended mid-turn:` do.
+    NoFinalReport,
+    /// A reply without a status line leaves its outcome unstated.
+    NoStatus,
+    /// A plan waiting on review.
+    PlanReady,
+    /// A decision card, which waits on the user and is not complete.
+    Waiting,
+    /// A card a producer sent, which reports no harness run of its own.
+    Notice,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CardOption {
     pub label: String,
@@ -114,6 +137,10 @@ pub struct Card {
     /// Harness of a session that is not omp, such as `dsh`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
+    /// The card's own outcome, shown above its title. A card stored before this field existed
+    /// carries none. The inbox then reads its title prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<CardStatus>,
 }
 
 /// One question of a multi-question ask card.
