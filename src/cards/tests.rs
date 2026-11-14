@@ -586,6 +586,30 @@ fn finding_brief_includes_agent_done_status_contract() {
     assert!(brief.contains(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}")));
 }
 
+// Regression: on 2026-11-14 a draft brief whose direction said "NEVER ask me to send draft" still
+// closed with "Recommended action: none, sending is yours, open it with M-x notmuch-search RET
+// tag:draft and press E". The report contract allowed that line, and Nick could not read the
+// report that justified it. Every brief now forbids a send invitation and shapes the report as
+// STAR, with the result naming the card title.
+#[test]
+fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
+    for step in ["`S:`", "`T:`", "`A:`", "`R:`", "`Recommended action:`"] {
+        assert!(REPORT_STEP.contains(step), "{step} missing from {REPORT_STEP}");
+    }
+    assert!(REPORT_STEP.contains("Never ask for, suggest or invite a send"), "{REPORT_STEP}");
+    assert!(REPORT_STEP.contains("overrides the action above and any skill"), "{REPORT_STEP}");
+    let card = finding_card(Path::new("/tmp"));
+    let brief = dispatch_brief(&card, DispatchMode::Act, Some("just draft and stop"), None);
+    assert!(brief.contains(REPORT_STEP), "{brief}");
+    assert!(
+        brief.contains("## Direction from the user (overrides the action and any skill)\njust draft and stop\n"),
+        "{brief}"
+    );
+    assert_eq!(headline_of("S: Rishav waits on a reply\nT: draft it\nA: one draft\nR: Draft verified in Drafts, nothing sent\n"), "Draft verified in Drafts, nothing sent");
+    assert_eq!(headline_of("Plain reply with no labels.\n"), "Plain reply with no labels.");
+}
+
+
 // Regression: on 2026-10-31 the user picked "Investigate first" on a transcript-audit finding
 // and the launched session shipped the finding's skill edit, because the brief carried the
 // action, no investigate instruction, and a status contract that only counted shipped work.
@@ -5875,7 +5899,7 @@ fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_i
         assert!(brief.contains("### 2. Stock\nStock?\nDecision: Investigate first\nDirection: \n"), "{brief}");
         assert!(brief.contains("### 3. Note\nNote?\nDecision: Other\nDirection: Keep the audit log\n"), "{brief}");
         assert!(brief.contains(FINDING_ANSWER_RULES) && brief.contains(ACT_INSTRUCTION), "{brief}");
-        assert!(brief.contains("## Direction from the user\nreview all\n"), "{brief}");
+        assert!(brief.contains("## Direction from the user (overrides the action and any skill)\nreview all\n"), "{brief}");
         return;
     }
 

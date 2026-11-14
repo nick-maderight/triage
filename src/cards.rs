@@ -1724,12 +1724,20 @@ fn queue_turn_card(
     succeeded
 }
 
-/// The first non-blank line of `source`, cut to 80 characters.
+/// The card title from `source`, cut to 80 characters: the `R:` result of a STAR report, else
+/// the first non-blank line, with any STAR label removed.
 fn headline_of(source: &str) -> String {
-    truncate_chars(
-        source.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim().to_owned(),
-        80,
-    )
+    // A STAR report titles its card with the result, which is the outcome Nick reads first in
+    // the inbox. Any other reply titles it with its first line. The label never reaches a title.
+    let result = source.lines().map(str::trim).find(|line| line.starts_with("R: "));
+    let line = result
+        .or_else(|| source.lines().map(str::trim).find(|line| !line.is_empty()))
+        .unwrap_or_default();
+    let line = ["S: ", "T: ", "A: ", "R: "]
+        .iter()
+        .find_map(|label| line.strip_prefix(label))
+        .unwrap_or(line);
+    truncate_chars(line.to_owned(), 80)
 }
 
 /// What a finished turn puts on its info card, before the launch trail joins it.
@@ -3213,7 +3221,7 @@ fn finding_answers_brief(
         ));
     }
     brief.push_str(&format!(
-        "\n## Direction from the user\n{}\n\n## References\n",
+        "\n## Direction from the user (overrides the action and any skill)\n{}\n\n## References\n",
         note.unwrap_or_default()
     ));
     push_refs(&mut brief, card);
@@ -3389,7 +3397,7 @@ fn push_instructions(brief: &mut String, mode: DispatchMode) {
 
 fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: DispatchMode) -> String {
     let mut brief = format!(
-        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Chosen option\n{}\n\n## Direction\n{}\n\n## Direction from the user\n{}\n\n## References\n",
+        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Chosen option\n{}\n\n## Direction\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n\n## References\n",
         card.title,
         card.star.situation,
         card.star.task,
@@ -3414,9 +3422,11 @@ const ENVOY_STATUS_CONTRACT: &str = "When finished, end with a final reply whose
 const INVESTIGATE_STATUS_CONTRACT: &str = "When finished, end with a final reply whose first line is `ENVOY_STATUS: complete` or `ENVOY_STATUS: incomplete`. `complete` means the answer is reported with its evidence and nothing changed beyond what the direction from the user asked for. `incomplete` means the question could not be answered, and the reply names what blocked it.";
 
 /// How every brief's final reply reads after its status line. Each session finishes its
-/// allowed work before reporting. The first line gives the outcome for the card title; the
-/// last names only the change the user must approve. Without this shape, sessions list checks.
-const REPORT_STEP: &str = " Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow. Then report in caveman style, four short lines at most: the answer or outcome first, then the evidence that settles it, then what changed or `Changed nothing`, and last a line that starts `Recommended action:` and names the one change your instructions did not allow and the user must approve, complete enough to plan from as written. Work waiting on a later event, steps only the user can take, advice for future work, standing rules, and steps already finished are no step; write `Recommended action: none` and name any step only the user can take in the evidence line. Leave out how you checked.\n";
+/// allowed work before reporting. The report follows STAR so Nick reads the same four beats
+/// on every card: what the situation was, what the brief asked, what the session did, and
+/// what came of it. The result names the card title, and the last line names only the change
+/// the user must approve.
+const REPORT_STEP: &str = " Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow. Then report in caveman style, short words and nothing spare, as STAR with one sentence per label, each line starting `S:`, `T:`, `A:` or `R:`. `S:` the situation the card described. `T:` the task the brief set. `A:` what you did, naming every file, skill and system you changed. `R:` the outcome and the evidence for it. Then one last line that starts `Recommended action:` and names the one change your instructions did not allow and the user must approve, complete enough to plan from as written; write `Recommended action: none` when nothing waits on the user. Work waiting on a later event, steps only the user can take, advice for future work, standing rules, and steps already finished are no step. Never ask for, suggest or invite a send anywhere in the report, and never tell the user how to open or send a draft: the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked.\n";
 
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
@@ -3471,7 +3481,7 @@ fn session_brief(prompt: &str, plan: bool, workdir: Option<String>) -> String {
 
 fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>, workdir: Option<String>) -> String {
     let mut brief = format!(
-        "# {}: {}\n\n## Card\n- Kind: {}\n- Source: {} ({})\n- Priority: {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Body\n{}\n\n## Direction from the user\n{}\n\n{}\n## References\n",
+        "# {}: {}\n\n## Card\n- Kind: {}\n- Source: {} ({})\n- Priority: {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Body\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n\n{}\n## References\n",
         mode.swipe_text(),
         card.title,
         card.card_event_type(),
