@@ -3222,7 +3222,7 @@ fn finding_answers_brief(
     }
     brief.push_str(&format!(
         "\n## Direction from the user (overrides the action and any skill)\n{}\n\n## References\n",
-        note.unwrap_or_default()
+        direction_of(note, mode)
     ));
     push_refs(&mut brief, card);
     brief.push_str(&format!("\n## Rules for these decisions\n{FINDING_ANSWER_RULES}\n"));
@@ -3406,7 +3406,7 @@ fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: Dis
         card.star.result,
         option.label,
         option.direction.as_deref().unwrap_or_default(),
-        note.unwrap_or_default(),
+        direction_of(note, mode),
     );
     push_refs(&mut brief, card);
     push_instructions(&mut brief, mode);
@@ -3430,6 +3430,21 @@ const REPORT_STEP: &str = " Before you report, finish every step your instructio
 
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
+/// The direction an Act launch carries when the user typed none. It asks for the work to be
+/// thought through and for no more to be spent than it needs. The inbox prefills its Instruction
+/// with it. A finding answer or API dispatch that names no note gets the same text. Every Act
+/// session then starts from it. The same words sit in `ui/app.js`. A test keeps the two equal.
+const DEFAULT_ACT_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.";
+
+/// The direction a brief carries. An Act launch with no direction from the user gets the default.
+/// Leaving the Instruction empty then still tells the session how to decide.
+fn direction_of(note: Option<&str>, mode: DispatchMode) -> &str {
+    match note.map(str::trim).filter(|note| !note.is_empty()) {
+        Some(note) => note,
+        None if mode == DispatchMode::Act => DEFAULT_ACT_DIRECTION,
+        None => "",
+    }
+}
 const PLAN_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The plan arrives in the triage inbox for approval. After approval, carry out the work end to end.";
 const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The harness approves the plan on its own and hands it to the execution model, which carries out the work end to end.";
 /// Plan approval hands the work to a model that may see only the plan. omp's default
@@ -3494,7 +3509,7 @@ fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>, workdir: 
         card.star.action,
         card.star.result,
         card.body.as_deref().unwrap_or_default(),
-        note.unwrap_or_default(),
+        direction_of(note, mode),
         workdir.as_deref().map(workdir_section).unwrap_or_default(),
     );
     push_refs(&mut brief, card);

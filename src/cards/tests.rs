@@ -610,6 +610,56 @@ fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
 }
 
 
+// Nick asked for a default Act instruction. In his words, "if i don't type anything this is the
+// default instruction". An Act launch that names no direction carries the same words the inbox
+// puts in its Instruction box. Leaving the box empty then still tells the session to think the
+// work through and spend only what it needs.
+#[test]
+fn the_inbox_prefills_the_act_direction_every_act_brief_carries() {
+    let app = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js")).unwrap();
+    assert!(app.contains(DEFAULT_ACT_DIRECTION), "ui/app.js must hold the Act default");
+
+    let card = finding_card(Path::new("/tmp"));
+    let option = CardOption { label: "Apply".to_owned(), ..CardOption::default() };
+    let direction = format!(
+        "## Direction from the user (overrides the action and any skill)\n{DEFAULT_ACT_DIRECTION}\n"
+    );
+    let dispatched = dispatch_brief(&card, DispatchMode::Act, None, None);
+    assert!(dispatched.contains(&direction), "{dispatched}");
+    let answered = finding_brief(&card, &option, None, DispatchMode::Act);
+    assert!(answered.contains(&direction), "{answered}");
+    let mut questions = finding_card(Path::new("/tmp"));
+    questions.questions = vec![CardQuestion {
+        label: "Supplier".to_owned(),
+        question: "Supplier?".to_owned(),
+        options: vec![option],
+        allow_other: true,
+        star: None,
+    }];
+    let decision = FindingDecision::Authored(&questions.questions[0].options[0]);
+    let decided = finding_answers_brief(
+        &questions,
+        &[(&questions.questions[0], decision)],
+        None,
+        DispatchMode::Act,
+    );
+    assert!(decided.contains(&direction), "{decided}");
+
+    // A blank note counts as empty. A typed direction replaces the default. No other mode takes
+    // the Act default.
+    let blank = dispatch_brief(&card, DispatchMode::Act, Some("  \n"), None);
+    assert!(blank.contains(&direction), "{blank}");
+    let typed = dispatch_brief(&card, DispatchMode::Act, Some("just the docs"), None);
+    assert!(
+        typed.contains("just the docs") && !typed.contains(DEFAULT_ACT_DIRECTION),
+        "{typed}"
+    );
+    for mode in [DispatchMode::Investigate, DispatchMode::Plan, DispatchMode::PlanInto] {
+        let brief = dispatch_brief(&card, mode, None, None);
+        assert!(!brief.contains(DEFAULT_ACT_DIRECTION), "{mode:?} took the Act default");
+    }
+}
+
 // Regression: on 2026-10-31 the user picked "Investigate first" on a transcript-audit finding
 // and the launched session shipped the finding's skill edit, because the brief carried the
 // action, no investigate instruction, and a status contract that only counted shipped work.

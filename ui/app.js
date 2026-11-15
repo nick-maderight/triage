@@ -272,6 +272,7 @@ const S = {
         other: '',
         open: false,
         dispatchMode: 'investigate',
+        actDefault: false,
         dispatchOption: null,
         dispatchAnswers: null,
         step: 0,
@@ -2852,6 +2853,11 @@ const S = {
   }
   function setDispatchMode(mode) {
     const d = S.drafts.get(S.dispatchId);
+    // Act starts on this direction. An empty Instruction still tells the session to think the
+    // work through and spend only what it needs. Typing replaces the default. Leaving it
+    // untouched sends it as the instruction.
+    const actDefault =
+      'Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.';
     if (d?.dispatchAnswers && mode === 'investigate') mode = 'act';
     // The draft keeps the mode the sheet shows, which is the mode Launch sends.
     if (d) d.dispatchMode = mode;
@@ -2866,6 +2872,16 @@ const S = {
         'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
     }[mode];
     $('#dispatch-models').hidden = mode !== 'plan-into';
+    const box = $('#dispatch-note');
+    if (box && d) {
+      if (mode === 'act' && !d.note) {
+        box.value = actDefault;
+        d.actDefault = true;
+      } else if (mode !== 'act' && d.actDefault) {
+        box.value = '';
+        d.actDefault = false;
+      }
+    }
   }
   // Opens the Dispatch sheet for a card. `newWindow` starts the brief in a session of its own
   // instead of the session that just reported. The next step then never flips a finished session
@@ -2887,8 +2903,8 @@ const S = {
     if (field.value !== engine) setPickerValue('dispatch-engine', engine);
     if (!same) clearModels('dispatch');
     else if (!PICKERS['dispatch-model'].options.length) void loadModels();
-    setDispatchMode(mode);
     $('#dispatch-note').value = d.note;
+    setDispatchMode(mode);
     $('#dispatch-hint').textContent = '';
     $('#dispatch-start').disabled = false;
     showDialog($('#dispatch'));
@@ -2906,7 +2922,9 @@ const S = {
     }
     const d = draft(c),
       mode = d.dispatchMode;
-    d.note = $('#dispatch-note').value;
+    // The untouched Act default stays out of the card's note. The daemon applies the same
+    // direction to an Act launch that names none. The brief reads the same either way.
+    if (!d.actDefault) d.note = $('#dispatch-note').value;
     const launch = {
       mode,
       note: noteValue(c),
@@ -3382,6 +3400,7 @@ const S = {
     const d = S.drafts.get(S.dispatchId);
     if (!d) return;
     d.note = e.target.value;
+    d.actDefault = false;
     // The card's Note field shows the same note.
     if (S.shownId === S.dispatchId && $('#note')) $('#note').value = oneLine(d.note);
   });

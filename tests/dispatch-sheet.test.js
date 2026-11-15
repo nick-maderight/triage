@@ -19,6 +19,9 @@ const slice = (from, to) => {
   assert.ok(start >= 0 && end > start, `app.js holds ${from.trim()}`);
   return app.slice(start, end);
 };
+// The Act direction the sheet starts on, read from the sheet's own function.
+const actDefault = app.match(/const actDefault =\s*'([^']+)';/)?.[1];
+assert.ok(actDefault, 'app.js defines the Act default direction');
 
 // Loads the real sheet code, which is its opener, mode buttons, note field and Launch.
 // `daemon` is the engine the daemon launches by default.
@@ -127,14 +130,36 @@ test('the next step opens the sheet and launches in a new window', async () => {
   const ui = sheet([report]);
   ui.context.openDispatch(report, 'act', { newWindow: true });
   assert.equal(ui.state.dispatchId, report.id);
+  assert.equal(ui.elements['#dispatch-note'].value, actDefault, 'Act opens on the default instruction');
   const sent = await ui.launch();
   assert.equal(sent.url, '/v1/cards/report/dispatch');
   assert.deepEqual(sent.body, { mode: 'act', note: null, engine: 'omp', model: null, thinking: null, new_window: true });
+  assert.equal(ui.context.draft(report).note, '', 'the default is not recorded as the card note');
 
   // Dispatch from the same card keeps its own behavior and asks for no new window.
   ui.state.cards.push(report);
   ui.context.openDispatch(report, 'investigate');
   assert.equal((await ui.launch()).body.new_window, false);
+});
+
+// An untouched default belongs to Act. It must not become the card's note, or a later
+// Acknowledge or Investigate would send boilerplate the user never wrote.
+test('the Act default clears for another mode and a typed instruction replaces it', () => {
+  const ui = sheet([report, finding]);
+  ui.context.openDispatch(report, 'act');
+  const note = ui.elements['#dispatch-note'];
+  assert.equal(note.value, actDefault, 'Act opens on the default direction');
+  ui.context.setDispatchMode('plan');
+  assert.equal(note.value, '', 'leaving Act clears an untouched default');
+  assert.equal(ui.context.draft(report).note, '', 'the default never becomes the card note');
+  ui.context.setDispatchMode('act');
+  assert.equal(note.value, actDefault, 'Act restores the default');
+
+  ui.context.openDispatch(finding, 'act');
+  ui.type('Only the staging rule');
+  assert.equal(ui.context.draft(finding).actDefault, false, 'typing takes over the instruction');
+  ui.context.setDispatchMode('investigate');
+  assert.equal(note.value, 'Only the staging rule', 'a typed instruction stays across modes');
 });
 
 test('the sheet opens on the engine of the card session, and on the last pick for a card without one', () => {
