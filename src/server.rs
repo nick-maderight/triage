@@ -553,7 +553,8 @@ struct DispatchRequest {
     executor_thinking: Option<String>,
     #[serde(default)]
     image: Option<ImageRequest>,
-    /// Start the brief in a session of its own instead of the card's waiting source session.
+    /// Open an omp window for the brief instead of typing it into the card's waiting pane. A dsh
+    /// card ignores it.
     #[serde(default)]
     new_window: bool,
 }

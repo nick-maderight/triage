@@ -6971,6 +6971,9 @@ struct BridgeData {
     archive_delay: Duration,
     // archive_error answers POST /v1/archive with this error.
     archive_error: Option<String>,
+    // state_error answers GET /v1/state with this error, the way a host too busy to list its
+    // sessions does.
+    state_error: Option<String>,
 }
 
 impl BridgeData {
@@ -6993,6 +6996,9 @@ impl BridgeData {
                 (StatusCode::SERVICE_UNAVAILABLE, json!({"error": "syncing"}))
             }
             ("GET", "/v1/pending") => (StatusCode::OK, json!({"pid": self.pid, "items": self.pending})),
+            ("GET", "/v1/state") if self.state_error.is_some() => {
+                (StatusCode::BAD_GATEWAY, json!({"error": self.state_error}))
+            }
             ("GET", "/v1/state") if !self.listed(&sid) => {
                 (StatusCode::NOT_FOUND, json!({"error": "session not found"}))
             }
@@ -8383,25 +8389,29 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
 }
 
-// A next-step dispatch asks for a session of its own, even when the card's dsh session is
-// idle and could take the prompt.
+// The report card's next-step buttons ask for `new_window`, which names a tmux window. A dsh
+// card has no window. Its step continues the session that reported it.
 #[test]
-fn dsh_new_window_dispatch_starts_a_session_of_its_own() {
+fn dsh_next_step_dispatch_continues_the_cards_session() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, true).unwrap();
+    let prompts = bridge.posts("/v1/prompt");
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0]["sessionId"], SID);
+    assert!(bridge.posts("/v1/launch").is_empty(), "{:?}", bridge.posts("/v1/launch"));
+    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:5"), Kind::Info);
     dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, true).unwrap();
-    assert!(bridge.posts("/v1/prompt").is_empty(), "{:?}", bridge.posts("/v1/prompt"));
-    assert!(bridge.posts("/v1/plan").is_empty());
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0]["sessionId"], SID);
     assert_eq!(launches[0]["mode"], "plan");
-    assert_eq!(
-        swipe_reason(&db, &card.id),
-        Some("launched dsh:session-new".to_owned())
-    );
+    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
 }
 
 #[test]
@@ -8596,6 +8606,25 @@ fn dsh_dispatch_reports_a_prompt_error_that_is_not_a_refusal() {
     assert_eq!(error, "dsh bridge unreachable: timeout");
     // A prompt that may have been queued must not start a second session on the same brief.
     assert!(bridge.posts("/v1/launch").is_empty());
+    assert_eq!(swipe_reason(&db, &card.id), None);
+}
+
+#[test]
+fn dsh_dispatch_reports_a_failed_state_read_and_starts_no_session() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.state_error = Some("session/list: timeout".to_owned());
+    });
+    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
+    let error = dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false)
+        .unwrap_err();
+    assert_eq!(error, "session/list: timeout");
+    // The session may still be there. The brief must not start a second one.
+    assert!(bridge.posts("/v1/launch").is_empty());
+    assert!(bridge.posts("/v1/prompt").is_empty());
     assert_eq!(swipe_reason(&db, &card.id), None);
 }
 
@@ -9051,7 +9080,7 @@ fn dsh_plan_on_an_existing_session_archives_nothing_when_the_launch_fails() {
     // The session was the card's before the launch. Failing to start a plan in it must
     // not archive the session the user already had.
     assert_eq!(
-        super::dsh_track::launch_brief(&card, &bridge.launch(), &brief, Start::Plan, None, false),
+        super::dsh_track::launch_brief(&card, &bridge.launch(), &brief, Start::Plan, None),
         Err("plan mode did not turn on".to_owned())
     );
     assert!(bridge.posts("/v1/archive").is_empty());

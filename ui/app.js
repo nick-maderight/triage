@@ -159,7 +159,7 @@ const S = {
   // one key, while a card that does not offer it answers neither.
   const ACTIONS = {
     // Plan keeps one shape wherever a card offers it. A report with an open step plans that step
-    // in a session of its own. Every other card opens Dispatch with Plan preselected.
+    // in a window of its own when the report came from a tmux pane.
     plan: {
       key: 'p',
       label: (c) => hasStep(c) && 'Plan next step',
@@ -2902,9 +2902,9 @@ const S = {
       }
     }
   }
-  // Opens the Dispatch sheet for a card. `newWindow` starts the brief in a session of its own
-  // instead of the session that just reported. The next step then never flips a finished session
-  // into another mode. `option` and `answers` make Launch answer a finding with that choice.
+  // Opens the Dispatch sheet for a card. `newWindow` asks for a tmux window of its own instead
+  // of the pane that just reported. The next step then never flips a finished omp session into
+  // another mode. The daemon ignores it for a dsh card, whose brief continues the card's session.
   function openDispatch(c, mode, { newWindow = false, option = null, answers = null } = {}) {
     if (!c || S.pending || Date.now() < S.remoteSwapUntil) return;
     const d = draft(c),

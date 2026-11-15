@@ -1044,35 +1044,34 @@ pub(super) fn request_report(
 /// Give the brief to the card's dsh session, and start a session only when that one cannot take
 /// it. A goal brief is queued in the session whatever it is doing, and a plan brief relaunches
 /// it in plan mode while it is idle. A session the host no longer lists, or a prompt the bridge
-/// refuses, starts a session of its own.
+/// refuses, starts a session of its own. A state read that fails any other way is returned,
+/// because the session may still be there. The report card's next-step buttons ask for a new
+/// window. Only a tmux pane has one, which is why this function takes no such flag.
 pub(super) fn launch_brief(
     card: &Card,
     launch: &Launch,
     brief: &Path,
     start: Start,
     image: Option<&Upload>,
-    new_window: bool,
 ) -> Result<String, String> {
-    // A caller that asks for a new window gets a session of its own, even when the card's
-    // session could take the brief.
-    if let Some(sid) = dsh::session_id(card).filter(|_| !new_window) {
+    if let Some(sid) = dsh::session_id(card) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
-        if let Ok(state) = client.state(sid) {
-            match start {
+        match client.state(sid) {
+            Ok(state) => match start {
                 // A goal brief is queued in the card's session even while it runs or waits for
                 // an answer, because dsh queues a prompt for the session's next turn. The work
                 // then continues where the card came from instead of in a second session.
                 Start::Goal => {
                     match client.prompt(sid, &dispatch_prompt(brief), image.map(Upload::dsh_image)) {
                         Ok(()) => return Ok(format!("dsh:{sid}")),
-                        // A refused prompt was not taken, so the brief starts a session instead.
+                        // A refused prompt was not taken. The brief starts a session instead.
                         Err(error) if prompt_refused(&error) => {}
                         Err(error) => return Err(error),
                     }
                 }
                 // A plan sets the session's permission and plan mode with slash commands, which
-                // take effect between turns. A busy session cannot take one, so its brief
-                // starts a session of its own instead.
+                // take effect between turns. A busy session cannot take one. Its brief starts
+                // a session of its own instead.
                 Start::Plan | Start::PlanInto(..) if !state.running && state.pending_input.is_empty() => {
                     let (mode, executor, executor_effort) = match start {
                         Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
@@ -1092,7 +1091,12 @@ pub(super) fn launch_brief(
                     return client.launch(&body).map(|launched| format!("dsh:{launched}"));
                 }
                 Start::Plan | Start::PlanInto(..) => {}
-            }
+            },
+            // The host no longer lists the session. The brief starts one of its own.
+            Err(error) if error.contains("session not found") => {}
+            // Any other failure may be a slow host whose session is still there. A second
+            // session would split the conversation.
+            Err(error) => return Err(error),
         }
     }
     launch_new(launch, &card_cwd(card), brief, &card.title, start, image)

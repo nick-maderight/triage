@@ -916,8 +916,8 @@ impl DispatchMode {
 /// The session's final report comes back as an info card through the tracker. `executor` is the
 /// execution model a plan-into dispatch hands its approved plan to, omp's `smol` role when
 /// unset, and `executor_thinking` is the effort it takes; the server refuses both with any
-/// other mode. `new_window` starts the brief in a session of its own instead of the card's
-/// waiting source session.
+/// other mode. `new_window` opens an omp window for the brief instead of typing it into the
+/// card's waiting pane. A dsh card keeps its own session whatever the flag says.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     db: &Db,
@@ -1183,15 +1183,14 @@ fn dispatch_prompt(brief: &Path) -> String {
     format!("Read the brief at {} and carry it out.", brief.display())
 }
 
-/// Give the brief to an info card's own pane while that pane is an omp pane waiting for input,
-/// so the work continues in the session that already has the context. Otherwise open a new
-/// window in the daemon's launch session; a window another launch left behind is never
-/// taken. A new window starts in omp goal mode with an objective that names the brief, except
-/// a plan dispatch, which starts in read-only plan mode, and a plan-into dispatch, which
-/// runs `--plan-yolo` and hands the approved plan to the execution model. A waiting source
-/// pane keeps its own modes and receives the brief as typed text, except that a plan-into
-/// dispatch always opens a new window, because only launch flags turn plan-yolo on, and a
-/// caller that asks for `new_window` starts its own session instead.
+/// An info card's dsh brief always goes to its session. For omp, type into the source pane only
+/// when it waits for input. Otherwise open a new omp window in the daemon's launch session and
+/// never take a window another launch left behind. A new window starts in omp goal mode with an
+/// objective that names the brief, except a plan dispatch, which starts in read-only plan mode,
+/// and a plan-into dispatch, which runs `--plan-yolo` and hands the approved plan to the execution
+/// model. A waiting source pane keeps its own modes and receives the brief as typed text, except
+/// that a plan-into dispatch always opens a new window, because only launch flags turn plan-yolo
+/// on. A caller that asks for `new_window` opens a window of its own instead.
 fn launch_brief(
     card: &Card,
     launch: &Launch,
@@ -1201,7 +1200,7 @@ fn launch_brief(
     new_window: bool,
 ) -> Result<String, String> {
     if launch.engine == Engine::Dsh {
-        return dsh_track::launch_brief(card, launch, brief, start, image, new_window);
+        return dsh_track::launch_brief(card, launch, brief, start, image);
     }
     // Only a pane that finished its turn takes typed text. A plan review also reads as waiting,
     // where a typed brief would run as overlay keys. An ask or a plan card opens a window for
