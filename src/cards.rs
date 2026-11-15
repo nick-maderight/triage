@@ -3431,7 +3431,7 @@ const REPORT_STEP: &str = " Before you report, finish every step your instructio
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 /// The direction an Act launch carries when the user typed none. It asks for the work to be
-/// thought through and for no more to be spent than it needs. The inbox prefills its Instruction
+/// thought through and for no more to be spent than it requires. The inbox prefills its Instruction
 /// with it. A finding answer or API dispatch that names no note gets the same text. Every Act
 /// session then starts from it. The same words sit in `ui/app.js`. A test keeps the two equal.
 const DEFAULT_ACT_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.";

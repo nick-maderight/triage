@@ -2854,7 +2854,7 @@ const S = {
   function setDispatchMode(mode) {
     const d = S.drafts.get(S.dispatchId);
     // Act starts on this direction. An empty Instruction still tells the session to think the
-    // work through and spend only what it needs. Typing replaces the default. Leaving it
+    // work through and spend only what it requires. Typing replaces the default. Leaving it
     // untouched sends it as the instruction.
     const actDefault =
       'Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.';

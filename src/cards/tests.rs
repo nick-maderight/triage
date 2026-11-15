@@ -613,7 +613,7 @@ fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
 // Nick asked for a default Act instruction. In his words, "if i don't type anything this is the
 // default instruction". An Act launch that names no direction carries the same words the inbox
 // puts in its Instruction box. Leaving the box empty then still tells the session to think the
-// work through and spend only what it needs.
+// work through and spend only what it requires.
 #[test]
 fn the_inbox_prefills_the_act_direction_every_act_brief_carries() {
     let app = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js")).unwrap();
@@ -645,7 +645,7 @@ fn the_inbox_prefills_the_act_direction_every_act_brief_carries() {
     );
     assert!(decided.contains(&direction), "{decided}");
 
-    // A blank note counts as empty. A typed direction replaces the default. No other mode takes
+    // A blank note counts as empty. Typing replaces the default. No other mode takes
     // the Act default.
     let blank = dispatch_brief(&card, DispatchMode::Act, Some("  \n"), None);
     assert!(blank.contains(&direction), "{blank}");
