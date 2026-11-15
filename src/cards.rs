@@ -872,10 +872,13 @@ impl<'a> Start<'a> {
     }
 }
 
-/// A dispatch can investigate, act on the card, plan for review, or plan into an execution model.
+/// A dispatch can investigate read-only, investigate and fix, act on the card, plan for review,
+/// or plan into an execution model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
     Investigate,
+    /// Act, starting from a direction that fixes the root cause instead of this one symptom.
+    InvestigateFix,
     Plan,
     Act,
     PlanInto,
@@ -885,6 +888,7 @@ impl DispatchMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "investigate" => Some(Self::Investigate),
+            "investigate-fix" => Some(Self::InvestigateFix),
             "act" => Some(Self::Act),
             "plan" => Some(Self::Plan),
             "plan-into" => Some(Self::PlanInto),
@@ -896,6 +900,7 @@ impl DispatchMode {
     pub fn swipe_text(&self) -> &'static str {
         match self {
             Self::Investigate => "Investigate",
+            Self::InvestigateFix => "Investigate + fix",
             Self::Act => "Act",
             Self::Plan => "Plan",
             Self::PlanInto => "Plan into",
@@ -940,14 +945,15 @@ pub fn dispatch(
     let start = match mode {
         DispatchMode::Plan => Start::Plan,
         DispatchMode::PlanInto => Start::PlanInto(executor, executor_thinking),
-        DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
+        DispatchMode::Investigate | DispatchMode::InvestigateFix | DispatchMode::Act => Start::Goal,
     };
     let pane = launch_brief(card, launch, &path, start, image, new_window)?;
     let recorded = if matches!(card.kind, Kind::Ask | Kind::Plan) {
         let doing = match mode {
             DispatchMode::Investigate => "investigating",
             DispatchMode::Plan | DispatchMode::PlanInto => "planning",
-            DispatchMode::Act => "acting",
+            // A fix launch ships work, so it reads like Act in the deferred card's reason.
+            DispatchMode::Act | DispatchMode::InvestigateFix => "acting",
         };
         db.swipe(&Swipe {
             card: card.id.clone(),
@@ -3042,7 +3048,7 @@ fn finding_pane_for_answer(
         DispatchMode::PlanInto => {
             Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
         }
-        DispatchMode::Investigate | DispatchMode::Act => Start::Goal,
+        DispatchMode::Investigate | DispatchMode::InvestigateFix | DispatchMode::Act => Start::Goal,
     };
     let (pane, needs_tag) = if let Some(pane) = tagged_pane {
         (pane, false)
@@ -3085,7 +3091,7 @@ fn answer_finding_questions(
     let mode = match req.mode.as_deref() {
         None => DispatchMode::Act,
         Some(value) => match DispatchMode::parse(value) {
-            Some(DispatchMode::Investigate) | None => {
+            Some(DispatchMode::Investigate | DispatchMode::InvestigateFix) | None => {
                 return Err("finding questions run act, plan, or plan-into".to_owned());
             }
             Some(mode) => mode,
@@ -3350,13 +3356,16 @@ fn brief_heading(brief: &Path, limit: usize) -> Result<String, String> {
     Ok(truncate_chars(heading.to_owned(), limit))
 }
 
-/// A finding option whose label opens with "Investigate" asks for an answer, not a change.
-/// Every other option carries out the card's action.
+/// A finding option whose label opens with "Investigate" asks for an answer. One that also names
+/// a fix carries that fix out. Every other option carries out the card's action.
 fn option_mode(option: &CardOption) -> DispatchMode {
-    if option.label.trim_start().to_lowercase().starts_with("investigate") {
-        DispatchMode::Investigate
-    } else {
+    let label = option.label.trim_start().to_lowercase();
+    if !label.starts_with("investigate") {
         DispatchMode::Act
+    } else if label.contains("fix") {
+        DispatchMode::InvestigateFix
+    } else {
+        DispatchMode::Investigate
     }
 }
 
@@ -3364,7 +3373,10 @@ fn option_mode(option: &CardOption) -> DispatchMode {
 fn action_heading(mode: DispatchMode) -> &'static str {
     match mode {
         DispatchMode::Investigate => "Proposed action, not approved",
-        DispatchMode::Act | DispatchMode::Plan | DispatchMode::PlanInto => "Action",
+        DispatchMode::Act
+        | DispatchMode::InvestigateFix
+        | DispatchMode::Plan
+        | DispatchMode::PlanInto => "Action",
     }
 }
 
@@ -3384,14 +3396,17 @@ fn push_instructions(brief: &mut String, mode: DispatchMode) {
     brief.push_str("\n## Instructions\n");
     brief.push_str(match mode {
         DispatchMode::Investigate => INVESTIGATE_INSTRUCTION,
-        DispatchMode::Act => ACT_INSTRUCTION,
+        DispatchMode::Act | DispatchMode::InvestigateFix => ACT_INSTRUCTION,
         DispatchMode::Plan => PLAN_INSTRUCTION,
         DispatchMode::PlanInto => PLAN_INTO_INSTRUCTION,
     });
     brief.push_str("\n\n");
     brief.push_str(match mode {
         DispatchMode::Investigate => INVESTIGATE_STATUS_CONTRACT,
-        DispatchMode::Act | DispatchMode::Plan | DispatchMode::PlanInto => ENVOY_STATUS_CONTRACT,
+        DispatchMode::Act
+        | DispatchMode::InvestigateFix
+        | DispatchMode::Plan
+        | DispatchMode::PlanInto => ENVOY_STATUS_CONTRACT,
     });
 }
 
@@ -3436,12 +3451,20 @@ const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. 
 /// session then starts from it. The same words sit in `ui/app.js`. A test keeps the two equal.
 const DEFAULT_ACT_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.";
 
-/// The direction a brief carries. An Act launch with no direction from the user gets the default.
-/// Leaving the Instruction empty then still tells the session how to decide.
+/// The direction an Investigate + fix launch carries when the user typed none. It starts from the
+/// Act direction and adds the root-cause rule. The inbox prefills its Instruction with it. A finding
+/// answer or API dispatch that names no note gets the same text. The same words sit in `ui/app.js`.
+/// A test keeps the two equal.
+const DEFAULT_INVESTIGATE_FIX_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
+
+/// The direction a brief carries. An Act or Investigate + fix launch with no direction from the
+/// user gets that mode's default. Leaving the Instruction empty then still tells the session how
+/// to decide.
 fn direction_of(note: Option<&str>, mode: DispatchMode) -> &str {
     match note.map(str::trim).filter(|note| !note.is_empty()) {
         Some(note) => note,
         None if mode == DispatchMode::Act => DEFAULT_ACT_DIRECTION,
+        None if mode == DispatchMode::InvestigateFix => DEFAULT_INVESTIGATE_FIX_DIRECTION,
         None => "",
     }
 }

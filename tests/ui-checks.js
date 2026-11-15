@@ -948,7 +948,7 @@
         assert(mode('plan-into').getAttribute('aria-checked') === 'true', 'P preselects Plan into');
         assert(!dispatch.querySelector('#dispatch-models').hidden, 'Plan into shows the execution model field');
         assert(visible(document.querySelector('#dispatch-executor-effort')), 'dispatch shows the execution effort field');
-        assert(segmentRow(dispatch.querySelector('#dispatch-mode')), 'the four dispatch segments share one row');
+        assert(segmentRow(dispatch.querySelector('#dispatch-mode')), 'the five dispatch segments share one row');
         assert(text('#dispatch-model').includes('Alpha One'), 'the Model Default names the daemon model');
         assert(text('#dispatch-thinking').includes('max'), 'the Thinking Default names the daemon level');
         const dshEngine = document.querySelector('#dispatch-engine').value === 'dsh';
@@ -992,6 +992,12 @@
         await waitFor(() => dialog.open, 'dispatch dialog open');
         assert(mode('investigate').getAttribute('aria-checked') === 'true', 'Investigate is preselected');
         assert(mode('act').getAttribute('aria-checked') === 'false', 'Act starts unchecked');
+        mode('investigate-fix').click();
+        assert(
+          mode('investigate-fix').getAttribute('aria-checked') === 'true',
+          'Investigate + fix is selected after click',
+        );
+        assert(note.value.includes('root cause'), 'Investigate + fix opens on its default direction');
         mode('act').click();
         assert(mode('act').getAttribute('aria-checked') === 'true', 'Act is selected after click');
         assert(mode('investigate').getAttribute('aria-checked') === 'false', 'Investigate is cleared');

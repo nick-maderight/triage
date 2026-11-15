@@ -29,7 +29,7 @@ function sheet(cards, daemon = 'omp') {
   const requests = [],
     cleared = [],
     listeners = {},
-    modes = ['investigate', 'act', 'plan', 'plan-into'].map((mode) => ({
+    modes = ['investigate', 'investigate-fix', 'act', 'plan', 'plan-into'].map((mode) => ({
       dataset: { mode },
       attrs: {},
       setAttribute(name, value) {
@@ -142,8 +142,8 @@ test('the next step opens the sheet and launches in a new window', async () => {
   assert.equal((await ui.launch()).body.new_window, false);
 });
 
-// An untouched default belongs to Act. It must not become the card's note, or a later
-// Acknowledge or Investigate would send boilerplate the user never wrote.
+// An untouched mode default must not become the card's note, or a later Acknowledge or
+// Investigate would send boilerplate the user never wrote.
 test('the Act default clears for another mode and a typed instruction replaces it', () => {
   const ui = sheet([report, finding]);
   ui.context.openDispatch(report, 'act');
@@ -157,9 +157,31 @@ test('the Act default clears for another mode and a typed instruction replaces i
 
   ui.context.openDispatch(finding, 'act');
   ui.type('Only the staging rule');
-  assert.equal(ui.context.draft(finding).actDefault, false, 'typing takes over the instruction');
+  assert.equal(ui.context.draft(finding).defaulted, false, 'typing takes over the instruction');
   ui.context.setDispatchMode('investigate');
   assert.equal(note.value, 'Only the staging rule', 'a typed instruction stays across modes');
+});
+
+// Investigate + fix starts on the longer direction, and each default belongs to its mode.
+test('the Investigate + fix default follows its mode and clears like the Act one', () => {
+  const ui = sheet([report]);
+  ui.context.openDispatch(report, 'investigate-fix');
+  const note = ui.elements['#dispatch-note'];
+  assert.equal(
+    note.value,
+    `${actDefault}\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.`,
+    'Investigate + fix opens on its own direction',
+  );
+  assert.equal(ui.context.draft(report).note, '', 'the default never becomes the card note');
+  ui.context.setDispatchMode('act');
+  assert.equal(note.value, actDefault, 'Act puts back its shorter default');
+  ui.context.setDispatchMode('investigate-fix');
+  assert.ok(note.value.includes('root cause'), 'Investigate + fix puts back its own default');
+  ui.context.setDispatchMode('plan');
+  assert.equal(note.value, '', 'another mode clears the untouched default');
+  ui.type('Only the config');
+  ui.context.setDispatchMode('investigate-fix');
+  assert.equal(note.value, 'Only the config', 'a typed instruction survives the switch');
 });
 
 test('the sheet opens on the engine of the card session, and on the last pick for a card without one', () => {
@@ -200,8 +222,12 @@ test('the card and the sheet share one note', async () => {
 });
 
 test('Launch sends the mode picked in the sheet', async () => {
-  const ui = sheet([finding]);
-  ui.context.openDispatch(finding, 'investigate');
-  ui.context.setDispatchMode('plan');
-  assert.equal((await ui.launch()).body.mode, 'plan');
+  const plan = sheet([finding]);
+  plan.context.openDispatch(finding, 'investigate');
+  plan.context.setDispatchMode('plan');
+  assert.equal((await plan.launch()).body.mode, 'plan');
+
+  const fix = sheet([finding]);
+  fix.context.openDispatch(finding, 'investigate-fix');
+  assert.equal((await fix.launch()).body.mode, 'investigate-fix');
 });

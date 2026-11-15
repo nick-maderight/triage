@@ -151,13 +151,14 @@ const DOCKS = {
 };
 // Keys that work without a button. Every card takes the other Dispatch modes and the Note
 // field. Other works only where the card takes a custom answer.
-const KEYS_WITHOUT_BUTTON = ['p', 'A', 'P', 'n'],
+const KEYS_WITHOUT_BUTTON = ['p', 'F', 'A', 'P', 'n'],
   TAKES_OTHER = ['ask', 'ask with questions', 'dsh ask', 'plan', 'dsh plan', 'finding with questions'];
 
 // Pinned on purpose, because a key that moves makes the user relearn it.
 const KEYS = {
   plan: 'p',
   dispatch: 'i',
+  fix: 'F',
   act: 'A',
   planInto: 'P',
   doNext: 'd',
@@ -246,7 +247,7 @@ test('each key keeps one meaning on every card', () => {
   assert.deepEqual(press(ask, 'J'), ['jump ask']);
   assert.deepEqual(press(SHAPES['dsh ask'], 'J'), ['open dsh'], 'J opens dsh for a dsh card');
   // Dispatch opens in the card's session. A report's open step starts a session of its own.
-  for (const [key, mode] of Object.entries({ i: 'investigate', A: 'act', p: 'plan', P: 'plan-into' }))
+  for (const [key, mode] of Object.entries({ i: 'investigate', F: 'investigate-fix', A: 'act', p: 'plan', P: 'plan-into' }))
     assert.deepEqual(press(finding, key), [`dispatch finding ${mode} card session`]);
   assert.deepEqual(press(report, 'p'), ['dispatch done:%6:entry plan own session']);
   assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry act own session']);
@@ -255,8 +256,8 @@ test('each key keeps one meaning on every card', () => {
 
 test('Dispatch advertises the mode keys that have no button of their own', () => {
   const shortcuts = (card) => buttonsOf(card).find((item) => item.label === 'Dispatch').shortcuts;
-  assert.equal(shortcuts(SHAPES.finding), 'i A p P');
-  assert.equal(shortcuts(SHAPES['report with an open step']), 'i A P', 'p belongs to Plan next step there');
+  assert.equal(shortcuts(SHAPES.finding), 'i F A p P');
+  assert.equal(shortcuts(SHAPES['report with an open step']), 'i F A P', 'p belongs to Plan next step there');
 });
 
 test('an action announces the same result on every kind of card', () => {
@@ -268,6 +269,7 @@ test('an action announces the same result on every kind of card', () => {
     assert.equal(said('close'), 'Closed · Title', kind);
     assert.equal(said('dispatch', { mode: 'investigate' }), 'Investigating · Title', kind);
     assert.equal(said('dispatch', { mode: 'act' }), 'Acting · Title', kind);
+    assert.equal(said('dispatch', { mode: 'investigate-fix' }), 'Investigating and fixing · Title', kind);
     assert.equal(said('dispatch', { mode: 'plan-into' }), 'Planning · Title', kind);
   }
 });

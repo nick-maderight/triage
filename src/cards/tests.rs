@@ -660,6 +660,68 @@ fn the_inbox_prefills_the_act_direction_every_act_brief_carries() {
     }
 }
 
+// Nick asked for a second investigate mode: Act's behavior with a direction that fixes the root
+// cause. Its Instruction starts on that direction, and its brief must ship work rather than ask
+// for an answer.
+#[test]
+fn investigate_and_fix_takes_the_act_contract_and_its_own_direction() {
+    let app = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js")).unwrap();
+    assert!(
+        DEFAULT_INVESTIGATE_FIX_DIRECTION
+            .split('\n')
+            .all(|line| app.contains(line)),
+        "ui/app.js must hold the Investigate + fix default"
+    );
+
+    let card = finding_card(Path::new("/tmp"));
+    let option = CardOption {
+        label: "Investigate and fix".to_owned(),
+        ..CardOption::default()
+    };
+    let direction = format!(
+        "## Direction from the user (overrides the action and any skill)\n{DEFAULT_INVESTIGATE_FIX_DIRECTION}\n"
+    );
+    let brief = finding_brief(&card, &option, None, DispatchMode::InvestigateFix);
+    assert!(brief.contains("## Action\n"));
+    assert!(!brief.contains("## Proposed action, not approved"));
+    assert!(brief.contains(ACT_INSTRUCTION));
+    assert!(brief.contains(ENVOY_STATUS_CONTRACT));
+    assert!(!brief.contains(INVESTIGATE_STATUS_CONTRACT));
+    assert!(brief.contains(&direction), "{brief}");
+    assert!(
+        dispatch_brief(&card, DispatchMode::InvestigateFix, None, None).contains(&direction)
+    );
+    let dispatch = dispatch_brief(&card, DispatchMode::InvestigateFix, None, None);
+    assert!(
+        dispatch.starts_with(&format!("# Investigate + fix: {}\n", card.title)),
+        "{dispatch}"
+    );
+
+    // A typed direction replaces the default, and Act keeps its shorter one.
+    let typed = dispatch_brief(&card, DispatchMode::InvestigateFix, Some("only the config"), None);
+    assert!(
+        typed.contains("only the config") && !typed.contains(DEFAULT_INVESTIGATE_FIX_DIRECTION),
+        "{typed}"
+    );
+    let act = dispatch_brief(&card, DispatchMode::Act, None, None);
+    assert!(!act.contains("root cause permanently"), "{act}");
+}
+
+#[test]
+fn an_investigate_option_that_names_a_fix_takes_the_investigate_and_fix_mode() {
+    let mode = |label: &str| {
+        option_mode(&CardOption {
+            label: label.to_owned(),
+            ..CardOption::default()
+        })
+    };
+    assert_eq!(mode("Investigate first"), DispatchMode::Investigate);
+    assert_eq!(mode("investigate and fix"), DispatchMode::InvestigateFix);
+    assert_eq!(mode("Investigate + fix"), DispatchMode::InvestigateFix);
+    assert_eq!(mode("Fix it"), DispatchMode::Act);
+    assert_eq!(mode("Skip"), DispatchMode::Act);
+}
+
 // Regression: on 2026-10-31 the user picked "Investigate first" on a transcript-audit finding
 // and the launched session shipped the finding's skill edit, because the brief carried the
 // action, no investigate instruction, and a status contract that only counted shipped work.
@@ -1838,6 +1900,19 @@ fn report_trail_follows_this_panes_latest_launch_and_keeps_the_first_topic() {
     launch(&ask.id, "acting %12", born + 4, None, Some("Act"), None);
     assert_eq!(trail(), (ask.title.clone(), "Act".to_owned()));
     assert!(!investigation(), "an Act launch owes no next step");
+
+    let fix = finding_card(scratch.path());
+    db.insert_card(&fix).unwrap();
+    launch(
+        &fix.id,
+        "acting %12",
+        born + 5,
+        None,
+        Some(DispatchMode::InvestigateFix.swipe_text()),
+        None,
+    );
+    assert_eq!(trail(), (fix.title.clone(), "Investigate + fix".to_owned()));
+    assert!(!investigation(), "an Investigate + fix launch owes no next step");
 }
 
 // On 2026-11-01 the %46 card reported an access-audit investigation whose answer ended
@@ -4183,8 +4258,10 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let act_card = info_card("done:%12:act", "%12");
         let look_card = info_card("done:%12:look", "%12");
+        let fix_card = info_card("done:%12:fix", "%12");
         db.insert_card(&act_card).unwrap();
         db.insert_card(&look_card).unwrap();
+        db.insert_card(&fix_card).unwrap();
         let act = dispatch(
             &db,
             &act_card,
@@ -4207,7 +4284,19 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             None,
             false,
         );
+        let fix = dispatch(
+            &db,
+            &fix_card,
+            DispatchMode::InvestigateFix,
+            None,
+            &in_session("session"),
+            None,
+            None,
+            None,
+            false,
+        );
         let swipe = current_swipe(&db, &act_card.id);
+        let fix_swipe = current_swipe(&db, &fix_card.id);
         let briefs: Vec<String> = fs::read_dir(root.join("briefs"))
             .unwrap()
             .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
@@ -4220,9 +4309,17 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             .iter()
             .find(|brief| brief.contains("# Investigate: "))
             .unwrap();
+        let fix_brief = briefs
+            .iter()
+            .find(|brief| brief.contains("# Investigate + fix: "))
+            .unwrap();
         assert!(
             act.is_ok()
                 && look.is_ok()
+                && fix.is_ok()
+                && fix_brief.contains(ACT_INSTRUCTION)
+                && fix_brief.contains(DEFAULT_INVESTIGATE_FIX_DIRECTION)
+                && fix_swipe.text.as_deref() == Some("Investigate + fix")
                 && act_brief.contains(ACT_INSTRUCTION)
                 && act_brief.contains("ship it")
                 && act_brief.contains("ENVOY_STATUS: complete")
@@ -4257,6 +4354,10 @@ fn dispatch_mode_parse_accepts_known_modes_only() {
     assert_eq!(
         DispatchMode::parse("plan-into"),
         Some(DispatchMode::PlanInto)
+    );
+    assert_eq!(
+        DispatchMode::parse("investigate-fix"),
+        Some(DispatchMode::InvestigateFix)
     );
     assert_eq!(DispatchMode::parse("implement"), None, "the implement mode is gone");
     assert_eq!(DispatchMode::parse("Act"), None);

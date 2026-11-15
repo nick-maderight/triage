@@ -170,9 +170,10 @@ const S = {
     dispatch: {
       key: 'i',
       label: 'Dispatch',
-      also: ['act', 'plan', 'planInto'],
+      also: ['fix', 'act', 'plan', 'planInto'],
       run: (c) => openDispatch(c, 'investigate'),
     },
+    fix: { key: 'F', run: (c) => openDispatch(c, 'investigate-fix') },
     act: { key: 'A', run: (c) => openDispatch(c, 'act') },
     planInto: { key: 'P', run: (c) => openDispatch(c, 'plan-into') },
     doNext: {
@@ -242,7 +243,9 @@ const S = {
     return i < 0 ? 0 : i;
   };
   function optionMode(option) {
-    return option.label.trimStart().toLowerCase().startsWith('investigate') ? 'investigate' : 'act';
+    const label = option.label.trimStart().toLowerCase();
+    if (!label.startsWith('investigate')) return 'act';
+    return label.includes('fix') ? 'investigate-fix' : 'investigate';
   }
   const byPriority = (a, b) =>
     Number(a.priority || 5) - Number(b.priority || 5) ||
@@ -272,7 +275,7 @@ const S = {
         other: '',
         open: false,
         dispatchMode: 'investigate',
-        actDefault: false,
+        defaulted: false,
         dispatchOption: null,
         dispatchAnswers: null,
         step: 0,
@@ -1648,7 +1651,15 @@ const S = {
     if (verb === 'skip') return `Skipped · ${c.title}`;
     if (verb === 'later') return `Later ${choice.label} · ${c.title}`;
     if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
-      return `${body.mode === 'act' ? 'Acting' : body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : 'Investigating'} · ${c.title}`;
+      return `${
+        body.mode === 'act'
+          ? 'Acting'
+          : body.mode === 'investigate-fix'
+            ? 'Investigating and fixing'
+            : body.mode === 'plan' || body.mode === 'plan-into'
+              ? 'Planning'
+              : 'Investigating'
+      } · ${c.title}`;
     if (verb === 'close') return `Closed · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
     if (verb === 'restore') return `Restoring run · ${c.title}`;
@@ -2853,19 +2864,26 @@ const S = {
   }
   function setDispatchMode(mode) {
     const d = S.drafts.get(S.dispatchId);
-    // Act starts on this direction. An empty Instruction still tells the session to think the
-    // work through and spend only what it requires. Typing replaces the default. Leaving it
-    // untouched sends it as the instruction.
+    // Act and Investigate + fix start on their own direction. An empty Instruction still tells the
+    // session how to decide. Typing replaces the default. Leaving it untouched sends it as the
+    // instruction.
     const actDefault =
       'Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.';
-    if (d?.dispatchAnswers && mode === 'investigate') mode = 'act';
+    const fixDefault =
+      "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
+    // A finding question is answered through its own decisions, so it cannot take an investigate mode.
+    if (d?.dispatchAnswers && (mode === 'investigate' || mode === 'investigate-fix')) mode = 'act';
     // The draft keeps the mode the sheet shows, which is the mode Launch sends.
     if (d) d.dispatchMode = mode;
     selectSegment($('#dispatch-mode'), mode);
     const investigate = $('#dispatch-mode-investigate');
     if (investigate) investigate.hidden = Boolean(d?.dispatchAnswers);
+    const investigateFix = $('#dispatch-mode-investigate-fix');
+    if (investigateFix) investigateFix.hidden = Boolean(d?.dispatchAnswers);
     $('#dispatch-mode-help').textContent = {
       investigate: 'Read-only. The session looks into it and reports back.',
+      'investigate-fix':
+        'Investigates the root cause, fixes it for good, and reports the evidence.',
       act: 'The session carries out the action end to end.',
       plan: 'The session prepares a plan for review before acting.',
       'plan-into':
@@ -2874,12 +2892,13 @@ const S = {
     $('#dispatch-models').hidden = mode !== 'plan-into';
     const box = $('#dispatch-note');
     if (box && d) {
-      if (mode === 'act' && !d.note) {
-        box.value = actDefault;
-        d.actDefault = true;
-      } else if (mode !== 'act' && d.actDefault) {
+      const fallback = mode === 'act' ? actDefault : mode === 'investigate-fix' ? fixDefault : '';
+      if (fallback && !d.note) {
+        box.value = fallback;
+        d.defaulted = true;
+      } else if (!fallback && d.defaulted) {
         box.value = '';
-        d.actDefault = false;
+        d.defaulted = false;
       }
     }
   }
@@ -2922,9 +2941,9 @@ const S = {
     }
     const d = draft(c),
       mode = d.dispatchMode;
-    // The untouched Act default stays out of the card's note. The daemon applies the same
-    // direction to an Act launch that names none. The brief reads the same either way.
-    if (!d.actDefault) d.note = $('#dispatch-note').value;
+    // The untouched mode default stays out of the card's note. The daemon applies the same
+    // direction to a launch that names none. The brief reads the same either way.
+    if (!d.defaulted) d.note = $('#dispatch-note').value;
     const launch = {
       mode,
       note: noteValue(c),
@@ -3400,7 +3419,7 @@ const S = {
     const d = S.drafts.get(S.dispatchId);
     if (!d) return;
     d.note = e.target.value;
-    d.actDefault = false;
+    d.defaulted = false;
     // The card's Note field shows the same note.
     if (S.shownId === S.dispatchId && $('#note')) $('#note').value = oneLine(d.note);
   });
