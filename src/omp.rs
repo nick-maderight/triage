@@ -1157,18 +1157,6 @@ fn redact_with(text: &str, long_runs: bool) -> String {
             }
         }
 
-        if long_runs && secret_byte(bytes[index]) {
-            let mut end = index;
-            while end < bytes.len() && secret_byte(bytes[end]) {
-                end += 1;
-            }
-            if end - index >= 32 {
-                output.push('…');
-                index = end;
-                continue;
-            }
-        }
-
         if bytes.get(index..index + 4) == Some(b"AKIA".as_slice())
             && bytes.get(index + 4..index + 20).is_some_and(|suffix| {
                 suffix.len() == 16
@@ -1180,6 +1168,18 @@ fn redact_with(text: &str, long_runs: bool) -> String {
             output.push('…');
             index += 20;
             continue;
+        }
+
+        if long_runs && secret_byte(bytes[index]) {
+            let mut end = index;
+            while end < bytes.len() && secret_byte(bytes[end]) {
+                end += 1;
+            }
+            if end - index >= 32 {
+                output.push('…');
+                index = end;
+                continue;
+            }
         }
 
         let character = text[index..].chars().next().unwrap();

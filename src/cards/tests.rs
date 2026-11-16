@@ -2048,7 +2048,6 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
                 "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Run the investigation follow-up.".to_owned(),
                 None,
                 true,
-                true,
             )
             .action,
             "Run the investigation follow-up."
@@ -2099,7 +2098,6 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
         let none = reply_turn(
             "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: none.".to_owned(),
             None,
-            true,
             false,
         );
         assert_eq!(none.body.as_deref(), Some("Shipped."));
@@ -2215,7 +2213,6 @@ fn agent_done_report_closed_by_none_reads_done() {
     let turn = reply_turn(
         "ENVOY_STATUS: agent-done\n\nBlock key shipped and pushed.\n\nRecommended action: none.".to_owned(),
         None,
-        true,
         false,
     );
     assert_eq!(turn.title, "Done: Block key shipped and pushed.");
@@ -2229,7 +2226,6 @@ fn agent_done_report_with_an_open_step_keeps_the_warning() {
     let turn = reply_turn(
         "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.".to_owned(),
         None,
-        true,
         false,
     );
     assert_eq!(turn.title, "Agent done: Push still open.");
@@ -2242,7 +2238,6 @@ fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
     let turn = reply_turn(
         "ENVOY_STATUS: agent-done\n\nSuite gate still red.".to_owned(),
         None,
-        true,
         false,
     );
     assert_eq!(turn.title, "Agent done: Suite gate still red.");
@@ -2254,7 +2249,6 @@ fn carried_agent_done_report_takes_the_closing_step() {
     let turn = reply_turn(
         "Closing note.\n\nRecommended action: Publish the release.".to_owned(),
         Some("ENVOY_STATUS: agent-done\n\nWaited on the suite.\n\nRecommended action: none.".to_owned()),
-        true,
         false,
     );
     assert_eq!(turn.title, "Agent done: Waited on the suite.");
@@ -2265,7 +2259,7 @@ fn carried_agent_done_report_takes_the_closing_step() {
 #[test]
 fn every_reply_states_its_outcome_for_the_card_status() {
     let status = |text: &str, report: Option<&str>| {
-        reply_turn(text.to_owned(), report.map(str::to_owned), true, false).status
+        reply_turn(text.to_owned(), report.map(str::to_owned), false).status
     };
     let complete = "ENVOY_STATUS: complete\n\nShipped.";
     let step_open = "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.";
@@ -2313,7 +2307,7 @@ fn launched_reply_without_status_line_offers_report_request() {
         let swipe = db.card(&card.id).unwrap().unwrap().1.unwrap();
         assert_eq!(swipe.text.as_deref(), Some("Request final report"));
         assert_eq!(swipe.reason.as_deref(), Some("report requested %12"));
-        assert!(fs::read_to_string(root.join("tmux-keys.log")).unwrap().contains(REQUEST_REPORT_TEXT));
+        assert!(fs::read_to_string(root.join("tmux-keys.log")).unwrap().contains("Recommended action: none"));
         return;
     }
     let scratch = Scratch::new();
@@ -2359,20 +2353,20 @@ fn a_report_without_a_status_line_asks_its_session_once() {
 
 #[cfg(unix)]
 #[test]
-fn unlaunched_reply_does_not_offer_report_request() {
-    if let Some(root) = child_root("unlaunched_reply_does_not_offer_report_request") {
+fn unlaunched_reply_also_offers_report_request() {
+    if let Some(root) = child_root("unlaunched_reply_also_offers_report_request") {
         fs::write(root.join("tmux-waiting"), b"").unwrap();
         let transcript = root.join("transcript.jsonl");
         write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "A plain reply.")]);
         let db = Db::open(&root.join("triage.db")).unwrap();
         Tracker::default().tick(&db);
         let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
-        assert!(!card.report_due);
+        assert!(card.report_due);
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("unlaunched_reply_does_not_offer_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child("unlaunched_reply_also_offers_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
 }
 #[cfg(unix)]
 #[test]
@@ -3257,6 +3251,7 @@ fn active_goal_holds_reply_card_until_grace_ends() {
         fs::File::options().write(true).open(&transcript).unwrap().set_modified(old).unwrap();
         assert_eq!(tracker.tick(&db).written, 1);
         assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a1"]);
+        assert!(!done_cards(&db)[0].report_due);
         return;
     }
     let scratch = Scratch::new();
@@ -3868,6 +3863,7 @@ fn status_only_report_warns_and_preserves_info_ack() {
         let warning_is_present = warning.0.title == "Missing final report"
             && warning.0.body.as_deref() == Some("Status received without a final report.")
             && warning.0.level.as_deref() == Some("warn")
+            && warning.0.report_due
             && warning.1.is_none();
         let warning_contract = ack.is_ok()
             && inserted
@@ -7257,11 +7253,15 @@ fn plan_review(event: &str, call: &str, detail: &str) -> Value {
 }
 
 fn dsh_card(db: &Db, id: &str, kind: Kind) -> Card {
+    dsh_card_at(db, id, kind, events::now_ms())
+}
+
+fn dsh_card_at(db: &Db, id: &str, kind: Kind, created_ms: i64) -> Card {
     let card = Card {
         id: id.to_owned(),
         kind,
         priority: 1,
-        created_ms: events::now_ms(),
+        created_ms,
         source: Source {
             uri: format!("dsh://session/{SID}"),
             label: "dsh Gate fix".to_owned(),
@@ -7281,7 +7281,7 @@ fn dsh_card(db: &Db, id: &str, kind: Kind) -> Card {
         tool_call_id: None,
         report_due: true,
         engine: Some("dsh".to_owned()),
-        status: None,
+        status: (kind == Kind::Info).then_some(events::CardStatus::NoFinalReport),
     };
     db.insert_card(&card).unwrap();
     card
@@ -7321,6 +7321,88 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
     assert_eq!(bridge.reads("/v1/events"), 1);
     assert_eq!(done_cards(&db).len(), 1);
+}
+
+#[test]
+fn unlaunched_dsh_reply_also_offers_report_request() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.events.insert(SID.to_owned(), vec![reply_event(3, "A plain DSH reply."), turn_end(4, "completed")]);
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
+    assert!(card.report_due, "{card:?}");
+}
+
+#[test]
+fn dsh_status_selection_uses_the_shared_final_report_parser() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.events.insert(SID.to_owned(), vec![
+            reply_event(2, "Preamble.\nENVOY_STATUS: complete\nThis is not the final result."),
+            reply_event(3, "**ENVOY_STATUS: complete**\n\nR: The shipped result."),
+            turn_end(4, "completed"),
+        ]);
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
+    assert_eq!(card.status, Some(events::CardStatus::Complete));
+    assert_eq!(card.title, "Done: The shipped result.");
+}
+
+#[test]
+fn dsh_goal_closing_carries_the_previous_turns_report() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let mut completed = session(6);
+    completed["goalPhase"] = json!("complete");
+    bridge.edit(|data| {
+        data.sessions = vec![completed];
+        data.events.insert(SID.to_owned(), vec![
+            reply_event(2, "ENVOY_STATUS: complete\n\nS: Design ready.\nT: Draft the email.\nA: Wrote the draft.\nR: Draft is ready."),
+            turn_end(3, "completed"),
+            json!({"seq": 4, "type": "tool/result", "name": "update_goal"}),
+            reply_event(5, "Goal marked complete."),
+            turn_end(6, "completed"),
+        ]);
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let card = db.card(&format!("done:dsh:{SID}:6")).unwrap().unwrap().0;
+    assert_eq!(card.status, Some(events::CardStatus::Complete));
+    assert_eq!(card.title, "Done: Draft is ready.");
+    assert!(card.body.as_deref().is_some_and(|body| body.contains("R: Draft is ready.") && body.contains("Goal marked complete.")));
+    assert!(!card.report_due);
+}
+
+#[test]
+fn dsh_goal_closing_does_not_cross_another_closing_turn() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let mut completed = session(7);
+    completed["goalPhase"] = json!("complete");
+    bridge.edit(|data| {
+        data.sessions = vec![completed];
+        data.events.insert(SID.to_owned(), vec![
+            reply_event(2, "ENVOY_STATUS: complete\n\nR: Old goal result."),
+            json!({"seq": 3, "type": "tool/result", "name": "update_goal"}),
+            turn_end(4, "completed"),
+            reply_event(5, "New goal closing message."),
+            json!({"seq": 6, "type": "tool/result", "name": "update_goal"}),
+            turn_end(7, "completed"),
+        ]);
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let card = db.card(&format!("done:dsh:{SID}:7")).unwrap().unwrap().0;
+    assert_eq!(card.status, Some(events::CardStatus::NoFinalReport));
+    assert_eq!(card.body.as_deref(), Some("New goal closing message."));
 }
 
 #[test]
@@ -7698,6 +7780,17 @@ fn active_dsh_goal_holds_its_report_until_the_grace_ends() {
     let bridge = FakeBridge::start(scratch.path());
     let mut goal = session(3);
     goal["goalPhase"] = json!("active");
+    let origin = dsh_card(&db, "origin:active-goal", Kind::Info);
+    db.swipe(&Swipe {
+        card: origin.id,
+        action: "done".to_owned(),
+        option: None,
+        text: Some("Act".to_owned()),
+        note: None,
+        until_ms: None,
+        reason: Some(format!("launched dsh:{SID}")),
+        at_ms: NOW,
+    }).unwrap();
     bridge.edit(|data| {
         data.sessions = vec![goal];
         data.events.insert(
@@ -7712,6 +7805,8 @@ fn active_dsh_goal_holds_its_report_until_the_grace_ends() {
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 31_000), 1);
     let ids: Vec<String> = done_cards(&db).into_iter().map(|card| card.id).collect();
     assert_eq!(ids, vec![format!("done:dsh:{SID}:3")]);
+    let card = db.card(&ids[0]).unwrap().unwrap().0;
+    assert!(!card.report_due);
 }
 
 /// A tracker that leaves the named workspaces under `root` out of the inbox.
@@ -8607,6 +8702,62 @@ fn dsh_dispatch_reports_a_prompt_error_that_is_not_a_refusal() {
     // A prompt that may have been queued must not start a second session on the same brief.
     assert!(bridge.posts("/v1/launch").is_empty());
     assert_eq!(swipe_reason(&db, &card.id), None);
+}
+
+#[test]
+fn dsh_busy_report_request_retries_after_backoff() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+    });
+    let card = dsh_card_at(&db, &format!("done:dsh:{SID}:4"), Kind::Info, NOW);
+    let mut tracker = Tracker::default();
+    let launch = bridge.launch();
+    tracker.chase_missing_reports_at(&db, &launch, NOW);
+    assert!(bridge.posts("/v1/prompt").is_empty());
+    tracker.chase_missing_reports_at(&db, &launch, NOW + 29_999);
+    assert!(bridge.posts("/v1/prompt").is_empty());
+    bridge.edit(|data| {
+        data.states.insert(SID.to_owned(), json!({"running": false, "pendingInput": []}));
+    });
+    tracker.chase_missing_reports_at(&db, &launch, NOW + 30_000);
+    assert_eq!(bridge.posts("/v1/prompt").len(), 1, "card: {card:?}");
+    tracker.chase_missing_reports_at(&db, &launch, NOW + 60_000);
+    assert_eq!(bridge.posts("/v1/prompt").len(), 1);
+}
+
+#[test]
+fn dsh_ambiguous_prompt_error_is_not_retried() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.prompt_refusal = Some((502, "dsh bridge unreachable: timeout".to_owned()));
+    });
+    let _card = dsh_card_at(&db, &format!("done:dsh:{SID}:4"), Kind::Info, NOW);
+    let mut tracker = Tracker::default();
+    let launch = bridge.launch();
+    tracker.chase_missing_reports_at(&db, &launch, NOW);
+    assert_eq!(bridge.posts("/v1/prompt").len(), 1);
+    tracker.chase_missing_reports_at(&db, &launch, NOW + 30_000);
+    assert_eq!(bridge.posts("/v1/prompt").len(), 1);
+}
+
+#[test]
+fn one_ask_per_session_window() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.sessions = vec![session(4)]);
+    let _first = dsh_card_at(&db, &format!("done:dsh:{SID}:4"), Kind::Info, NOW);
+    let _second = dsh_card_at(&db, &format!("done:dsh:{SID}:5"), Kind::Info, NOW);
+    let mut tracker = Tracker::default();
+    tracker.chase_missing_reports_at(&db, &bridge.launch(), NOW);
+    assert_eq!(bridge.posts("/v1/prompt").len(), 1);
 }
 
 #[test]

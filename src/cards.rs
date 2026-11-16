@@ -43,10 +43,10 @@ pub struct Tracker {
     /// Launch commands already relaunched once after a no-model start. A repeat start of the same
     /// command raises a card instead (see `recover_no_model_launch`).
     relaunched: HashSet<String>,
-    /// Sessions asked for the status line their report was missing, keyed by pane id or
-    /// `dsh:<session id>`. One ask per session per daemon run keeps a session that answers
-    /// without a status line again from being asked in a loop.
-    chased: HashSet<String>,
+    /// Sessions with missing replies, keyed by pane id or `dsh:<session id>`.
+    /// One taken request per cooldown window prevents report prompts from looping.
+    /// One request per session per daemon run prevents report prompts from looping.
+    chased: HashMap<String, Chase>,
     /// Launches seen running omp with no session yet, keyed by their shell command (see
     /// `watch_startup`). A window that dies inside `STARTUP_WINDOW` with omp's SQLITE_BUSY
     /// startup crash is relaunched after a backoff (see `recover_dead_startup`).
@@ -62,7 +62,11 @@ pub struct Tracker {
     #[cfg(test)]
     proposal_reads: usize,
 }
-
+#[derive(Default, Clone, Copy)]
+struct Chase {
+    probed_ms: i64,
+    taken_ms: Option<i64>,
+}
 struct CachedAsk {
     path: PathBuf,
     length: u64,
@@ -140,7 +144,7 @@ impl Tracker {
             seen: HashMap::new(),
             audit_pending: HashSet::new(),
             relaunched: HashSet::new(),
-            chased: HashSet::new(),
+            chased: HashMap::new(),
             startup: HashMap::new(),
             startup_panes: HashMap::new(),
             dsh: dsh_track::Memo::default(),
@@ -157,13 +161,14 @@ impl Tracker {
         self.dsh_ignore = ignore;
     }
 
-    /// Ask a session for the status line its report was missing. Every card states an outcome.
-    /// A run triage briefed owes one. The session gets one ask instead of the inbox keeping a
-    /// report whose outcome nobody knows. Only a card that owes a report and arrived without one
-    /// is chased. Its session must still be young enough to answer. The card stays queued. The
-    /// report that answers the ask replaces it.
+    /// Ask a session for the status or report body its reply missed. A run triage briefed owes one.
+    /// Definite refusals retry after a cooldown; the card stays queued until a report replaces it.
     pub fn chase_missing_reports(&mut self, db: &Db, launch: &Launch) -> TickReport {
-        let now = crate::events::now_ms();
+        self.chase_missing_reports_at(db, launch, crate::events::now_ms())
+    }
+
+    /// Retry report requests after a definite refusal, using caller time for deterministic tests.
+    pub(super) fn chase_missing_reports_at(&mut self, db: &Db, launch: &Launch, now: i64) -> TickReport {
         let Ok(cards) = db.queue(now) else {
             return TickReport { written: 0 };
         };
@@ -183,13 +188,26 @@ impl Tracker {
             let Some(key) = ask_key(&card) else {
                 continue;
             };
-            // A session that cannot take the ask is not asked again in this run. A failed
-            // tmux or bridge call is not worth a fork on every tick.
-            if !self.chased.insert(key) {
+            let chase = self.chased.get(&key).copied().unwrap_or_default();
+            if (chase.probed_ms != 0 && now.saturating_sub(chase.probed_ms) < CHASE_PROBE_MS)
+                || chase.taken_ms.is_some_and(|taken| now.saturating_sub(taken) < CHASE_WINDOW_MS)
+            {
                 continue;
             }
-            if let Err(error) = ask_for_report(&card, launch) {
-                eprintln!("triage: no final report for {}: {error}", card.id);
+            let result = ask_for_report(&card, launch);
+            let retry = self.chased.entry(key).or_default();
+            let first_probe = retry.probed_ms == 0;
+            retry.probed_ms = now;
+            match result {
+                Ok(()) => retry.taken_ms = Some(now),
+                Err(error) => {
+                    if first_probe {
+                        eprintln!("triage: no final report for {}: {error}", card.id);
+                    }
+                    if !retryable_report_error(&error) {
+                        retry.taken_ms = Some(now);
+                    }
+                }
             }
         }
         TickReport { written: 0 }
@@ -1026,7 +1044,7 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>, launch: &Launch) -> Resul
         Err("could not record swipe".to_owned())
     }
 }
-const REQUEST_REPORT_TEXT: &str = "Send the final report your brief requires now: first line `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`, then the four report lines your brief describes.";
+const REQUEST_REPORT_TEXT: &str = "Send the final report for this triage card now. Start with `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. Use `complete` only for shipped work with its full gate passed. Use `agent-done` when work is done but a required push, deploy or full gate remains. Use `incomplete` when the task is blocked. Write one sentence per line: `S:` for the situation, `T:` for the task, `A:` for the work you did, and `R:` for the outcome and evidence. Finish with `Recommended action: none` or the one step that still needs user approval.";
 
 /// Type the request for the final report into the card's waiting pane and resolve the card.
 /// A dsh card asks its session instead. Only an idle session takes the request.
@@ -1061,6 +1079,10 @@ pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), Strin
 /// out. An older card belongs to a session that has long since stopped.
 const CHASE_WINDOW_MS: i64 = 10 * 60 * 1000;
 
+/// Minimum delay between report probes.
+const CHASE_PROBE_MS: i64 = 30_000;
+
+
 /// The session a card can ask for its final report is the dsh session the card came from, or
 /// its tmux pane.
 fn ask_key(card: &Card) -> Option<String> {
@@ -1068,24 +1090,40 @@ fn ask_key(card: &Card) -> Option<String> {
         .map(|sid| format!("dsh:{sid}"))
         .or_else(|| card.source.pane.clone())
 }
-
 /// Ask the card's session for the final report without changing the card. An omp pane must be
 /// waiting. A dsh session must be idle. Anything else refuses and sends nothing.
 fn ask_for_report(card: &Card, launch: &Launch) -> Result<(), String> {
     if let Some(sid) = dsh::session_id(card) {
-        let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
-        let state = client.state(sid)?;
+        let host = launch.dsh_host.as_deref();
+        let state_client = dsh::connect(host, dsh::TICK_TIMEOUT)
+            .map_err(|error| format!("report state: {error}"))?;
+        let state = state_client.state(sid)
+            .map_err(|error| format!("report state: {error}"))?;
         if state.running || !state.pending_input.is_empty() {
             return Err("session is busy".to_owned());
         }
-        return client.prompt(sid, REQUEST_REPORT_TEXT, None);
+        let prompt_client = dsh::connect(host, dsh::ACTION_TIMEOUT)
+            .map_err(|error| format!("report state: {error}"))?;
+        return prompt_client.prompt(sid, REQUEST_REPORT_TEXT, None)
+            .map_err(|error| format!("report prompt: {error}"));
     }
     let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
-    let panes = tmux::list_panes().map_err(|error| error.to_string())?;
+    let panes = tmux::list_panes().map_err(|error| format!("report state: {error}"))?;
     if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
         return Err("pane is not waiting".to_owned());
     }
     send(pane, REQUEST_REPORT_TEXT)
+}
+
+fn retryable_report_error(error: &str) -> bool {
+    error.starts_with("report state: ")
+        || matches!(
+            error,
+            "pane is not waiting"
+                | "editor is not empty"
+                | "session is busy"
+                | "report prompt: session is busy"
+        )
 }
 
 /// Open a new window that resumes an ended session with `omp --restore`. A crashed or
@@ -1699,15 +1737,13 @@ fn queue_turn_card(
             };
             (entry_id, turn)
         }
-        omp::TurnEnd::Reply { entry_id, text, report } => (
-            entry_id,
-            reply_turn(
-                text,
-                report,
-                !trail.situation.is_empty(),
-                investigation,
-            ),
-        ),
+        omp::TurnEnd::Reply { entry_id, text, report } => {
+            let mut turn = reply_turn(text, report, investigation);
+            if omp::goal_active(path).unwrap_or(false) {
+                turn.report_due = false;
+            }
+            (entry_id, turn)
+        }
     };
     let card = turn_card(
         format!("done:{}:{entry_id}", pane.id),
@@ -1790,7 +1826,6 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
 fn reply_turn(
     text: String,
     report: Option<String>,
-    has_trail: bool,
     investigation: bool,
 ) -> Turn {
     let text = omp::redact_credentials(&text);
@@ -1806,7 +1841,7 @@ fn reply_turn(
     // so it earns the same card titled with its first non-empty line.
     let headline = match reported {
         None => headline_of(source),
-        Some((_, report)) if report.is_empty() => "Missing final report".to_owned(),
+        Some((_, "")) => "Missing final report".to_owned(),
         Some((_, report)) => headline_of(report),
     };
     let body = match reported {
@@ -1870,7 +1905,7 @@ fn reply_turn(
         Some((omp::FinalStatus::AgentDone, _)) => events::CardStatus::StepOpen,
         Some((omp::FinalStatus::Incomplete, _)) => events::CardStatus::Incomplete,
     };
-    Turn { title, body: Some(body), level, action, report_due: reported.is_none() && has_trail, status }
+    Turn { title, body: Some(body), level, action, report_due: reported.is_none() || missing_report, status }
 }
 
 /// Where a launched session's work came from. The situation is the title of the card whose

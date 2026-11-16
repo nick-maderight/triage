@@ -609,11 +609,12 @@ fn report_card(
             Some((event.seq, text))
         })
         .collect();
-    let status = replies.iter().rev().find(|(seq, text)| {
-        *seq > turn_start && text.lines().any(|line| line.starts_with("ENVOY_STATUS:"))
-    });
+    let status = replies
+        .iter()
+        .rev()
+        .find(|(seq, text)| *seq > turn_start && omp::final_report(text).is_some());
     let reply = status
-        .or(replies.last())
+        .or_else(|| replies.iter().rev().find(|(seq, _)| *seq > turn_start))
         .map_or_else(String::new, |&(_, text)| text.to_owned());
     let reason = end.reason.as_deref().unwrap_or("completed");
     let replied_now = replies.iter().any(|(seq, _)| *seq > turn_start);
@@ -644,7 +645,46 @@ fn report_card(
         parts.join("\n\n")
     };
     let (star, investigation) = trail(db, &format!("dsh:{sid}"), 0);
-    let mut turn = reply_turn(text, None, !star.situation.is_empty(), investigation);
+    let current_goal_close = reason == "completed"
+        && session.goal_phase.as_deref() == Some("complete")
+        && recent.iter().any(|event| {
+            event.name.as_deref() == Some("update_goal")
+                && event.seq > turn_start
+                && event.seq < end.seq
+        });
+    let previous_end = recent
+        .iter()
+        .find(|event| event.kind == "turn/end" && event.seq == turn_start);
+    let previous_start = recent
+        .iter()
+        .filter(|event| event.kind == "turn/end" && event.seq < turn_start)
+        .map(|event| event.seq)
+        .max()
+        .unwrap_or_default();
+    let previous_goal_close = recent.iter().any(|event| {
+        event.name.as_deref() == Some("update_goal")
+            && event.seq > previous_start
+            && event.seq < turn_start
+    });
+    let report = if status.is_none()
+        && current_goal_close
+        && previous_end.is_some_and(|event| event.reason.as_deref() == Some("completed"))
+        && !previous_goal_close
+    {
+        replies
+            .iter()
+            .rev()
+            .find(|(seq, text)| {
+                *seq > previous_start && *seq < turn_start && omp::final_report(text).is_some()
+            })
+            .map(|(_, text)| (*text).to_owned())
+    } else {
+        None
+    };
+    let mut turn = reply_turn(text, report, investigation);
+    if session.goal_phase.as_deref() == Some("active") {
+        turn.report_due = false;
+    }
     if reason == "error" {
         turn.report_due = false;
         turn.action.clear();
@@ -653,14 +693,9 @@ fn report_card(
     if matches!(reason, "error" | "blocked" | "max-tokens") {
         turn.level = "warn";
     }
-    // Plan mode means no work ran. The turn wrote a plan and left it for the user to approve.
-    // A report it ends with is not a finished result. The card says what waits instead.
     let plan = plan_message(&replies, turn_start);
     if session.plan_active && reason == "completed" && replied {
         let name = plan_name(plan, &turn);
-        // A host that decides plans turns the turn into the plan card whose Approve leaves
-        // plan mode. A host older than that route can only report, so the plan stays a report
-        // that names what waits for you.
         if plan_decisions {
             return Some(plan_card(session, end, &name, plan, turn.body));
         }
