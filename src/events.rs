@@ -73,7 +73,7 @@ pub struct Star {
 pub enum CardStatus {
     /// The run reported `ENVOY_STATUS: complete`.
     Complete,
-    /// The run reported `ENVOY_STATUS: agent-done` with a step still open.
+    /// A non-investigation `complete` report with an open action, or `agent-done` with a step still open.
     StepOpen,
     /// The run reported `ENVOY_STATUS: incomplete`.
     Incomplete,

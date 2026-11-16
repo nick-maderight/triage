@@ -609,6 +609,39 @@ fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
     assert_eq!(headline_of("Plain reply with no labels.\n"), "Plain reply with no labels.");
 }
 
+#[test]
+fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
+    let card = finding_card(Path::new("/tmp"));
+    let act = dispatch_brief(&card, DispatchMode::Act, None, None);
+    let investigation = dispatch_brief(&card, DispatchMode::Investigate, None, None);
+    let session = session_brief("Build every requested part.", false, None);
+    let recommendation_rules = [
+        "A non-investigation `complete` report writes `Recommended action: none`.",
+        "An investigation may name one evidence-backed next action.",
+        "Write `Recommended action: none` when no qualifying action waits.",
+        "Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker.",
+        "Resume and finish anything your instructions allow.",
+    ];
+    for brief in [&act, &investigation, &session] {
+        for rule in recommendation_rules {
+            assert!(brief.contains(rule), "missing {rule:?} from {brief}");
+        }
+    }
+    for brief in [&act, &session] {
+        assert!(brief.contains("Keep working until every part of the brief is finished or blocked."));
+        assert!(brief.contains("`complete` means the whole requested outcome shipped"));
+    }
+    assert!(act.contains("Complete every part and every environment the request covers."));
+    assert!(act.contains("make the normal call and let the harness answer."));
+    assert!(investigation.contains(INVESTIGATE_STATUS_CONTRACT));
+    assert!(!investigation.contains("ENVOY_STATUS: agent-done"));
+    for rule in recommendation_rules {
+        assert!(REQUEST_REPORT_TEXT.contains(rule), "missing {rule:?} from request");
+    }
+    assert!(REQUEST_REPORT_TEXT.contains("only after every part of the brief is finished or blocked"));
+    assert!(!REPORT_STEP.contains("names the one change your instructions did not allow"));
+    assert!(!REQUEST_REPORT_TEXT.contains("the one step that still needs user approval"));
+}
 
 // Nick asked for a default Act instruction. In his words, "if i don't type anything this is the
 // default instruction". An Act launch that names no direction carries the same words the inbox
@@ -2040,8 +2073,8 @@ fn investigation_step_waits_on_its_card_instead_of_a_plan_brief() {
 
 
 #[test]
-fn act_complete_report_keeps_its_recommended_line_in_the_body() {
-    if let Some(root) = child_root("act_complete_report_keeps_its_recommended_line_in_the_body") {
+fn act_complete_report_with_a_step_opens_instead_of_closing() {
+    if let Some(root) = child_root("act_complete_report_with_a_step_opens_instead_of_closing") {
         let (_pty, tty) = new_pty();
         assert_eq!(
             reply_turn(
@@ -2086,21 +2119,20 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
             .unwrap()
             .into_iter()
             .find(|card| card.id == "done:%12:assistant-report");
-        assert!(
-            written == 1
-                && card.is_some_and(|card| {
-                    card.star.action.is_empty()
-                        && card.body.as_deref()
-                            == Some("Skill updated.\n\nRecommended action: next cold-email task, read the field data first.")
-                })
-        );
+        let card = card.unwrap();
+        assert_eq!(written, 1);
+        assert_eq!(card.star.action, "next cold-email task, read the field data first.");
+        assert_eq!(card.body.as_deref(), Some("Skill updated."));
+        assert_eq!(card.status, Some(events::CardStatus::StepOpen));
+        assert_eq!(card.level.as_deref(), Some("warn"));
+        assert!(card.title.starts_with("Agent done:"), "{}", card.title);
         assert!(!root.join("tmux-keys.log").exists(), "the pane got keys");
         let none = reply_turn(
             "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: none.".to_owned(),
             None,
             false,
         );
-        assert_eq!(none.body.as_deref(), Some("Shipped."));
+        assert_eq!(none.status, events::CardStatus::Complete);
         assert!(none.action.is_empty());
         return;
     }
@@ -2108,7 +2140,7 @@ fn act_complete_report_keeps_its_recommended_line_in_the_body() {
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child(
-        "act_complete_report_keeps_its_recommended_line_in_the_body",
+        "act_complete_report_with_a_step_opens_instead_of_closing",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -3089,17 +3121,12 @@ fn report_survives_background_wake() {
         let mut tracker = Tracker::default();
         let written = tracker.tick(&db).written;
         let queue = done_cards(&db);
-        assert!(
-            written == 1
-                && queue.len() == 1
-                && queue[0].id == "done:%12:a2"
-                && queue[0].title == "Done: Shipped."
-                && queue[0].body.as_deref()
-                    == Some("Shipped.\n\nRecommended action: Publish the release.\n\n---\n\nBackground job finished.\n\nRecommended action: Restart the worker.")
-                && queue[0].star.action.is_empty()
-                && queue[0].level.as_deref() == Some("info"),
-            "queue: {queue:?}"
-        );
+        assert!(written == 1 && queue.len() == 1 && queue[0].id == "done:%12:a2", "queue: {queue:?}");
+        assert_eq!(queue[0].title, "Agent done: Shipped.");
+        assert_eq!(queue[0].body.as_deref(), Some("Shipped.\n\n---\n\nBackground job finished."));
+        assert_eq!(queue[0].star.action, "Publish the release.\n\nRestart the worker.");
+        assert_eq!(queue[0].level.as_deref(), Some("warn"));
+        assert_eq!(queue[0].status, Some(events::CardStatus::StepOpen));
         return;
     }
 
@@ -7310,10 +7337,11 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
     assert_eq!(card.engine.as_deref(), Some("dsh"));
     assert_eq!(card.source.uri, format!("dsh://session/{SID}"));
     assert_eq!(card.source.label, "dsh Gate fix");
-    assert!(card.title.starts_with("Done:"), "{card:?}");
-    assert!(card.star.action.is_empty());
-    assert_eq!(card.body.as_deref(), Some("Goal ok\n\nRecommended action: Run the autorules sweep."));
-    assert!(card.body.as_deref().is_some_and(|body| body.contains("Goal ok")), "{card:?}");
+    assert!(card.title.starts_with("Agent done:"), "{card:?}");
+    assert_eq!(card.star.action, "Run the autorules sweep.");
+    assert_eq!(card.status, Some(events::CardStatus::StepOpen));
+    assert_eq!(card.level.as_deref(), Some("warn"));
+    assert_eq!(card.body.as_deref(), Some("Goal ok"));
     assert_eq!(bridge.reads("/v1/events"), 1);
     let requests = bridge.requests();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 1_000), 0);

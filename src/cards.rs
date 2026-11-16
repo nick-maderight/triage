@@ -1044,8 +1044,8 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>, launch: &Launch) -> Resul
         Err("could not record swipe".to_owned())
     }
 }
-const REQUEST_REPORT_TEXT: &str = "Send the final report for this triage card now. Start with `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. Use `complete` only for shipped work with its full gate passed. Use `agent-done` when work is done but a required push, deploy or full gate remains. Use `incomplete` when the task is blocked. Write one sentence per line: `S:` for the situation, `T:` for the task, `A:` for the work you did, and `R:` for the outcome and evidence. Finish with `Recommended action: none` or the one step that still needs user approval.";
 
+const REQUEST_REPORT_TEXT: &str = "Send the final report for this triage card only after every part of the brief is finished or blocked. Otherwise finish the open part first. Start with `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. Use `complete` only when the whole requested outcome shipped with its full gate passed. Work that is done but left a required push, deploy, full test gate, or Nick-owned approval open reports `agent-done` and names that step. Use `incomplete` when the task is blocked. Write one sentence per line: `S:` for the situation, `T:` for the task, `A:` for the work you did, and `R:` for the outcome and evidence. Finish with one `Recommended action:` line. A non-investigation `complete` report writes `Recommended action: none`. An investigation may name one evidence-backed next action. An `agent-done` or `incomplete` report may name one required change that a standing rule reserves for Nick's approval. Write `Recommended action: none` when no qualifying action waits. Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker. Resume and finish anything your instructions allow.";
 /// Type the request for the final report into the card's waiting pane and resolve the card.
 /// A dsh card asks its session instead. Only an idle session takes the request.
 pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
@@ -1835,7 +1835,6 @@ fn reply_turn(
     let carried = report.filter(|_| omp::final_report(&text).is_none());
     let source = carried.as_deref().unwrap_or(&text);
     let reported = omp::final_report(source);
-    let withhold_action = !investigation && matches!(reported, Some((omp::FinalStatus::Complete, _)));
     let missing_report = reported.as_ref().is_some_and(|(_, report)| report.is_empty());
     // A reply without a status line still ends a turn that waits for the user,
     // so it earns the same card titled with its first non-empty line.
@@ -1849,14 +1848,12 @@ fn reply_turn(
         Some((_, _)) if missing_report => "Status received without a final report.".to_owned(),
         Some((_, report)) => report.to_owned(),
     };
-    let (mut body, mut action) = match omp::recommended_action(&body)
-        .filter(|(_, step)| !withhold_action || step.is_empty())
-    {
+    let (mut body, mut action) = match omp::recommended_action(&body) {
         Some((rest, step)) => (rest, step),
         None => (body, String::new()),
     };
     if carried.is_some() {
-        match omp::recommended_action(&text).filter(|(_, step)| !withhold_action || step.is_empty()) {
+        match omp::recommended_action(&text) {
             Some((closing, closing_action)) => {
                 body.push_str("\n\n---\n\n");
                 body.push_str(&closing);
@@ -1873,9 +1870,9 @@ fn reply_turn(
             }
         }
     }
-    // An agent-done report that closes with `Recommended action: none` names no step for the
-    // user to pick up. Nothing is open, so the card reports the work as done. A report with no
-    // recommended-action line keeps the warning, because it never named its open step.
+    let open_complete_step =
+        !investigation && matches!(reported, Some((omp::FinalStatus::Complete, _))) && !action.is_empty();
+    // An agent-done report with no open action means every reachable step is done.
     let closed_report = matches!(reported, Some((omp::FinalStatus::AgentDone, _)))
         && action.is_empty()
         && (omp::recommended_action(source).is_some()
@@ -1883,6 +1880,7 @@ fn reply_turn(
     let title = match reported {
         None => headline,
         Some((_, _)) if missing_report => headline,
+        Some((omp::FinalStatus::Complete, _)) if open_complete_step => format!("Agent done: {headline}"),
         Some((omp::FinalStatus::Complete, _)) => format!("Done: {headline}"),
         Some((omp::FinalStatus::AgentDone, _)) if closed_report => format!("Done: {headline}"),
         Some((omp::FinalStatus::AgentDone, _)) => format!("Agent done: {headline}"),
@@ -1890,6 +1888,7 @@ fn reply_turn(
     };
     let level = match reported {
         None => "info",
+        Some((omp::FinalStatus::Complete, _)) if open_complete_step => "warn",
         Some((omp::FinalStatus::Complete, _)) if !missing_report => "info",
         Some((omp::FinalStatus::AgentDone, _)) if closed_report && !missing_report => "info",
         Some(_) => "warn",
@@ -1900,6 +1899,7 @@ fn reply_turn(
     let status = match reported {
         None => events::CardStatus::NoFinalReport,
         Some((_, _)) if missing_report => events::CardStatus::NoFinalReport,
+        Some((omp::FinalStatus::Complete, _)) if open_complete_step => events::CardStatus::StepOpen,
         Some((omp::FinalStatus::Complete, _)) => events::CardStatus::Complete,
         Some((omp::FinalStatus::AgentDone, _)) if closed_report => events::CardStatus::Complete,
         Some((omp::FinalStatus::AgentDone, _)) => events::CardStatus::StepOpen,
@@ -3465,20 +3465,11 @@ fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: Dis
     }
     brief
 }
-
-const ENVOY_STATUS_CONTRACT: &str = "When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. `complete` means the work shipped through the project's normal pipeline, pushed or deployed as the task calls for, and the full test suite passed. Work that is done but left its push, deploy or full test gate open reports `agent-done` and names that step. A run that could not use the method its brief named reports `incomplete`.";
-
+const REPORT_STEP: &str = " Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow. Then report in caveman style, short words and nothing spare, as STAR with one sentence per label, each line starting `S:`, `T:`, `A:` or `R:`. `S:` the situation the card described. `T:` the task the brief set. `A:` what you did, naming every file, skill and system you changed. `R:` the outcome and the evidence for it. Then one last line that starts `Recommended action:`. A non-investigation `complete` report writes `Recommended action: none`. An investigation may name one evidence-backed next action. An `agent-done` or `incomplete` report may name one required change that a standing rule reserves for Nick's approval. Write `Recommended action: none` when no qualifying action waits. Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker. Resume and finish anything your instructions allow. Work waiting on a later event, steps only the user can take, advice for future work, standing rules, and steps already finished are no step. Never ask for, suggest or invite a send anywhere in the report, and never tell the user how to open or send a draft: the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked.\n";
+const ENVOY_STATUS_CONTRACT: &str = "Keep working until every part of the brief is finished or blocked. When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. `complete` means the whole requested outcome shipped through the project's normal pipeline, pushed or deployed as the task calls for, and the full test suite passed. Work that is done but left a required push, deploy, full test gate, or Nick-owned approval open reports `agent-done` and names that step. A run that could not use the method its brief named reports `incomplete`.";
 const INVESTIGATE_STATUS_CONTRACT: &str = "When finished, end with a final reply whose first line is `ENVOY_STATUS: complete` or `ENVOY_STATUS: incomplete`. `complete` means the answer is reported with its evidence and nothing changed beyond what the direction from the user asked for. `incomplete` means the question could not be answered, and the reply names what blocked it.";
-
-/// How every brief's final reply reads after its status line. Each session finishes its
-/// allowed work before reporting. The report follows STAR so Nick reads the same four beats
-/// on every card: what the situation was, what the brief asked, what the session did, and
-/// what came of it. The result names the card title, and the last line names only the change
-/// the user must approve.
-const REPORT_STEP: &str = " Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow. Then report in caveman style, short words and nothing spare, as STAR with one sentence per label, each line starting `S:`, `T:`, `A:` or `R:`. `S:` the situation the card described. `T:` the task the brief set. `A:` what you did, naming every file, skill and system you changed. `R:` the outcome and the evidence for it. Then one last line that starts `Recommended action:` and names the one change your instructions did not allow and the user must approve, complete enough to plan from as written; write `Recommended action: none` when nothing waits on the user. Work waiting on a later event, steps only the user can take, advice for future work, standing rules, and steps already finished are no step. Never ask for, suggest or invite a send anywhere in the report, and never tell the user how to open or send a draft: the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked.\n";
-
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
-const ACT_INSTRUCTION: &str = "Take the action this card calls for, end to end. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
+const ACT_INSTRUCTION: &str = "Take the whole action this card calls for, end to end in this run. Complete every part and every environment the request covers. Do not stop at the first working slice. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. When an in-scope edit may need harness approval, make the normal call and let the harness answer. Do not predict a denial. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 /// The direction an Act launch carries when the user typed none. It asks for the work to be
 /// thought through and for no more to be spent than it requires. The inbox prefills its Instruction
 /// with it. A finding answer or API dispatch that names no note gets the same text. Every Act
