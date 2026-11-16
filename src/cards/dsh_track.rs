@@ -802,6 +802,95 @@ fn launch_prompt(brief: &Path, name: &str) -> String {
     format!("{name}: {}", dispatch_prompt(brief))
 }
 
+/// The dsh workspace a naming ask runs in. Triage ignores this workspace, which keeps
+/// the session the ask leaves behind out of the inbox.
+const NAME_WORKSPACE: &str = "autorules";
+
+/// Caps a name at the width a sidebar row shows. A name is a label.
+const NAME_CHARS: usize = 28;
+
+/// Caps the brief text the naming model reads. A brief opens with the direction and the
+/// task. The rest is reference the name does not need.
+const NAME_INPUT_BYTES: usize = 6000;
+
+/// The question that names a session from its brief. The wording matches the one
+/// dsh-tools' `bridge.NamePrompt` sends. Either caller names a session the same way.
+fn name_prompt(brief: &str) -> String {
+    let mut end = brief.len().min(NAME_INPUT_BYTES);
+    while end > 0 && !brief.is_char_boundary(end) {
+        end -= 1;
+    }
+    let text = &brief[..end];
+    format!(
+        "Give the task in this brief a name of two to four words, at most 28 characters. \
+Reply with the name only, in plain text, with no quotes and no trailing punctuation. \
+Prefer a verb and its object, such as Fix login redirect.\n\nBRIEF:\n{text}"
+    )
+}
+
+/// The route a naming ask takes. It prefers the first direct flash model in the catalog
+/// and falls back to the catalog default. A fallback chain serves the conversation. Its
+/// failover costs seconds that a short name does not need.
+fn name_route(catalog: &dsh::Catalog) -> (String, String) {
+    for model in &catalog.models {
+        if model.provider.starts_with("FallbacksChain") {
+            continue;
+        }
+        let named = format!("{} {}", model.name.as_deref().unwrap_or_default(), model.model).to_lowercase();
+        if !named.contains("flash") {
+            continue;
+        }
+        let effort = model
+            .efforts
+            .iter()
+            .find(|level| *level == "off")
+            .or_else(|| model.efforts.first())
+            .cloned()
+            .unwrap_or_default();
+        return (model.selector.clone(), effort);
+    }
+    (catalog.default_selector().unwrap_or_default().to_owned(), String::new())
+}
+
+/// One line of a model's answer, without the quotes, emphasis or full stop a model adds
+/// even when the question forbids them, cut on a word boundary.
+fn clean_name(text: &str) -> String {
+    let Some(line) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return String::new();
+    };
+    let line = line.trim_matches(|c: char| "\"'`*_ ".contains(c));
+    let line = line.strip_suffix('.').unwrap_or(line);
+    let line = one_line(line);
+    if line.is_empty() {
+        return String::new();
+    }
+    title_words(&line, NAME_CHARS, NAME_CHARS * 4)
+}
+
+/// The name a goal launch pins, read out of the brief by the model that names a session.
+/// A host that cannot answer leaves the brief's own task line. Naming never holds up a
+/// launch.
+fn brief_name(client: &dsh::Client, brief: &Path, task: &str) -> String {
+    if let Some(name) = model_name(client, brief) {
+        return name;
+    }
+    title_words(&one_line(task), 60, 80)
+}
+
+/// The model's name for `brief`, or None when the host is down, slow, or out of models.
+fn model_name(client: &dsh::Client, brief: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(brief).ok()?;
+    let catalog = client.models().ok()?;
+    let (model, effort) = name_route(&catalog);
+    let reply = client
+        .ask(&name_prompt(&text), NAME_WORKSPACE, &model, &effort)
+        .ok()?;
+    // The ask leaves a session behind. Its answer is all triage wanted.
+    let _ = client.archive(&reply.session_id);
+    let name = clean_name(&reply.text);
+    (!name.is_empty()).then_some(name)
+}
+
 /// One line of a title. A card title cannot break the launch prompt, which the bridge
 /// accepts only as one line.
 fn one_line(text: &str) -> String {
@@ -1176,9 +1265,10 @@ pub(super) fn launch_new(
     });
     // dsh names a session from its first `user` message. A plan launch records the brief
     // prompt as one. Since a goal launch only creates a goal, whose rounds are not user
-    // messages, dsh has nothing to name it from. Only a goal launch keeps this title.
+    // messages, dsh has nothing to name it from, so triage pins the name it reads out of
+    // the brief. Only a goal launch keeps this title.
     let pinned = match start {
-        Start::Goal => title_words(&name, 60, 80),
+        Start::Goal => brief_name(&client, brief, &name),
         _ => String::new(),
     };
     if !pinned.is_empty() {

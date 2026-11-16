@@ -6997,6 +6997,9 @@ struct BridgeData {
     // state_error answers GET /v1/state with this error, the way a host too busy to list its
     // sessions does.
     state_error: Option<String>,
+    // name_answer is the text POST /v1/ask answers with, the name a host's title model
+    // reads out of a brief. None answers no route, the way a host without the ask leaves it.
+    name_answer: Option<String>,
 }
 
 impl BridgeData {
@@ -7037,6 +7040,13 @@ impl BridgeData {
                 let items = self.events.get(&sid).cloned().unwrap_or_default();
                 (StatusCode::OK, json!({"items": items}))
             }
+            ("GET", "/v1/models") if self.name_answer.is_some() => (
+                StatusCode::OK,
+                json!({"default": "FallbacksChain/Auto", "models": [
+                    {"provider": "FallbacksChain", "model": "Auto", "selector": "FallbacksChain/Auto", "name": "Auto opencode-go: DeepSeek V4.1 Flash", "efforts": ["low", "high", "max"]},
+                    {"provider": "deepseek-official", "model": "deepseek-flash", "selector": "deepseek-official/deepseek-flash", "name": "deepseek-flash", "efforts": ["off", "low", "high", "max"]},
+                ]}),
+            ),
             ("POST", _) => {
                 let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
                 if path == "/v1/archive" {
@@ -7070,6 +7080,14 @@ impl BridgeData {
                             json!({"error": error, "sessionId": sid}),
                         );
                     }
+                }
+                if path == "/v1/ask" {
+                    let reply = match self.name_answer.clone() {
+                        Some(text) => json!({"sessionId": "session-name", "text": text, "reason": "completed"}),
+                        None => json!({"error": "no route"}),
+                    };
+                    self.posts.push((path, value));
+                    return (StatusCode::OK, reply);
                 }
                 if path == "/v1/prompt"
                     && let Some((status, error)) = self.prompt_refusal.take()
@@ -8212,8 +8230,9 @@ fn dsh_goal_launch_names_the_session_itself() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
-    // A goal launch gives dsh no user message to name from, so triage keeps naming it. The
-    // title ends on a word boundary, never the mid-word cut the bridge would make of 60.
+    // A goal launch gives dsh no user message to name from, so triage names it from the
+    // brief. A host with no naming route leaves the brief's own task line, cut on a word
+    // boundary, never the mid-word cut the bridge would make of 60.
     let title = "Launch kept dying at startup: the database was locked and the retry logged nothing";
     let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
@@ -8225,6 +8244,33 @@ fn dsh_goal_launch_names_the_session_itself() {
         "{}",
         launches[0]
     );
+}
+
+#[test]
+fn dsh_goal_launch_pins_the_name_read_out_of_the_brief() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| data.name_answer = Some("Fix session titles\n".to_owned()));
+    let title = "DIRECTION FROM THE USER: this kind of session title is bad";
+    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, None);
+    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
+    // The name comes from the model that read the brief, on the fast route, in the
+    // workspace triage ignores.
+    let asks = bridge.posts("/v1/ask");
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(asks[0]["workspace"], "autorules");
+    assert_eq!(asks[0]["model"], "deepseek-official/deepseek-flash");
+    assert_eq!(asks[0]["effort"], "off");
+    assert!(
+        asks[0]["prompt"].as_str().is_some_and(|prompt| prompt.contains("Give the task in this brief a name")
+            && prompt.contains("this kind of session title is bad")),
+        "{}",
+        asks[0]
+    );
+    // The ask leaves a session behind, so triage archives the one that answered.
+    assert!(bridge.posts("/v1/archive").iter().any(|body| body["sessionId"] == "session-name"));
+    assert_eq!(bridge.posts("/v1/launch")[0]["title"], "Fix session titles");
 }
 
 #[test]

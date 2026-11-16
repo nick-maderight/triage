@@ -26,6 +26,20 @@ pub fn workspace_name(name: Option<&str>) -> Result<Option<&str>, String> {
     Ok(name)
 }
 
+/// One answer from POST /v1/ask. It carries the session that answered and its reply
+/// text.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskReply {
+    pub session_id: String,
+    #[serde(default)]
+    pub text: String,
+}
+
+/// Caps a naming ask. One judge turn with no tools answers it. A host that takes longer
+/// is busy. The caller is better off with the name it can build itself.
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// The effort levels dsh shows.
 pub const THINKING: [&str; 4] = ["off", "low", "high", "max"];
 /// Caps a background poll, which runs under the tracker lock.
@@ -349,6 +363,21 @@ impl Client {
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("dsh bridge returned {}", status.as_u16())))
+    }
+
+    /// Ask the host one question and return its answer with the session that answered it.
+    /// A judge ask carries no tools, which keeps the prompt from acting on the machine.
+    /// The caller archives the session once it has the answer.
+    pub fn ask(&self, prompt: &str, workspace: &str, model: &str, effort: &str) -> Result<AskReply, String> {
+        let body = json!({
+            "prompt": prompt,
+            "workspace": workspace,
+            "model": model,
+            "effort": effort,
+            "preset": "judge",
+            "timeoutSeconds": ASK_TIMEOUT.as_secs(),
+        });
+        self.post("/v1/ask", &body)
     }
 
     /// Queue text in an idle session. `image` is the encoded attachment the prompt carries.
