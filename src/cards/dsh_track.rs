@@ -1266,9 +1266,13 @@ pub(super) fn launch_new(
     // dsh names a session from its first `user` message. A plan launch records the brief
     // prompt as one. Since a goal launch only creates a goal, whose rounds are not user
     // messages, dsh has nothing to name it from, so triage pins the name it reads out of
-    // the brief. Only a goal launch keeps this title.
+    // the brief. Only a goal launch keeps this title. Naming runs on its own short timeout,
+    // because a busy host must not hold a launch for the launch timeout.
     let pinned = match start {
-        Start::Goal => brief_name(&client, brief, &name),
+        Start::Goal => match dsh::connect(launch.dsh_host.as_deref(), dsh::ASK_TIMEOUT) {
+            Ok(namer) => brief_name(&namer, brief, &name),
+            Err(_) => title_words(&one_line(&name), 60, 80),
+        },
         _ => String::new(),
     };
     if !pinned.is_empty() {
