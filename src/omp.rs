@@ -1232,35 +1232,47 @@ pub fn final_report(text: &str) -> Option<(FinalStatus, &str)> {
     Some((status, text[start..].trim()))
 }
 
-/// Splits the last labelled `Recommended action` paragraph from a report. List, quote,
-/// heading and emphasis marks before the label still count. A bare label takes the next
-/// paragraph. Returns the report without the label and paragraph, then the step; an empty
-/// step means the label had no content or said `none`. Returns `None` when no valid label
-/// exists.
-pub fn recommended_action(report: &str) -> Option<(String, String)> {
-    const LABEL: &str = "recommended action";
+const ACTION_LABEL: &str = "recommended action";
+const REMAINING_LABEL: &str = "remaining";
+
+/// The text after `label` on a line that opens with it, as in `Remaining: push main`. List,
+/// quote, heading and emphasis marks before the label still count. A bare label gives an
+/// empty text. `None` when the line opens with anything else.
+fn labelled<'a>(line: &'a str, label: &str) -> Option<&'a str> {
     let lead = |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '#' | '>' | '-');
     let emphasis = |c: char| c.is_whitespace() || matches!(c, '*' | '_');
+    let text = line.trim_start_matches(lead);
+    if !text.get(..label.len())?.eq_ignore_ascii_case(label) {
+        return None;
+    }
+    let rest = text[label.len()..].trim_start_matches(emphasis);
+    match rest.strip_prefix(':') {
+        Some(text) => Some(text.trim_start_matches(emphasis).trim_end()),
+        None if rest.is_empty() => Some(""),
+        None => None,
+    }
+}
+
+/// Splits the last labelled `Recommended action` paragraph from a report. List, quote,
+/// heading and emphasis marks before the label still count. A bare label takes the next
+/// paragraph. The paragraph ends at a blank line or at a `Remaining` label, so a remaining
+/// line written after the recommendation stays in the report. Returns the report without the
+/// label and paragraph, then the step; an empty step means the label had no content or said
+/// `none`. Returns `None` when no valid label exists.
+pub fn recommended_action(report: &str) -> Option<(String, String)> {
     let lines: Vec<&str> = report.lines().collect();
-    let (start, inline) = lines.iter().enumerate().rev().find_map(|(index, line)| {
-        let label = line.trim_start_matches(lead);
-        if !label.get(..LABEL.len())?.eq_ignore_ascii_case(LABEL) {
-            return None;
-        }
-        let rest = label[LABEL.len()..].trim_start_matches(emphasis);
-        match rest.strip_prefix(':') {
-            Some(text) => Some((index, text.trim_start_matches(emphasis).trim_end())),
-            None if rest.is_empty() => Some((index, "")),
-            None => None,
-        }
-    })?;
+    let (start, inline) = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, line)| Some((index, labelled(line, ACTION_LABEL)?)))?;
     let first = if inline.is_empty() {
         (start + 1..lines.len()).find(|&index| !lines[index].trim().is_empty()).unwrap_or(lines.len())
     } else {
         start + 1
     };
     let end = (first..lines.len())
-        .find(|&index| lines[index].trim().is_empty())
+        .find(|&index| lines[index].trim().is_empty() || labelled(lines[index], REMAINING_LABEL).is_some())
         .unwrap_or(lines.len());
     let step = std::iter::once(inline)
         .chain(lines[first..end].iter().copied())
@@ -1285,6 +1297,45 @@ pub fn recommended_action(report: &str) -> Option<(String, String)> {
         (before, after) => format!("{before}\n\n{after}"),
     };
     Some((rest, step))
+}
+
+/// The open items a report lists, one per `Remaining:` line, in report order. `Remaining: none`
+/// and an empty label name no item. A bare `Remaining` label takes the paragraph under it, up
+/// to a blank line or the `Recommended action` label.
+pub fn remaining_items(report: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    // `Some(false)` after a bare label, `Some(true)` once its paragraph has started.
+    let mut listing = None;
+    for line in report.lines() {
+        match labelled(line, REMAINING_LABEL) {
+            Some("") => listing = Some(false),
+            Some(item) => {
+                listing = None;
+                items.push(item);
+            }
+            None if labelled(line, ACTION_LABEL).is_some() => listing = None,
+            None if line.trim().is_empty() => {
+                if listing == Some(true) {
+                    listing = None;
+                }
+            }
+            None => {
+                if listing.is_some() {
+                    listing = Some(true);
+                    items.push(line.trim());
+                }
+            }
+        }
+    }
+    items.retain(|item| {
+        let word: String = item
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .chars()
+            .take_while(|c| c.is_alphanumeric())
+            .collect();
+        !word.is_empty() && !word.eq_ignore_ascii_case("none")
+    });
+    items
 }
 
 /// One-pass audit of a transcript whose omp process is gone: was the session
@@ -1960,6 +2011,44 @@ mod tests {
             None
         );
         assert_eq!(final_report("ENVOY_STATUS: completed\nx"), None);
+    }
+    #[test]
+    fn remaining_items_lists_each_open_item_and_none_names_no_item() {
+        let report = "S: Hook refused the push.\nT: Ship the fix.\nA: Fixed it in 4f1c2aa.\nR: Suite passes on 4f1c2aa.\nRemaining: Push 4f1c2aa, which waits on Nick removing an untracked file.\n**Remaining:** Test a first sign-up live, which waits on the next sign-up.\nRecommended action: none";
+        assert_eq!(
+            remaining_items(report),
+            vec![
+                "Push 4f1c2aa, which waits on Nick removing an untracked file.",
+                "Test a first sign-up live, which waits on the next sign-up.",
+            ]
+        );
+        assert!(remaining_items("R: Shipped.\nRemaining: none\nRecommended action: none").is_empty());
+        assert!(remaining_items("R: Shipped.\n- Remaining: None.\n").is_empty());
+        assert!(remaining_items("R: Shipped.\nRemaining:\nRecommended action: Push it.").is_empty());
+        // A sentence that merely opens with the word, and a label quoted inside an `R:` line.
+        assert!(remaining_items("Remaining work is tracked in the worklog.").is_empty());
+        assert!(remaining_items("R: Remaining: nothing, all shipped.").is_empty());
+        // A bare label takes the paragraph under it.
+        assert_eq!(
+            remaining_items("R: Shipped.\n\n## Remaining\n\n- Push main, held by the hook.\n- Deploy, which waits on the push.\n\nRecommended action: none"),
+            vec!["- Push main, held by the hook.", "- Deploy, which waits on the push."]
+        );
+        assert!(remaining_items("Remaining:\nnone\n").is_empty());
+    }
+
+    #[test]
+    fn a_remaining_line_after_the_recommended_action_stays_in_the_report() {
+        assert_eq!(
+            recommended_action("R: Shipped.\nRecommended action: none\nRemaining: Push main, held by the hook."),
+            Some(("R: Shipped.\n\nRemaining: Push main, held by the hook.".to_owned(), String::new()))
+        );
+        assert_eq!(
+            recommended_action("R: Shipped.\nRecommended action: Approve the deploy.\nRemaining: Deploy, which waits on Nick."),
+            Some((
+                "R: Shipped.\n\nRemaining: Deploy, which waits on Nick.".to_owned(),
+                "Approve the deploy.".to_owned()
+            ))
+        );
     }
 
     #[test]

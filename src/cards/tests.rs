@@ -593,8 +593,10 @@ fn finding_brief_includes_agent_done_status_contract() {
 // STAR, with the result naming the card title.
 #[test]
 fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
-    for step in ["`S:`", "`T:`", "`A:`", "`R:`", "`Recommended action:`"] {
-        assert!(REPORT_STEP.contains(step), "{step} missing from {REPORT_STEP}");
+    for text in [REPORT_STEP, REQUEST_REPORT_TEXT] {
+        for step in ["`S:`", "`T:`", "`A:`", "`R:`", "`Remaining:`", "`Recommended action:`"] {
+            assert!(text.contains(step), "{step} missing from {text}");
+        }
     }
     assert!(REPORT_STEP.contains("Never ask for, suggest or invite a send"), "{REPORT_STEP}");
     assert!(REPORT_STEP.contains("overrides the action above and any skill"), "{REPORT_STEP}");
@@ -2264,6 +2266,45 @@ fn agent_done_report_with_an_open_step_keeps_the_warning() {
     assert_eq!(turn.level, "warn");
     assert_eq!(turn.action, "Push the release.");
 }
+// A report with an open item stays open even when it says `Recommended action: none`.
+#[test]
+fn a_report_with_a_remaining_item_keeps_its_card_open() {
+    let report = |status: &str, remaining: &str| {
+        format!(
+            "ENVOY_STATUS: {status}\nS: The hook refused the push.\nT: Ship the fix.\nA: Fixed it in 4f1c2aa.\nR: Suite passes on 4f1c2aa.\nRemaining: {remaining}\nRecommended action: none"
+        )
+    };
+    let open = "Push 4f1c2aa, which waits on Nick removing an untracked file.";
+
+    let turn = reply_turn(report("agent-done", open), None, false);
+    assert_eq!(turn.status, events::CardStatus::StepOpen);
+    assert_eq!(turn.title, "Agent done: Suite passes on 4f1c2aa.");
+    assert_eq!(turn.level, "warn");
+    assert!(turn.action.is_empty(), "action: {}", turn.action);
+    assert!(
+        turn.body
+            .as_deref()
+            .is_some_and(|body| body.ends_with(&format!("Remaining: {open}")))
+    );
+
+    let turn = reply_turn(report("complete", open), None, false);
+    assert_eq!(turn.status, events::CardStatus::StepOpen);
+    assert_eq!(turn.title, "Agent done: Suite passes on 4f1c2aa.");
+
+    let turn = reply_turn(report("agent-done", "none"), None, false);
+    assert_eq!(turn.status, events::CardStatus::Complete);
+    assert_eq!(turn.title, "Done: Suite passes on 4f1c2aa.");
+    assert_eq!(reply_turn(report("complete", "none"), None, false).status, events::CardStatus::Complete);
+
+    assert_eq!(reply_turn(report("complete", open), None, true).status, events::CardStatus::StepOpen);
+    let fix = report("complete", "none")
+        .replace("Recommended action: none", "Recommended action: Remove the cron entry.");
+    let turn = reply_turn(fix, None, true);
+    assert_eq!(turn.status, events::CardStatus::Complete);
+    assert_eq!(turn.action, "Remove the cron entry.");
+    assert_eq!(reply_turn(report("incomplete", open), None, false).status, events::CardStatus::Incomplete);
+}
+
 
 #[test]
 fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
@@ -7381,6 +7422,27 @@ fn unlaunched_dsh_reply_also_offers_report_request() {
     assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
     let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
     assert!(card.report_due, "{card:?}");
+}
+
+#[test]
+fn dsh_report_with_a_remaining_item_keeps_its_card_open() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    bridge.edit(|data| {
+        data.sessions = vec![session(4)];
+        data.events.insert(SID.to_owned(), vec![
+            reply_event(2, "ENVOY_STATUS: agent-done\nS: Hook refused the push.\nT: Ship the fix.\nA: Fixed it in 4f1c2aa.\nR: Suite passes on 4f1c2aa.\nRemaining: Push 4f1c2aa, held by the hook.\nRecommended action: none"),
+            turn_end(4, "completed"),
+        ]);
+    });
+    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
+    assert_eq!(card.status, Some(events::CardStatus::StepOpen));
+    assert_eq!(card.title, "Agent done: Suite passes on 4f1c2aa.");
+    assert_eq!(card.level.as_deref(), Some("warn"));
+    assert!(card.star.action.is_empty());
+    assert!(card.body.as_deref().is_some_and(|body| body.ends_with("Remaining: Push 4f1c2aa, held by the hook.")));
 }
 
 #[test]
