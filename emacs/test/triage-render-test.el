@@ -12,7 +12,7 @@
 (require 'triage-render)
 
 (ert-deftest triage-render-test-lines-break-between-items ()
-  "The facts line and the dock break between whole items at the text width."
+  "Headings, the facts line and the dock stay inside the text width."
   (with-temp-buffer
     (magit-section-mode)
     (setq fill-column 40)
@@ -21,6 +21,7 @@
        '((id . "c1") (kind . "finding") (title . "Short title") (priority . 2)
          (source . ((uri . "tmux://work") (pane . "%1") (target . "work:1.0")
                     (cwd . "/srv/projects/long-name")))
+         (star . ((situation . "The key is old.")))
          (options . (((label . "Go") (recommended . t)) ((label . "Stop")))))
        (triage-draft--make)
        (lambda (_id) #'ignore)))
@@ -29,7 +30,32 @@
         (should (<= (string-width line) 40)))
       (dolist (item '("Kind finding" "Directory /srv/projects/long-name"
                       "x Acknowledge & close" "v Peek" "J Jump" "? more"))
-        (should (cl-some (lambda (line) (string-search item line)) lines))))))
+        (should (cl-some (lambda (line) (string-search item line)) lines)))
+      (dolist (heading '("Situation ─" "Action ─"))
+        (should (cl-some (lambda (line) (string-prefix-p heading line)) lines))))))
+
+(ert-deftest triage-render-test-side-margins ()
+  "Margins take a fifth of each side until the text would drop under 60."
+  (let ((triage-side-margin 0.2))
+    (should (= (triage-render--margin 270) 54))
+    (should (= (triage-render--margin 100) 20))
+    (should (= (triage-render--margin 80) 10))
+    (should (= (triage-render--margin 40) 2))))
+
+(ert-deftest triage-render-test-markdown-heading-marks-hidden ()
+  "A Markdown heading shows its title without the # marks."
+  (skip-unless (require 'markdown-mode nil t))
+  (let ((text (triage-render-markdown "## Summary\n\nAll hosts finished.")))
+    (should (get-text-property 0 'invisible text))
+    (should-not (get-text-property (string-search "Summary" text) 'invisible text))
+    (should-not (get-text-property (string-search "All" text) 'invisible text))))
+
+(ert-deftest triage-render-test-info-body-drops-repeated-title ()
+  "An info body that opens with the card title as a heading starts below it."
+  (should (equal (triage-render--untitled "# Backup report\n\n## Summary\n" "Backup report")
+                 "## Summary\n"))
+  (should (equal (triage-render--untitled "# Other\nText" "Backup report")
+                 "# Other\nText")))
 
 (provide 'triage-render-test)
 ;;; triage-render-test.el ends here

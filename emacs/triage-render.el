@@ -18,6 +18,7 @@
 
 (defvar markdown-hide-urls)
 (defvar markdown-hide-markup)
+(defvar markdown-fontify-whole-heading-line)
 (defvar markdown-fontify-code-blocks-natively)
 (declare-function gfm-mode "markdown-mode")
 
@@ -87,16 +88,41 @@ Return TEXT unchanged when FACE is nil."
               (equal (buffer-substring-no-properties (- (point) 2) (point)) "\n\n"))
     (insert "\n")))
 
+(defcustom triage-side-margin 0.2
+  "Fraction of the window width left blank on each side of the text."
+  :type 'number
+  :group 'triage)
+
+(defconst triage-render--min-width 60
+  "Narrowest text column that the side margins may leave.")
+
 (defun triage-render--width ()
-  "Return the text width of the current buffer's window, at most `fill-column'."
+  "Return the text width of the current buffer's window.
+Return `fill-column' when no window shows the buffer."
   (let ((window (get-buffer-window nil t)))
-    (if window (min fill-column (window-body-width window)) fill-column)))
+    (if window (window-body-width window) fill-column)))
+
+(defun triage-render--margin (total)
+  "Return the side margin for a window TOTAL columns wide.
+The margin is `triage-side-margin' of TOTAL, narrowed so the text keeps
+`triage-render--min-width' columns, and never under 2."
+  (max 2 (min (round (* triage-side-margin total))
+              (/ (- total triage-render--min-width) 2))))
 
 (defun triage-render--fit-window (window)
-  "Center the text of WINDOW in a column at most `fill-column' wide."
-  (let* ((width (buffer-local-value 'fill-column (window-buffer window)))
-         (margin (max 2 (/ (- (window-total-width window) width) 2))))
+  "Give WINDOW equal side margins from `triage-render--margin'."
+  (let ((margin (triage-render--margin (window-total-width window))))
     (set-window-margins window margin margin)))
+
+(defun triage-render--rule (&optional label)
+  "Return LABEL and a muted rule that fills the rest of the text width.
+Without LABEL the rule is the whole line.  The last two columns stay free
+for the ellipsis of a collapsed section and the terminal's wrap column."
+  (let* ((head (if label
+                   (concat (triage-render--face label 'magit-section-heading) " ")
+                 ""))
+         (size (max 3 (- (triage-render--width) (string-width head) 2))))
+    (concat head (triage-render--face (make-string size ?─) 'triage-muted))))
 
 (defun triage-render-setup-view ()
   "Make the current buffer a centered reading view that wraps at words.
@@ -121,11 +147,13 @@ Wrapped lines keep their indent."
     (error nil)))
 
 (defun triage-render--gfm (text)
-  "Return TEXT fontified by `gfm-mode', each face copied to `font-lock-face'."
+  "Return TEXT fontified by `gfm-mode', each face copied to `font-lock-face'.
+The # marks of each heading are hidden."
   (with-temp-buffer
     (insert text)
     (let ((markdown-hide-urls nil)
           (markdown-hide-markup nil)
+          (markdown-fontify-whole-heading-line nil)
           (markdown-fontify-code-blocks-natively nil))
       (delay-mode-hooks (gfm-mode))
       (font-lock-ensure))
@@ -136,7 +164,10 @@ Wrapped lines keep their indent."
               (face (get-text-property pos 'face)))
           (when face
             (put-text-property (- pos (point-min)) (- next (point-min))
-                               'font-lock-face face result))
+                               'font-lock-face face result)
+            (when (memq 'markdown-header-delimiter-face (ensure-list face))
+              (put-text-property (- pos (point-min)) (- next (point-min))
+                                 'invisible t result)))
           (setq pos next)))
       result)))
 
@@ -227,7 +258,7 @@ QUESTION is the current question and STATUS is the `triage-card-status' plist."
 (defun triage-render--star (key heading text)
   "Insert a section named KEY with HEADING whose Markdown body is TEXT."
   (magit-insert-section (triage-star key)
-    (magit-insert-heading heading)
+    (magit-insert-heading (triage-render--rule heading))
     (triage-render--insert-markdown text)
     (triage-render--gap)))
 
@@ -249,13 +280,22 @@ STAR is the star in effect: the current question's, else the card's."
       (triage-render--star 'task "Task" task))
     (when (or (triage-render--present-p result) info-body)
       (magit-insert-section (triage-star 'result)
-        (magit-insert-heading "Result")
+        (magit-insert-heading (triage-render--rule "Result"))
         (when (triage-render--present-p result)
           (triage-render--insert-markdown result)
           (when info-body (triage-render--gap)))
         (when info-body
-          (triage-render--insert-markdown body))
+          (triage-render--insert-markdown
+           (triage-render--untitled body (triage-card-title-of card))))
         (triage-render--gap)))))
+
+(defun triage-render--untitled (body title)
+  "Return BODY without a leading \"# TITLE\" line, which repeats the card title."
+  (if (and (triage-render--present-p title)
+           (string-match (concat "\\`[ \t\n]*# +" (regexp-quote title) "[ \t]*\\(?:\n\\|\\'\\)")
+                         body))
+      (string-trim-left (substring body (match-end 0)))
+    body))
 
 (defun triage-render--answer (draft k)
   "Return the stored answer slot for question K of DRAFT, or nil."
@@ -429,7 +469,7 @@ DRAFT supplies its text, ACTIONS-FN supplies actions and STAR is active."
          (asking (and questions (triage-card-answerable-p card)))
          (action (alist-get 'action star)))
     (magit-insert-section (triage-star 'action)
-      (magit-insert-heading "Action")
+      (magit-insert-heading (triage-render--rule "Action"))
       (when (triage-render--present-p action)
         (triage-render--insert-markdown action)
         (triage-render--gap))
@@ -503,6 +543,7 @@ ACTIONS-FN is called with an action id from `triage-card-actions', or with
       (triage-render--facts card)
       (triage-render--stars card star)
       (triage-render--action card draft actions-fn star)
+      (insert (triage-render--rule) "\n")
       (triage-render--dock card (if asking step 0) actions-fn))))
 
 (defun triage-render-context-item (card swipes anchor-p in-session-p)
@@ -539,7 +580,8 @@ IN-SESSION-P prefixes the heading with a bar.  A superseded card is muted."
         (magit-insert-section (triage-context-report id (not anchor-p))
           (magit-insert-heading (concat triage-render--indent "Report"))
           (triage-render--insert-markdown
-           body (concat triage-render--indent triage-render--indent))))
+           (triage-render--untitled body title)
+           (concat triage-render--indent triage-render--indent))))
       (triage-render--gap))))
 
 (provide 'triage-render)
