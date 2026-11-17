@@ -207,7 +207,8 @@ does.  The body holds `cards' and `today_count'."
   (with-current-buffer buffer
     (let ((inhibit-read-only t))
       (erase-buffer)
-      (insert text "\n")
+      (magit-insert-section (triage-context-root)
+        (insert text "\n"))
       (goto-char (point-min)))))
 
 (defun triage-context--show-body (buffer body)
@@ -220,23 +221,24 @@ does.  The body holds `cards' and `today_count'."
           (anchor-at nil)
           (previous nil))
       (erase-buffer)
-      (when (and (integerp truncated) (> truncated 0))
-        (insert (propertize (format "%d older cards not shown.\n" truncated)
-                            'font-lock-face 'triage-muted)))
-      (if (null items)
-          (insert "No cards in this thread.\n")
-        (dolist (item items)
-          (let* ((card (alist-get 'card item))
-                 (ref (car (alist-get 'refs card)))
-                 (anchor-p (equal (alist-get 'id card) anchor)))
-            (when anchor-p
-              (setq anchor-at (point)))
-            (triage-render-context-item
-             card (alist-get 'swipes item) anchor-p
-             (and (stringp ref) (not (string-empty-p ref))
-                  (equal ref previous)))
-            (setq previous ref))))
-      (goto-char (or anchor-at (point-min))))))
+      (magit-insert-section (triage-context-root)
+        (when (and (integerp truncated) (> truncated 0))
+          (insert (propertize (format "%d older cards not shown.\n" truncated)
+                              'font-lock-face 'triage-muted)))
+        (if (null items)
+            (insert "No cards in this thread.\n")
+          (dolist (item items)
+            (let* ((card (alist-get 'card item))
+                   (ref (car (alist-get 'refs card)))
+                   (anchor-p (equal (alist-get 'id card) anchor)))
+              (when anchor-p
+                (setq anchor-at (point)))
+              (triage-render-context-item
+               card (alist-get 'swipes item) anchor-p
+               (and (stringp ref) (not (string-empty-p ref))
+                    (equal ref previous)))
+              (setq previous ref))))
+      (goto-char (or anchor-at (point-min)))))))
 
 (defun triage-context--load (buffer id)
   "Fetch the thread of card ID into BUFFER."

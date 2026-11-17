@@ -219,6 +219,25 @@
       (triage-inbox-primary))
     (triage-test--wait #'triage-test--idle 5)))
 
+(ert-deftest triage-daemon-test-context-section-hook ()
+  "The context view keeps its Magit root and card sections after loading."
+  (triage-test-with-daemon
+    (triage-test--subscribe 'context)
+    (triage-test--ingest (triage-daemon-test--info "el-context" "# Context report"))
+    (triage-test--await-cards 1)
+    (triage-context-open (alist-get 'id (car triage-queue-cards)))
+    (let ((buffer (get-buffer "*triage context*")))
+      (triage-test--wait
+       (lambda () (triage-test--buffer-has "*triage context*" "Context report" "This card"))
+       5)
+      (with-current-buffer buffer
+        (goto-char (point-min))
+        (let ((section (magit-section-at)))
+          (should (eieio-object-p section))
+          (should (eq (oref section parent) magit-root-section)))
+        (magit-section-post-command-hook)
+        (should (eieio-object-p (magit-current-section)))))))
+
 (ert-deftest triage-daemon-test-reload ()
   "Reload returns a handled card as a fresh copy and refuses a second copy."
   (triage-test-with-daemon
