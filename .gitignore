@@ -1,3 +1,4 @@
 /target
 /briefs
 /worklog.md
+*.elc

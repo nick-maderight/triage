@@ -194,6 +194,8 @@ Two performance limits are known. Each poll tick scans and parses every open and
 
 Run `cargo test --release`, `node --check ui/app.js && node --check ui/sw.js`, `node --test tests/*.test.js`, `cargo build && tests/smoke.sh`, and `cargo clippy --release`. The smoke test uses `target/debug/triage` unless `TRIAGE_BIN` names another binary. The Rust unit tests of `cards`, `server` and `db` live beside their module in `src/<module>/tests.rs`.
 
+The Emacs client lives in `emacs/`. With Emacs 30.1 or newer and dependencies under `ELPACA` listed in `emacs/Makefile` under `DEPS`, run `make -C emacs check`. Run `cargo build` first for daemon-backed ERT tests. Set `TRIAGE_BIN` to the absolute daemon path when needed.
+
 ## License
 
 MIT. See `LICENSE`. The bundled Geist and Geist Mono fonts in `ui/fonts/` are under the SIL Open Font License 1.1, in `ui/fonts/OFL.txt`.
