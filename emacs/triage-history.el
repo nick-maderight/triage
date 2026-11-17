@@ -9,7 +9,7 @@
 
 (require 'cl-lib)
 (require 'magit-section)
-(require 'vtable)
+(require 'tabulated-list)
 (require 'triage-api)
 (require 'triage-card)
 (require 'triage-queue)
@@ -51,58 +51,52 @@ does.  The body holds `cards' and `today_count'."
         title
       "Untitled card")))
 
-(defun triage-history--columns (now)
-  "Return the history table columns, with clocks read at NOW."
-  (list
-   (list :name "Time" :width 9 :align 'left
-         :getter (lambda (row _table)
-                   (let ((at (alist-get 'at_ms (alist-get 'swipe row))))
-                     (if at (triage-card-clock at now) "Time unknown"))))
-   (list :name "Kind" :width 9 :align 'left
-         :getter (lambda (row _table)
-                   (or (alist-get 'kind (alist-get 'card row)) "unknown")))
-   (list :name "Status" :width 18 :align 'left
-         :getter (lambda (row _table)
-                   (let ((status (triage-card-status (alist-get 'card row))))
-                     (propertize (plist-get status :label)
-                                 'font-lock-face
-                                 (triage-history--tone-face
-                                  (plist-get status :tone))))))
-   (list :name "Source" :width 16 :align 'left
-         :getter (lambda (row _table)
-                   (triage-card-source-name
-                    (alist-get 'source (alist-get 'card row)))))
-   (list :name "Title" :width 40 :align 'left
-         :getter (lambda (row _table)
-                   (triage-history--title (alist-get 'card row))))
-   (list :name "Result" :width 40 :align 'left
-         :getter (lambda (row _table)
-                   (let* ((card (alist-get 'card row))
-                          (swipe (alist-get 'swipe row))
-                          (details (triage-card-swipe-details card swipe)))
-                     (concat (triage-card-swipe-status swipe "unknown")
-                             (if (and details (not (string-empty-p details)))
-                                 (concat " · " details)
-                               "")))))))
+(defun triage-history--entry (row now)
+  "Return the table entry for history ROW as of NOW."
+  (let* ((card (alist-get 'card row))
+         (swipe (alist-get 'swipe row))
+         (at (alist-get 'at_ms swipe))
+         (status (triage-card-status card))
+         (details (triage-card-swipe-details card swipe)))
+    (list row
+          (vector
+           (if at (triage-card-clock at now) "Time unknown")
+           (or (alist-get 'kind card) "unknown")
+           (propertize (plist-get status :label)
+                       'font-lock-face
+                       (triage-history--tone-face (plist-get status :tone)))
+           (triage-card-source-name (alist-get 'source card))
+           (triage-history--title card)
+           (concat (triage-card-swipe-status swipe "unknown")
+                   (if (and details (not (string-empty-p details)))
+                       (concat " · " details)
+                     ""))))))
 
 (defvar-local triage-history--today nil
   "Count of cards handled today, or nil until the first load.")
 
 (defvar-keymap triage-history-mode-map
-  :parent special-mode-map
+  :parent tabulated-list-mode-map
   "RET" #'triage-history-context
   "t" #'triage-history-context
   "r" #'triage-history-reload
   "g" #'triage-history-refresh
   "q" #'quit-window)
 
-(define-derived-mode triage-history-mode special-mode "Triage-History"
+(define-derived-mode triage-history-mode tabulated-list-mode "Triage-History"
   "Major mode that lists cards handled recently."
+  (setq tabulated-list-format
+        (vconcat (mapcar (lambda (column)
+                           (list (car column) (cdr column) nil :pad-right 2))
+                         '(("Time" . 9) ("Kind" . 7) ("Status" . 15) ("Source" . 16)
+                           ("Title" . 40) ("Result" . 0))))
+        tabulated-list-use-header-line nil
+        truncate-lines t)
   (setq-local header-line-format '(:eval (triage-history--header-line))))
 
 (defun triage-history--header-line ()
   "Return the header line of the history buffer."
-  (format "History · Handled today: %s · RET context · r reload · g refresh · q quit"
+  (format "History   Handled today: %s   RET context   r reload   g refresh   q quit"
           (or triage-history--today "…")))
 
 (defun triage-history--show-text (buffer text)
@@ -119,14 +113,16 @@ does.  The body holds `cards' and `today_count'."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((inhibit-read-only t)
-            (rows (alist-get 'cards body)))
+            (rows (alist-get 'cards body))
+            (now (float-time)))
         (setq triage-history--today (alist-get 'today_count body))
         (erase-buffer)
         (if rows
-            (make-vtable :columns (triage-history--columns (float-time))
-                         :objects rows
-                         :use-header-line nil
-                         :keymap triage-history-mode-map)
+            (progn
+              (setq tabulated-list-entries
+                    (mapcar (lambda (row) (triage-history--entry row now)) rows))
+              (tabulated-list-init-header)
+              (tabulated-list-print))
           (insert "No handled cards in recent history.\n"))
         (goto-char (point-min))))))
 
@@ -141,7 +137,7 @@ does.  The body holds `cards' and `today_count'."
 
 (defun triage-history--current ()
   "Return the history row at point, refusing a deferred card."
-  (let ((row (or (vtable-current-object)
+  (let ((row (or (tabulated-list-get-id)
                  (user-error "No history row at point"))))
     (when (equal (alist-get 'action (alist-get 'swipe row)) "later")
       (user-error "A deferred card returns by itself"))
@@ -200,7 +196,8 @@ does.  The body holds `cards' and `today_count'."
   "q" #'quit-window)
 
 (define-derived-mode triage-context-mode magit-section-mode "Triage-Context"
-  "Major mode that shows the thread of cards around one card.")
+  "Major mode that shows the thread of cards around one card."
+  (triage-render-setup-view))
 
 (defun triage-context--show-text (buffer text)
   "Replace the contents of context BUFFER with TEXT."

@@ -41,6 +41,9 @@
 (defvar-local triage-inbox--shown-card nil
   "Card the deck last drew.")
 
+(defvar-local triage-inbox--width nil
+  "Text width the deck was last drawn for.")
+
 (defvar-local triage-inbox--top nil
   "First card of the queue at the last update, or nil when it was empty.")
 
@@ -79,8 +82,13 @@ Every card key comes from `triage-card-actions', so the keys match the table.")
 
 (define-derived-mode triage-inbox-mode magit-section-mode "Triage"
   "Major mode for the triage card deck in the `*triage*' buffer."
-  (visual-line-mode 1)
-  (setq-local header-line-format '(:eval (triage-inbox--header-line))))
+  (triage-render-setup-view)
+  (add-hook 'window-size-change-functions #'triage-inbox--resized 90 t)
+  (add-hook 'window-buffer-change-functions #'triage-inbox--resized 90 t)
+  ;; The stretch lines the header up with the centered text below it.
+  (setq-local header-line-format
+              (list (propertize " " 'display '(space :align-to 0))
+                    '(:eval (triage-inbox--header-line)))))
 
 ;;; State helpers
 
@@ -249,12 +257,13 @@ and review rows as `(step . INDEX)'."
       ('send-answers (lambda () (triage-inbox--send-answers card)))
       (_ (let ((command (triage-inbox--command id)))
            (lambda () (funcall command)))))))
+
 (defun triage-inbox--hints (pairs)
   "Return PAIRS, each (KEY . TEXT), as one line of key hints."
   (mapconcat (lambda (pair)
                (concat (propertize (car pair) 'font-lock-face 'triage-key)
                        " " (cdr pair)))
-             pairs " · "))
+             pairs "   "))
 
 (defun triage-inbox--insert-history ()
   "Insert the history lines of the empty deck."
@@ -286,8 +295,8 @@ and review rows as `(step . INDEX)'."
                  ("plan" . "Review a plan")
                  ("finding" . "Review suggested work")
                  ("info" . "Read a result")))
-    (insert (propertize (car row) 'font-lock-face 'triage-key)
-            "  " (cdr row) "\n"))
+    (insert (propertize (format "%-9s" (car row)) 'font-lock-face 'triage-muted)
+            (cdr row) "\n"))
   (insert "\n"
           (triage-inbox--hints '(("c" . "new session") ("h" . "history")
                                  ("g" . "refresh") ("?" . "keys")))
@@ -317,11 +326,13 @@ redraw starts at the top."
                          windows)))
     (setq triage-inbox--idx idx
           triage-inbox--shown-id id
-          triage-inbox--shown-card card)
+          triage-inbox--shown-card card
+          triage-inbox--width (triage-render--width))
     (let ((inhibit-read-only t))
       (erase-buffer)
       (setq magit-root-section nil)
       (magit-insert-section (triage-inbox-root)
+        (insert "\n")
         (cond
          (card (triage-render-card card (triage-queue-draft card)
                                    (triage-inbox--action-fn card)))
@@ -337,6 +348,13 @@ redraw starts at the top."
         (set-window-start window (point-min) t)))
     (force-mode-line-update)))
 
+(defun triage-inbox--resized (window)
+  "Redraw the deck in WINDOW when its text width changed since the last draw.
+The facts line and the dock break their lines for that width."
+  (with-current-buffer (window-buffer window)
+    (unless (eql triage-inbox--width (triage-render--width))
+      (triage-inbox--render))))
+
 (defun triage-inbox--rail (cards idx)
   "Return one bar per card in CARDS, the bar at IDX drawn as current.
 A card's bar height comes from its priority, 1 tallest and 5 shortest."
@@ -349,7 +367,9 @@ A card's bar height comes from its priority, 1 tallest and 5 shortest."
                                         (if (= i idx) 'triage-rail-current 'triage-rail))))))
 
 (defun triage-inbox--header-line ()
-  "Return the deck header: position, rail, age, counts and connection."
+  "Return the deck header: position, rail, age, counts and connection.
+A header wider than the window drops the counts first.  The key hint
+goes next and the age goes last."
   (let* ((cards triage-queue-cards)
          (count (length cards))
          (idx (max 0 (min triage-inbox--idx (1- count))))
@@ -362,18 +382,22 @@ A card's bar height comes from its priority, 1 tallest and 5 shortest."
                        ('connected "Connected")
                        ('reconnecting "Reconnecting")
                        (_ "Connecting")))
+         (waiting (and cards
+                       (format "waiting %s"
+                               (triage-card-age
+                                (or (alist-get 'created_ms (nth idx cards)) 0)
+                                (round (* 1000 (float-time)))))))
          (parts (if (null cards)
                     (list counts connection)
                   (list (format "%d of %d" (1+ idx) count)
                         (triage-inbox--rail cards idx)
-                        (format "waiting %s"
-                                (triage-card-age
-                                 (or (alist-get 'created_ms (nth idx cards)) 0)
-                                 (round (* 1000 (float-time)))))
-                        counts
-                        connection
-                        "? keys"))))
-    (string-join parts "  ")))
+                        waiting counts connection "? keys")))
+         ;; The header starts at the text column and may run into the right margin.
+         (room (+ (window-body-width) (or (cdr (window-margins)) 0))))
+    (dolist (part (list counts "? keys" waiting))
+      (when (> (string-width (string-join parts "   ")) room)
+        (setq parts (delete part parts))))
+    (string-join parts "   ")))
 
 ;;; Picking, steps and primary, ports of pick, pickStep and primary
 

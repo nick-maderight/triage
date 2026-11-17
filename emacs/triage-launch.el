@@ -18,6 +18,7 @@
 (require 'triage-api)
 (require 'triage-card)
 (require 'triage-queue)
+(require 'triage-render)
 
 (defconst triage-launch--dispatch-buffer "*triage dispatch*"
   "Name of the Dispatch sheet buffer.  One sheet serves every card.")
@@ -264,6 +265,12 @@ cannot list its models."
   "Return the value shown in the Image row."
   (if triage-launch--image (plist-get triage-launch--image :name) "none"))
 
+(defun triage-launch--row (label value)
+  "Return a preamble row with LABEL in a muted column before VALUE.
+A long VALUE wraps under its own start."
+  (propertize (concat (propertize (format "%-15s" label) 'face 'triage-muted) value)
+              'wrap-prefix (make-string 15 ?\s)))
+
 (defun triage-launch--preamble ()
   "Return the read-only preamble that sits above the body."
   (let ((compose (eq triage-launch--kind 'compose))
@@ -277,18 +284,26 @@ cannot list its models."
                              "New session · What should the session do?"
                            (format "Dispatch · %s" (triage-launch--card-title)))
                          'face 'bold)
-             (format "%-13s%s · %s" "Mode" (triage-launch--mode-label)
-                     (nth 2 (assoc triage-launch--mode (triage-launch--rows))))
-             (and compose (format "%-13s%s" "Directory" (triage-launch--directory-text)))
+             ""
+             (triage-launch--row "Mode" (format "%s · %s" (triage-launch--mode-label)
+                                                (nth 2 (assoc triage-launch--mode
+                                                              (triage-launch--rows)))))
+             (and compose (triage-launch--row "Directory" (triage-launch--directory-text)))
              (and compose (not (triage-launch--dsh-p))
-                  (format "%-13s%s" "tmux session" (triage-launch--session-text)))
-             (format "%-13s%s" "Engine" (triage-launch--engine-text))
-             (format "%-13s%s" "Model" (triage-launch--model-text))
-             (format "%-13s%s" "Thinking" (triage-launch--thinking-text))
-             (and plan-into (format "%-13s%s" "Exec model" (triage-launch--executor-text)))
-             (and plan-into (format "%-13s%s" "Exec effort" (triage-launch--executor-effort-text)))
-             (format "%-13s%s" "Image" (triage-launch--image-text))
-             "C-c C-c launch · C-c C-o options · C-c C-k cancel"
+                  (triage-launch--row "tmux session" (triage-launch--session-text)))
+             (triage-launch--row "Engine" (triage-launch--engine-text))
+             (triage-launch--row "Model" (triage-launch--model-text))
+             (triage-launch--row "Thinking" (triage-launch--thinking-text))
+             (and plan-into (triage-launch--row "Exec model" (triage-launch--executor-text)))
+             (and plan-into (triage-launch--row "Exec effort"
+                                                (triage-launch--executor-effort-text)))
+             (triage-launch--row "Image" (triage-launch--image-text))
+             ""
+             (mapconcat (lambda (hint)
+                          (concat (propertize (car hint) 'face 'triage-key) " " (cdr hint)))
+                        '(("C-c C-c" . "launch") ("C-c C-o" . "options") ("C-c C-k" . "cancel"))
+                        "   ")
+             ""
              (propertize (if compose "──── Prompt ────" "──── Instruction ────")
                          'face 'shadow)))
       "\n")
@@ -766,6 +781,9 @@ A failed request leaves the lists empty."
   "Major mode for the triage Dispatch and New session sheets.
 The top of the buffer is a read-only preamble that shows the options.  The
 body below it is the instruction or the prompt."
+  (triage-render-setup-view)
+  ;; The rows carry their own wrap prefix, which this mode would replace.
+  (visual-wrap-prefix-mode -1)
   (setq triage-launch--body-start (point-min-marker)))
 
 (provide 'triage-launch)
