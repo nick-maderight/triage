@@ -642,6 +642,9 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     for brief in [&act, &session] {
         assert!(brief.contains("Keep working until every part of the brief is finished or blocked."));
         assert!(brief.contains("`complete` means the whole requested outcome shipped"));
+        assert!(brief.contains("is part of the work, which a report never hands back"), "{brief}");
+        assert!(brief.contains("A command that timed out or failed is unfinished work."), "{brief}");
+        assert!(!brief.contains("full test gate, or Nick-owned approval"), "{brief}");
     }
     assert!(act.contains("Complete every part and every environment the request covers."));
     assert!(act.contains("make the normal call and let the harness answer."));
@@ -654,6 +657,7 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     assert!(request.contains("Finish any open part of the task first"), "{request}");
     assert!(!REPORT_STEP.contains("names the one change your instructions did not allow"));
     assert!(!format.contains("the one step that still needs user approval"));
+    assert!(format.contains("is part of the work, which a report never hands back"), "{format}");
 }
 
 // Nick asked for a default Act instruction. In his words, "if i don't type anything this is the

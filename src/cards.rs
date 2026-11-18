@@ -3534,10 +3534,11 @@ A later question in this session gets a plain answer with no report. Later work 
 /// makes `REPORT_STEP` the next paragraph.
 const ENVOY_STATUS_CONTRACT: &str = r#"## Final report
 
-Keep working until every part of the brief is finished or blocked. When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`.
+Keep working until every part of the brief is finished or blocked. A part is blocked only when something outside this session stops it, such as an approval Nick owns, access the session lacks or an event that has not happened yet. A command that timed out or failed is unfinished work. Run it again and fix what it finds. When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`.
 
 - `complete` means the whole requested outcome shipped through the project's normal pipeline, pushed or deployed as the task calls for, and the full test suite passed.
-- Work that is done but left a required push, deploy, full test gate, or Nick-owned approval open reports `agent-done` and names that step.
+- The full test gate, meaning every test suite and check the project requires, is part of the work, which a report never hands back. Run it to the end on the final tree and fix every failure it reports, including one your change did not cause. Then run it again until it passes. When a run times out or is cut short, start it again with a longer time limit or none and wait for it to finish. It stays open only when something outside this session blocks it, such as access the session lacks or a failure in files another live session is editing.
+- Work that is done but has a blocked step left, such as a push or deploy the session cannot make or an approval Nick owns, reports `agent-done` and names that step and what blocks it.
 - `incomplete` means the run could not use the method its brief named.
 
 "#;
