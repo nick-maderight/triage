@@ -83,6 +83,10 @@ pub enum CardStatus {
     /// Stored by cards written before a reply without a status line was read as no final
     /// report. Nothing writes it now. The inbox shows it the same way.
     NoStatus,
+    /// A reply without a status line from a session that owes no report. The session has
+    /// reported since its latest brief, which makes the reply an answer to a message the
+    /// user typed.
+    Reply,
     /// A plan waiting on review.
     PlanReady,
     /// A decision card, which waits on the user and is not complete.
@@ -133,7 +137,7 @@ pub struct Card {
     /// Ask cards: the omp tool call id, used to notice an answer given in the pane.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// Info replies from launched panes without a status line can request a final report.
+    /// Info replies without a status line can request a final report.
     #[serde(default)]
     pub report_due: bool,
     /// Harness of a session that is not omp, such as `dsh`.

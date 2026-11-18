@@ -18,6 +18,7 @@
     ("incomplete" . ("Incomplete" . negative))
     ("no-final-report" . ("No final report" . warning))
     ("no-status" . ("No final report" . warning))
+    ("reply" . ("Reply"))
     ("plan-ready" . ("Plan ready"))
     ("waiting" . ("Waiting on you"))
     ("notice" . ("Notice")))

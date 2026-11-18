@@ -1,5 +1,5 @@
 use super::*;
-use crate::events::{Kind, Source, Star};
+use crate::events::{CardStatus, Kind, Source, Star};
 
 fn db() -> Db {
     let path = std::env::temp_dir().join(format!("triage-db-{}.sqlite", uuid::Uuid::new_v4()));
@@ -660,6 +660,27 @@ fn pane_closed_since_matches_only_recent_closes_of_that_pane() {
     assert!(db.pane_closed_since("%12", 1_000).unwrap());
     assert!(!db.pane_closed_since("%12", 1_001).unwrap());
     assert!(!db.pane_closed_since("%1", 0).unwrap());
+}
+
+#[test]
+fn reported_since_counts_only_report_cards_of_that_session_after_the_bound() {
+    let db = db();
+    let uri = "dsh://session/s1";
+    let stored = |id: &str, title: &str, status: CardStatus, created_ms: i64, uri: &str| {
+        let mut card = thread_card(id, Kind::Info, created_ms, uri, None, &[]);
+        card.title = title.into();
+        card.status = Some(status);
+        db.insert_card(&card).unwrap();
+    };
+    stored("done:dsh:s1:1", "Stopped with error: rate limited", CardStatus::Incomplete, 1_000, uri);
+    stored("done:dsh:s1:2", "Done: fixed it, by the way", CardStatus::Reply, 1_000, uri);
+    stored("done:dsh:s2:1", "Done: Shipped.", CardStatus::Complete, 1_000, "dsh://session/s2");
+    assert!(!db.reported_since(uri, 0).unwrap(), "an error, a plain reply and another session report nothing");
+
+    stored("done:dsh:s1:3", "Agent done: Push still open.", CardStatus::StepOpen, 2_000, uri);
+    assert!(db.reported_since(uri, 0).unwrap());
+    assert!(db.reported_since(uri, 1_999).unwrap());
+    assert!(!db.reported_since(uri, 2_000).unwrap(), "a report from before the latest brief does not count");
 }
 
 #[cfg(unix)]

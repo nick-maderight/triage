@@ -71,6 +71,10 @@
                   '((id . "i5") (kind . "info") (title . "Plain") (status . "complete")))
                  '("Complete" positive "Plain")))
   (should (equal (triage-card-test--status
+                  '((id . "i6") (kind . "info") (title . "Plain") (refs . ("x"))
+                    (status . "reply")))
+                 '("Reply" nil "Plain")))
+  (should (equal (triage-card-test--status
                   '((id . "f2") (kind . "finding") (title . "Done: X")
                     (status . "incomplete")))
                  '("Incomplete" negative "Done: X"))))

@@ -1,9 +1,9 @@
 //! Bridge poll and card actions for dsh sessions.
 
 use super::{
-    GOAL_CONTINUATION_GRACE, Launch, REQUEST_REPORT_TEXT, Start, TickReport, Tracker,
-    dispatch_prompt, finish_cards, headline_of, record_swipe, reply_turn, supersede_info_cards,
-    trail, truncate_chars, turn_card,
+    GOAL_CONTINUATION_GRACE, Launch, Start, TickReport, Tracker, dispatch_prompt, finish_cards,
+    headline_of, record_swipe, reply_turn, report_request, supersede_info_cards, trail,
+    truncate_chars, turn_card,
 };
 use crate::db::Db;
 use crate::dsh;
@@ -644,7 +644,8 @@ fn report_card(
     } else {
         parts.join("\n\n")
     };
-    let (star, investigation) = trail(db, &format!("dsh:{sid}"), 0);
+    let key = format!("dsh:{sid}");
+    let (star, investigation) = trail(db, &key, 0);
     let current_goal_close = reason == "completed"
         && session.goal_phase.as_deref() == Some("complete")
         && recent.iter().any(|event| {
@@ -681,7 +682,13 @@ fn report_card(
     } else {
         None
     };
-    let mut turn = reply_turn(text, report, investigation);
+    // A session owes one report for each brief triage sent it, or one in total when it got
+    // none. The bridge lists no user messages, which leaves the stored cards to answer for
+    // the session.
+    let source = dsh_source(sid, Some(session));
+    let briefed_ms = db.pane_launch_since(&key, 0).ok().flatten().map_or(0, |(_, swipe)| swipe.at_ms);
+    let owed = !db.reported_since(&source.uri, briefed_ms).unwrap_or(false);
+    let mut turn = reply_turn(text, report, investigation, owed);
     if session.goal_phase.as_deref() == Some("active") {
         turn.report_due = false;
     }
@@ -707,7 +714,6 @@ fn report_card(
         turn.report_due = false;
         turn.status = events::CardStatus::PlanReady;
     }
-    let source = dsh_source(sid, Some(session));
     let refs = vec![source.uri.clone()];
     let mut card = turn_card(
         format!("done:dsh:{sid}:{}", end.seq),
@@ -1149,7 +1155,7 @@ pub(super) fn request_report(
     if state.running || !state.pending_input.is_empty() {
         return Err("session is busy".to_owned());
     }
-    client.prompt(sid, REQUEST_REPORT_TEXT, None)?;
+    client.prompt(sid, &report_request(db)?, None)?;
     if record_swipe(
         db,
         &card.id,

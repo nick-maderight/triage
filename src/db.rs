@@ -714,6 +714,23 @@ impl Db {
         Ok(Some((from_json(card)?, from_json(swipe)?)))
     }
 
+    /// Whether the session at `source` has a final-report card created after `since_ms`. A
+    /// report card states a report's outcome and opens its title with that outcome's prefix,
+    /// which keeps a `Stopped with error` card from counting.
+    pub(crate) fn reported_since(&self, source: &str, since_ms: i64) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE type = ?1 AND ts_ms > ?2
+             AND json_extract(data, '$.source.uri') = ?3
+             AND json_extract(data, '$.status') IN ('complete', 'step-open', 'incomplete')
+             AND (json_extract(data, '$.title') GLOB 'Done: *'
+                  OR json_extract(data, '$.title') GLOB 'Agent done: *'
+                  OR json_extract(data, '$.title') GLOB 'Incomplete: *'))",
+            params![crate::events::T_CARD_INFO, since_ms, source],
+            |row| row.get(0),
+        )
+    }
+
     pub(crate) fn unresolved_panes(&self) -> Result<HashSet<String>> {
         Ok(self
             .cards_at(crate::events::now_ms(), true, false)?

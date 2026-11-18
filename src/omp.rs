@@ -663,8 +663,10 @@ pub fn last_assistant_text(transcript: &std::path::Path) -> std::io::Result<Opti
 pub enum TurnEnd {
     /// `stopReason` `stop` or `length` with non-blank text. `report` is the latest
     /// earlier assistant text since the last user message whose first line is a
-    /// status line, set only when `text` has none.
-    Reply { entry_id: String, text: String, report: Option<String> },
+    /// status line, set only when `text` has none. `owed` is true while no reply since
+    /// the session's latest brief, or since its start when it had none, has opened with a
+    /// status line and carried a report.
+    Reply { entry_id: String, text: String, report: Option<String>, owed: bool },
     /// `stopReason` `error`. `message` is `errorMessage`, empty when absent.
     Error { entry_id: String, message: String },
     /// `stopReason` `aborted`: an interrupt or a terminal tool ended the run.
@@ -684,6 +686,7 @@ pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
     // (entry id, stopReason, errorMessage, non-blank text)
     let mut last: Option<(String, Option<String>, Option<String>, Option<String>)> = None;
     let mut report: Option<String> = None;
+    let mut reported = false;
     let mut woken = false;
     scan_jsonl(transcript, |value| {
         if value.get("type").and_then(Value::as_str) == Some("custom_message") {
@@ -698,6 +701,9 @@ pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
         let Some(message) = message(&value) else {
             return true;
         };
+        if hands_over_brief(message) {
+            reported = false;
+        }
         match message.get("role").and_then(Value::as_str) {
             Some("user") => {
                 report = None;
@@ -708,8 +714,11 @@ pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
                     return true;
                 };
                 let text = text_blocks(message).filter(|text| !text.trim().is_empty());
-                if let Some(text) = text.as_deref().filter(|text| final_report(text).is_some()) {
+                if let Some(text) = text.as_deref()
+                    && let Some((_, body)) = final_report(text)
+                {
                     report = Some(text.to_owned());
+                    reported |= !body.is_empty();
                 }
                 let field = |key| message.get(key).and_then(Value::as_str).map(str::to_owned);
                 last = Some((id.to_owned(), field("stopReason"), field("errorMessage"), text));
@@ -730,6 +739,7 @@ pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
                 report: report.filter(|_| final_report(&text).is_none()),
                 entry_id,
                 text,
+                owed: !reported,
             },
             (Some("error"), _) => TurnEnd::Error {
                 entry_id,
@@ -1348,40 +1358,40 @@ pub struct DispatchAudit {
     pub last_text: Option<String>,
 }
 
-/// A session is dispatched from triage when a user message carries a brief path under
-/// `triage/briefs/`, or when a developer message starts with `Plan approved.` and carries
-/// the `ENVOY_STATUS` contract (an approved triage plan running in a fresh session).
-/// `reported` means some assistant reply after the latest such message opens with a
-/// `*_STATUS` line (see [`final_report`]). `entry_id` and `last_text` are the last reply.
+/// Whether `message` hands the session a triage brief. That is a user message with a brief
+/// path under `triage/briefs/`, or a developer message that starts with `Plan approved.` and
+/// carries the `ENVOY_STATUS` contract, which is an approved triage plan running in a fresh
+/// session.
+fn hands_over_brief(message: &Value) -> bool {
+    match message.get("role").and_then(Value::as_str) {
+        Some("user") => text_blocks(message).is_some_and(|text| text.contains("triage/briefs/")),
+        Some("developer") => text_blocks(message)
+            .is_some_and(|text| text.starts_with("Plan approved.") && text.contains("ENVOY_STATUS")),
+        _ => false,
+    }
+}
+
+/// A session is dispatched from triage when a message hands it a brief (see
+/// [`hands_over_brief`]). `reported` means some assistant reply after the latest such
+/// message opens with a `*_STATUS` line (see [`final_report`]). `entry_id` and `last_text`
+/// are the last reply.
 pub fn dispatch_audit(transcript: &Path) -> io::Result<DispatchAudit> {
     let mut audit = DispatchAudit::default();
     scan_jsonl(transcript, |value| {
         let Some(message) = message(&value) else {
             return true;
         };
-        let dispatch = match message.get("role").and_then(Value::as_str) {
-            Some("user") => text_blocks(message).is_some_and(|text| text.contains("triage/briefs/")),
-            Some("developer") => text_blocks(message).is_some_and(|text| {
-                text.starts_with("Plan approved.") && text.contains("ENVOY_STATUS")
-            }),
-            Some("assistant") => {
-                if let (Some(id), Some(text)) = (
-                    value.get("id").and_then(Value::as_str),
-                    text_blocks(message),
-                ) {
-                    if final_report(&text).is_some() {
-                        audit.reported = true;
-                    }
-                    audit.entry_id = Some(id.to_owned());
-                    audit.last_text = Some(text);
-                }
-                false
-            }
-            _ => false,
-        };
-        if dispatch {
+        if hands_over_brief(message) {
             audit.dispatched = true;
             audit.reported = false;
+        } else if message.get("role").and_then(Value::as_str) == Some("assistant")
+            && let (Some(id), Some(text)) = (value.get("id").and_then(Value::as_str), text_blocks(message))
+        {
+            if final_report(&text).is_some() {
+                audit.reported = true;
+            }
+            audit.entry_id = Some(id.to_owned());
+            audit.last_text = Some(text);
         }
         true
     })?;
@@ -1605,10 +1615,12 @@ mod tests {
     }
 
     fn turn_end_of(lines: &[&str]) -> Option<TurnEnd> {
+        // Each call writes a file of its own, because tests run on parallel threads.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "triage-omp-turn-end-{}-{}.jsonl",
             std::process::id(),
-            lines.len()
+            CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::write(&path, lines.join("\n")).unwrap();
         let end = turn_end(&path).unwrap();
@@ -1637,6 +1649,7 @@ mod tests {
                 entry_id: "a2".into(),
                 text: "Background job finished.".into(),
                 report: Some("ENVOY_STATUS: complete\n\nShipped.".into()),
+                owed: false,
             })
         );
         assert_eq!(turn_end_of(&[user, report, wake]), Some(TurnEnd::Running));
@@ -1647,6 +1660,7 @@ mod tests {
                 entry_id: "a2".into(),
                 text: "Background job finished.".into(),
                 report: None,
+                owed: false,
             })
         );
         assert_eq!(
@@ -1655,6 +1669,7 @@ mod tests {
                 entry_id: "a1".into(),
                 text: "ENVOY_STATUS: complete\n\nShipped.".into(),
                 report: None,
+                owed: false,
             })
         );
         assert_eq!(
@@ -1663,11 +1678,12 @@ mod tests {
                 entry_id: "a2".into(),
                 text: "Background job finished.".into(),
                 report: None,
+                owed: false,
             })
         );
         assert_eq!(
             turn_end_of(&[user, length]),
-            Some(TurnEnd::Reply { entry_id: "l1".into(), text: "Cut off".into(), report: None })
+            Some(TurnEnd::Reply { entry_id: "l1".into(), text: "Cut off".into(), report: None, owed: true })
         );
         assert_eq!(
             turn_end_of(&[user, tool_use, error]),
@@ -1677,6 +1693,43 @@ mod tests {
         assert_eq!(turn_end_of(&[user, tool_use]), Some(TurnEnd::Running));
         assert_eq!(turn_end_of(&[user, blank_stop]), Some(TurnEnd::Running));
         assert_eq!(turn_end_of(&[user, no_reason]), Some(TurnEnd::Running));
+    }
+
+    // On 2026-11-16 a session the user drove by hand reported its work. Triage then asked it
+    // for another final report after four of the questions he typed. A session owes one
+    // report per brief, or one in total when it had no brief. A later reply to a typed
+    // message owes none.
+    #[test]
+    fn a_reply_owes_a_report_until_one_follows_the_latest_brief() {
+        let entry = |id: &str, role: &str, text: &str| {
+            serde_json::json!({
+                "type": "message",
+                "id": id,
+                "message": {"role": role, "stopReason": "stop", "content": [{"type": "text", "text": text}]},
+            })
+            .to_string()
+        };
+        let typed = entry("u1", "user", "how do i use it");
+        let brief = entry("u2", "user", "Read the brief at /data/triage/briefs/triage-brief-1.md and carry it out.");
+        let approved = entry("d1", "developer", "Plan approved. End with `ENVOY_STATUS: complete`.");
+        let report = entry("a1", "assistant", "ENVOY_STATUS: complete\nS: Asked.\nR: Shipped.");
+        let status_only = entry("a2", "assistant", "ENVOY_STATUS: complete");
+        let reply = entry("a3", "assistant", "Run it from the project directory.");
+        let owed = |lines: &[&String]| {
+            let lines: Vec<&str> = lines.iter().map(|line| line.as_str()).collect();
+            match turn_end_of(&lines) {
+                Some(TurnEnd::Reply { owed, .. }) => owed,
+                other => panic!("not a reply: {other:?}"),
+            }
+        };
+
+        assert!(owed(&[&typed, &reply]), "a session that never reported owes its first report");
+        assert!(owed(&[&brief, &reply]), "a brief owes a report");
+        assert!(!owed(&[&typed, &report, &typed, &reply]), "a typed message after the report owes none");
+        assert!(!owed(&[&brief, &report, &typed, &reply]), "a typed message after a brief's report owes none");
+        assert!(owed(&[&typed, &report, &brief, &reply]), "a new brief owes a report of its own");
+        assert!(owed(&[&typed, &report, &approved, &reply]), "an approved plan owes a report of its own");
+        assert!(owed(&[&typed, &status_only, &typed, &reply]), "a status line without a report pays nothing");
     }
 
     #[test]

@@ -586,6 +586,15 @@ fn finding_brief_includes_agent_done_status_contract() {
     assert!(brief.contains(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}")));
 }
 
+/// The line a report request sends and the format file it names, from a database of its own.
+fn report_request_and_format() -> (String, String) {
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let request = report_request(&db).unwrap();
+    let format = fs::read_to_string(scratch.path().join("report-format.md")).unwrap();
+    (request, format)
+}
+
 // Regression: on 2026-11-14 a draft brief whose direction said "NEVER ask me to send draft" still
 // closed with "Recommended action: none, sending is yours, open it with M-x notmuch-search RET
 // tag:draft and press E". The report contract allowed that line, and Nick could not read the
@@ -593,8 +602,9 @@ fn finding_brief_includes_agent_done_status_contract() {
 // STAR, with the result naming the card title.
 #[test]
 fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
-    for text in [REPORT_STEP, REQUEST_REPORT_TEXT] {
-        for step in ["`S:`", "`T:`", "`A:`", "`R:`", "`Remaining:`", "`Recommended action:`"] {
+    let (_, format) = report_request_and_format();
+    for text in [REPORT_STEP, format.as_str()] {
+        for step in ["S: the situation", "T: the task", "A: what you did", "R: the outcome", "`Remaining:`", "`Recommended action:`"] {
             assert!(text.contains(step), "{step} missing from {text}");
         }
     }
@@ -637,12 +647,13 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     assert!(act.contains("make the normal call and let the harness answer."));
     assert!(investigation.contains(INVESTIGATE_STATUS_CONTRACT));
     assert!(!investigation.contains("ENVOY_STATUS: agent-done"));
+    let (request, format) = report_request_and_format();
     for rule in recommendation_rules {
-        assert!(REQUEST_REPORT_TEXT.contains(rule), "missing {rule:?} from request");
+        assert!(format.contains(rule), "missing {rule:?} from the request's format");
     }
-    assert!(REQUEST_REPORT_TEXT.contains("only after every part of the brief is finished or blocked"));
+    assert!(request.contains("Finish any open part of the task first"), "{request}");
     assert!(!REPORT_STEP.contains("names the one change your instructions did not allow"));
-    assert!(!REQUEST_REPORT_TEXT.contains("the one step that still needs user approval"));
+    assert!(!format.contains("the one step that still needs user approval"));
 }
 
 // Nick asked for a default Act instruction. In his words, "if i don't type anything this is the
@@ -2083,6 +2094,7 @@ fn act_complete_report_with_a_step_opens_instead_of_closing() {
                 "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Run the investigation follow-up.".to_owned(),
                 None,
                 true,
+                true,
             )
             .action,
             "Run the investigation follow-up."
@@ -2133,6 +2145,7 @@ fn act_complete_report_with_a_step_opens_instead_of_closing() {
             "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: none.".to_owned(),
             None,
             false,
+            true,
         );
         assert_eq!(none.status, events::CardStatus::Complete);
         assert!(none.action.is_empty());
@@ -2248,6 +2261,7 @@ fn agent_done_report_closed_by_none_reads_done() {
         "ENVOY_STATUS: agent-done\n\nBlock key shipped and pushed.\n\nRecommended action: none.".to_owned(),
         None,
         false,
+        true,
     );
     assert_eq!(turn.title, "Done: Block key shipped and pushed.");
     assert_eq!(turn.level, "info");
@@ -2261,6 +2275,7 @@ fn agent_done_report_with_an_open_step_keeps_the_warning() {
         "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.".to_owned(),
         None,
         false,
+        true,
     );
     assert_eq!(turn.title, "Agent done: Push still open.");
     assert_eq!(turn.level, "warn");
@@ -2276,7 +2291,7 @@ fn a_report_with_a_remaining_item_keeps_its_card_open() {
     };
     let open = "Push 4f1c2aa, which waits on Nick removing an untracked file.";
 
-    let turn = reply_turn(report("agent-done", open), None, false);
+    let turn = reply_turn(report("agent-done", open), None, false, true);
     assert_eq!(turn.status, events::CardStatus::StepOpen);
     assert_eq!(turn.title, "Agent done: Suite passes on 4f1c2aa.");
     assert_eq!(turn.level, "warn");
@@ -2287,22 +2302,22 @@ fn a_report_with_a_remaining_item_keeps_its_card_open() {
             .is_some_and(|body| body.ends_with(&format!("Remaining: {open}")))
     );
 
-    let turn = reply_turn(report("complete", open), None, false);
+    let turn = reply_turn(report("complete", open), None, false, true);
     assert_eq!(turn.status, events::CardStatus::StepOpen);
     assert_eq!(turn.title, "Agent done: Suite passes on 4f1c2aa.");
 
-    let turn = reply_turn(report("agent-done", "none"), None, false);
+    let turn = reply_turn(report("agent-done", "none"), None, false, true);
     assert_eq!(turn.status, events::CardStatus::Complete);
     assert_eq!(turn.title, "Done: Suite passes on 4f1c2aa.");
-    assert_eq!(reply_turn(report("complete", "none"), None, false).status, events::CardStatus::Complete);
+    assert_eq!(reply_turn(report("complete", "none"), None, false, true).status, events::CardStatus::Complete);
 
-    assert_eq!(reply_turn(report("complete", open), None, true).status, events::CardStatus::StepOpen);
+    assert_eq!(reply_turn(report("complete", open), None, true, true).status, events::CardStatus::StepOpen);
     let fix = report("complete", "none")
         .replace("Recommended action: none", "Recommended action: Remove the cron entry.");
-    let turn = reply_turn(fix, None, true);
+    let turn = reply_turn(fix, None, true, true);
     assert_eq!(turn.status, events::CardStatus::Complete);
     assert_eq!(turn.action, "Remove the cron entry.");
-    assert_eq!(reply_turn(report("incomplete", open), None, false).status, events::CardStatus::Incomplete);
+    assert_eq!(reply_turn(report("incomplete", open), None, false, true).status, events::CardStatus::Incomplete);
 }
 
 
@@ -2312,6 +2327,7 @@ fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
         "ENVOY_STATUS: agent-done\n\nSuite gate still red.".to_owned(),
         None,
         false,
+        true,
     );
     assert_eq!(turn.title, "Agent done: Suite gate still red.");
     assert_eq!(turn.level, "warn");
@@ -2323,6 +2339,7 @@ fn carried_agent_done_report_takes_the_closing_step() {
         "Closing note.\n\nRecommended action: Publish the release.".to_owned(),
         Some("ENVOY_STATUS: agent-done\n\nWaited on the suite.\n\nRecommended action: none.".to_owned()),
         false,
+        true,
     );
     assert_eq!(turn.title, "Agent done: Waited on the suite.");
     assert_eq!(turn.level, "warn");
@@ -2332,7 +2349,7 @@ fn carried_agent_done_report_takes_the_closing_step() {
 #[test]
 fn every_reply_states_its_outcome_for_the_card_status() {
     let status = |text: &str, report: Option<&str>| {
-        reply_turn(text.to_owned(), report.map(str::to_owned), false).status
+        reply_turn(text.to_owned(), report.map(str::to_owned), false, true).status
     };
     let complete = "ENVOY_STATUS: complete\n\nShipped.";
     let step_open = "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.";
@@ -2358,6 +2375,25 @@ fn every_reply_states_its_outcome_for_the_card_status() {
     );
 }
 
+// A session that has reported answers a later typed message with a plain reply. Its card
+// reads Reply and still offers Request final report.
+#[test]
+fn a_reply_from_a_session_that_owes_no_report_reads_reply() {
+    let plain = |owed| reply_turn("It runs on every push.".to_owned(), None, false, owed);
+    assert_eq!(plain(true).status, events::CardStatus::NoFinalReport);
+    let reply = plain(false);
+    assert_eq!(reply.status, events::CardStatus::Reply);
+    assert_eq!(reply.title, "It runs on every push.");
+    assert_eq!(reply.level, "info");
+    assert!(reply.report_due, "the card can still request a report");
+    // A status line with no report under it is a broken report, whoever owes what.
+    let broken = reply_turn("ENVOY_STATUS: complete".to_owned(), None, false, false);
+    assert_eq!(broken.status, events::CardStatus::NoFinalReport);
+    // A report reads as its outcome whether or not one was owed.
+    let report = reply_turn("ENVOY_STATUS: complete\n\nShipped.".to_owned(), None, false, false);
+    assert_eq!(report.status, events::CardStatus::Complete);
+}
+
 #[cfg(unix)]
 #[test]
 fn launched_reply_without_status_line_offers_report_request() {
@@ -2380,7 +2416,13 @@ fn launched_reply_without_status_line_offers_report_request() {
         let swipe = db.card(&card.id).unwrap().unwrap().1.unwrap();
         assert_eq!(swipe.text.as_deref(), Some("Request final report"));
         assert_eq!(swipe.reason.as_deref(), Some("report requested %12"));
-        assert!(fs::read_to_string(root.join("tmux-keys.log")).unwrap().contains("Recommended action: none"));
+        // The pane gets one line that names the format file. The rules stay in the file.
+        let format = root.join("report-format.md");
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
+        assert!(keys.contains(&format!("its format is at {}.", format.display())), "{keys}");
+        assert!(!keys.contains("Recommended action"), "{keys}");
+        let rules = fs::read_to_string(&format).unwrap();
+        assert!(rules.contains(ENVOY_STATUS_CONTRACT) && rules.ends_with(REPORT_STEP), "{rules}");
         return;
     }
     let scratch = Scratch::new();
@@ -2410,7 +2452,7 @@ fn a_report_without_a_status_line_asks_its_session_once() {
             Some(events::CardStatus::NoFinalReport),
             "a reply with no status line is not a final report: {card:?}"
         );
-        let asks = || fs::read_to_string(root.join("tmux-keys.log")).unwrap().matches(REQUEST_REPORT_TEXT).count();
+        let asks = || fs::read_to_string(root.join("tmux-keys.log")).unwrap().matches("needs a final report").count();
         assert_eq!(asks(), 0, "the card alone asks nothing");
         tracker.chase_missing_reports(&db, &Launch::default());
         assert_eq!(asks(), 1, "the session is asked for the report it owes");
@@ -2422,6 +2464,39 @@ fn a_report_without_a_status_line_asks_its_session_once() {
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
     run_child("a_report_without_a_status_line_asks_its_session_once", scratch.path(), Some(scratch.path()), Some(&bin));
+}
+
+// Regression: on 2026-11-16 a session Nick started by hand reported its work and then answered
+// the questions he typed. Triage typed the whole report request into the pane after four of
+// those answers. A session that has reported owes nothing more for a message the user types.
+#[cfg(unix)]
+#[test]
+fn a_typed_question_after_the_report_is_not_asked_for_another() {
+    if let Some(root) = child_root("a_typed_question_after_the_report_is_not_asked_for_another") {
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-keys.log"), b" ").unwrap();
+        fs::create_dir_all(root.join("tmux-screens")).unwrap();
+        fs::write(root.join("tmux-screens/0"), "──────\n  ←←  \n──────\n").unwrap();
+        let transcript = root.join("transcript.jsonl");
+        write_transcript(&root, "/dev/pts/12", &transcript, &[
+            user_line("u1", "set up the tui"),
+            assistant_text_line("assistant-report", "ENVOY_STATUS: complete\nR: The TUI runs.\nRemaining: none\nRecommended action: none"),
+            user_line("u2", "how use it"),
+            assistant_text_line("assistant-answer", "Run it from the repo root."),
+        ]);
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        tracker.tick(&db);
+        let card = db.card("done:%12:assistant-answer").unwrap().unwrap().0;
+        assert_eq!(card.status, Some(events::CardStatus::Reply), "{card:?}");
+        assert!(card.report_due, "the user can still ask for a report by hand: {card:?}");
+        tracker.chase_missing_reports(&db, &Launch::default());
+        assert_eq!(fs::read_to_string(root.join("tmux-keys.log")).unwrap(), " ", "triage types nothing into the pane");
+        return;
+    }
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child("a_typed_question_after_the_report_is_not_asked_for_another", scratch.path(), Some(scratch.path()), Some(&bin));
 }
 
 #[cfg(unix)]
@@ -8896,6 +8971,41 @@ fn one_ask_per_session_window() {
     assert_eq!(bridge.posts("/v1/prompt").len(), 1);
 }
 
+/// Ends one dsh turn on `text` and returns the card the poll writes for it.
+fn dsh_reply(bridge: &FakeBridge, tracker: &mut Tracker, db: &Db, cursor: i64, now: i64, text: &str) -> Card {
+    bridge.edit(|data| {
+        data.sessions = vec![session(cursor)];
+        data.events
+            .entry(SID.to_owned())
+            .or_default()
+            .extend([reply_event(cursor - 1, text), turn_end(cursor, "completed")]);
+    });
+    dsh_tick(tracker, db, Some(bridge.host()), now);
+    db.card(&format!("done:dsh:{SID}:{cursor}")).unwrap().unwrap().0
+}
+
+// The stored cards say what a dsh session still owes, because the bridge lists no user messages.
+#[test]
+fn a_dsh_session_owes_one_report_for_each_brief() {
+    let scratch = Scratch::new();
+    let db = dsh_db(&scratch);
+    let bridge = FakeBridge::start(scratch.path());
+    let mut tracker = Tracker::default();
+    let report = dsh_reply(&bridge, &mut tracker, &db, 4, NOW, "ENVOY_STATUS: complete\nR: Gate fixed.\nRemaining: none\nRecommended action: none");
+    assert_eq!(report.status, Some(events::CardStatus::Complete), "{report:?}");
+    let answer = dsh_reply(&bridge, &mut tracker, &db, 6, NOW + 3_000, "It runs from the repo root.");
+    assert_eq!(answer.status, Some(events::CardStatus::Reply), "{answer:?}");
+    assert!(answer.report_due, "the user can still ask for a report by hand: {answer:?}");
+    tracker.chase_missing_reports(&db, &bridge.launch());
+    assert!(bridge.posts("/v1/prompt").is_empty(), "a reply after the report is not asked for another");
+    // A brief sent into the same session owes a report of its own.
+    db.swipe(&Swipe { card: answer.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some(format!("launched dsh:{SID}")), at_ms: events::now_ms() }).unwrap();
+    let unreported = dsh_reply(&bridge, &mut tracker, &db, 8, NOW + 6_000, "The second fix is in.");
+    assert_eq!(unreported.status, Some(events::CardStatus::NoFinalReport), "{unreported:?}");
+    tracker.chase_missing_reports(&db, &bridge.launch());
+    assert_eq!(bridge.posts("/v1/prompt").len(), 1, "the new brief is asked for its report");
+}
+
 #[test]
 fn dsh_dispatch_reports_a_failed_state_read_and_starts_no_session() {
     let scratch = Scratch::new();
@@ -9016,7 +9126,7 @@ fn dsh_report_request_prompts_an_idle_session_for_its_final_report() {
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
-    assert_eq!(prompts[0]["text"], REQUEST_REPORT_TEXT);
+    assert_eq!(prompts[0]["text"], report_request(&db).unwrap());
     assert_eq!(swipe_reason(&db, &card.id), Some(format!("report requested dsh:{SID}")));
 }
 

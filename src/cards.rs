@@ -161,8 +161,10 @@ impl Tracker {
         self.dsh_ignore = ignore;
     }
 
-    /// Ask a session for the status or report body its reply missed. A run triage briefed owes one.
-    /// Definite refusals retry after a cooldown; the card stays queued until a report replaces it.
+    /// Ask a session for the report its reply still owes. A session owes one per brief, or one
+    /// in total when it had no brief. A later reply to a message the user typed owes none and
+    /// reads `Reply`, which this never asks. Definite refusals retry after a cooldown. The card
+    /// stays queued until a report replaces it.
     pub fn chase_missing_reports(&mut self, db: &Db, launch: &Launch) -> TickReport {
         self.chase_missing_reports_at(db, launch, crate::events::now_ms())
     }
@@ -194,7 +196,7 @@ impl Tracker {
             {
                 continue;
             }
-            let result = ask_for_report(&card, launch);
+            let result = ask_for_report(db, &card, launch);
             let retry = self.chased.entry(key).or_default();
             let first_probe = retry.probed_ms == 0;
             retry.probed_ms = now;
@@ -1045,7 +1047,26 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>, launch: &Launch) -> Resul
     }
 }
 
-const REQUEST_REPORT_TEXT: &str = "Send the final report for this triage card only after every part of the brief is finished or blocked. Otherwise finish the open part first. Start with `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. Use `complete` only when the whole requested outcome shipped with its full gate passed. Work that is done but left a required push, deploy, full test gate, or Nick-owned approval open reports `agent-done` and names that step. Use `incomplete` when the task is blocked. Write one sentence per line: `S:` for the situation, `T:` for the task, `A:` for the work you did, and `R:` for the outcome and evidence, finished work only. Then write one `Remaining:` line for each action item still open, a plain sentence with no dash that states the action and then what holds it: the blocker, the person who must act, or the event it waits on. Never put an open item on an `R:` line. Write `Remaining: none` when no item is open. Finish with one `Recommended action:` line. A non-investigation `complete` report writes `Recommended action: none`. An investigation may name one evidence-backed next action. An `agent-done` or `incomplete` report may name one remaining item that a session can carry out once Nick approves it, such as a change a standing rule reserves for his approval. Write `Recommended action: none` when no qualifying action waits. Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker. A remaining item that only the user can do or that waits on a later event is never the recommended action. Resume and finish anything your instructions allow.";
+/// Opens the format file a report request names. The file says who is asking, because a
+/// session that had no brief meets triage there for the first time.
+const REPORT_FORMAT_INTRO: &str = "# Triage report format\n\nTriage is the inbox that tracks this session. It shows your last reply as a card. That card needs a final report in the shape below. A session that got no brief reads \"the brief\" and \"the card\" as what the user asked for in this session.\n\n";
+
+/// The one line triage sends a session that owes a final report. The format sits in a file
+/// beside the database, where the session reads it, which leaves a single line in the user's
+/// pane instead of the rules. That line asks for the report alone, because a sentence ahead
+/// of the status line stops the reply from counting as a report.
+fn report_request(db: &Db) -> Result<String, String> {
+    let path = db.path().with_file_name("report-format.md");
+    let format = format!("{REPORT_FORMAT_INTRO}{ENVOY_STATUS_CONTRACT}{REPORT_STEP}");
+    if fs::read_to_string(&path).ok().as_deref() != Some(format.as_str()) {
+        fs::write(&path, format).map_err(|error| format!("report format: {error}"))?;
+    }
+    Ok(format!(
+        "Triage, the inbox that tracks this session, needs a final report. Finish any open part of the task first, then reply with the report alone. Its first line is the `ENVOY_STATUS` line and its format is at {}.",
+        path.display()
+    ))
+}
+
 /// Type the request for the final report into the card's waiting pane and resolve the card.
 /// A dsh card asks its session instead. Only an idle session takes the request.
 pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
@@ -1066,7 +1087,7 @@ pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), Strin
     if let Some(sid) = dsh::session_id(card) {
         return dsh_track::request_report(db, card, sid, launch);
     }
-    ask_for_report(card, launch)?;
+    ask_for_report(db, card, launch)?;
     let pane = card.source.pane.as_deref().unwrap_or_default();
     if record_swipe(db, &card.id, "done", None, Some("Request final report".to_owned()), None, Some(format!("report requested {pane}"))) {
         Ok(())
@@ -1092,7 +1113,8 @@ fn ask_key(card: &Card) -> Option<String> {
 }
 /// Ask the card's session for the final report without changing the card. An omp pane must be
 /// waiting. A dsh session must be idle. Anything else refuses and sends nothing.
-fn ask_for_report(card: &Card, launch: &Launch) -> Result<(), String> {
+fn ask_for_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
+    let request = report_request(db)?;
     if let Some(sid) = dsh::session_id(card) {
         let host = launch.dsh_host.as_deref();
         let state_client = dsh::connect(host, dsh::TICK_TIMEOUT)
@@ -1104,7 +1126,7 @@ fn ask_for_report(card: &Card, launch: &Launch) -> Result<(), String> {
         }
         let prompt_client = dsh::connect(host, dsh::ACTION_TIMEOUT)
             .map_err(|error| format!("report state: {error}"))?;
-        return prompt_client.prompt(sid, REQUEST_REPORT_TEXT, None)
+        return prompt_client.prompt(sid, &request, None)
             .map_err(|error| format!("report prompt: {error}"));
     }
     let pane = card.source.pane.as_deref().ok_or_else(|| "card has no pane".to_owned())?;
@@ -1112,7 +1134,7 @@ fn ask_for_report(card: &Card, launch: &Launch) -> Result<(), String> {
     if !panes.iter().any(|candidate| candidate.id == pane && omp::classify(&candidate.title) == PaneState::Waiting) {
         return Err("pane is not waiting".to_owned());
     }
-    send(pane, REQUEST_REPORT_TEXT)
+    send(pane, &request)
 }
 
 fn retryable_report_error(error: &str) -> bool {
@@ -1737,8 +1759,8 @@ fn queue_turn_card(
             };
             (entry_id, turn)
         }
-        omp::TurnEnd::Reply { entry_id, text, report } => {
-            let mut turn = reply_turn(text, report, investigation);
+        omp::TurnEnd::Reply { entry_id, text, report, owed } => {
+            let mut turn = reply_turn(text, report, investigation, owed);
             if omp::goal_active(path).unwrap_or(false) {
                 turn.report_due = false;
             }
@@ -1822,11 +1844,13 @@ fn turn_card(id: String, source: Source, refs: Vec<String>, trail: Star, turn: T
 }
 
 /// The card parts for a reply. `report` is the latest status-line report earlier in the run,
-/// which a closing reply follows.
+/// which a closing reply follows. `owed` is true while no report has followed the session's
+/// latest brief, or its start when it had no brief.
 fn reply_turn(
     text: String,
     report: Option<String>,
     investigation: bool,
+    owed: bool,
 ) -> Turn {
     let text = omp::redact_credentials(&text);
     let report = report.map(|report| omp::redact_credentials(&report));
@@ -1899,9 +1923,11 @@ fn reply_turn(
     };
     // The same reading fills the status line above the title. A report then states its outcome
     // even when its title carries no prefix. A reply that opens with no status line is not a
-    // final report, so its card reads that way instead of naming a line the run never wrote.
+    // final report. While the session owes one, its card says so and the session gets asked.
+    // After the session has reported, the reply answers a message the user typed.
     let status = match reported {
-        None => events::CardStatus::NoFinalReport,
+        None if owed => events::CardStatus::NoFinalReport,
+        None => events::CardStatus::Reply,
         Some((_, _)) if missing_report => events::CardStatus::NoFinalReport,
         Some((omp::FinalStatus::Complete, _)) if open_complete_step => events::CardStatus::StepOpen,
         Some((omp::FinalStatus::Complete, _)) => events::CardStatus::Complete,
@@ -3469,9 +3495,61 @@ fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: Dis
     }
     brief
 }
-const REPORT_STEP: &str = " Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow. Then report in caveman style, short words and nothing spare, as STAR with one sentence per label, each line starting `S:`, `T:`, `A:` or `R:`. `S:` the situation the card described. `T:` the task the brief set. `A:` what you did, naming every file, skill and system you changed. `R:` the outcome and the evidence for it, finished work only. After `R:`, write one `Remaining:` line for each action item still open, a plain sentence with no dash that states the action and then what holds it: the blocker, the person who must act, or the event it waits on. An item is open when the requested outcome still needs it, such as a blocked push, a step only the user can take, or a check that waits on a later event. Never put an open item on an `R:` line. Advice for future work, optional improvements, standing rules and finished steps are not open items. Write one `Remaining: none` line when no item is open, as every `complete` report does. Then one last line that starts `Recommended action:`. A non-investigation `complete` report writes `Recommended action: none`. An investigation may name one evidence-backed next action. An `agent-done` or `incomplete` report may name one remaining item that a session can carry out once Nick approves it, such as a change a standing rule reserves for his approval. Write `Recommended action: none` when no qualifying action waits. Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker. Resume and finish anything your instructions allow. A remaining item that only the user can do or that waits on a later event is never the recommended action, and neither is advice for future work, a standing rule or a finished step. Never ask for, suggest or invite a send anywhere in the report, and never tell the user how to open or send a draft: the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked.\n";
-const ENVOY_STATUS_CONTRACT: &str = "Keep working until every part of the brief is finished or blocked. When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`. `complete` means the whole requested outcome shipped through the project's normal pipeline, pushed or deployed as the task calls for, and the full test suite passed. Work that is done but left a required push, deploy, full test gate, or Nick-owned approval open reports `agent-done` and names that step. A run that could not use the method its brief named reports `incomplete`.";
-const INVESTIGATE_STATUS_CONTRACT: &str = "When finished, end with a final reply whose first line is `ENVOY_STATUS: complete` or `ENVOY_STATUS: incomplete`. `complete` means the answer is reported with its evidence and nothing changed beyond what the direction from the user asked for. `incomplete` means the question could not be answered, and the reply names what blocked it.";
+/// The shape of the report, which follows a status contract in every brief. It is laid out
+/// as short paragraphs and lists because the user reads it too, in a plan's copy of it and in
+/// the format file a report request names.
+const REPORT_STEP: &str = r#"Before you report, finish every step your instructions allow, such as the checks, commit, push or deploy the task calls for, and never hand back a step they allow.
+
+Then report in caveman style, short words and nothing spare, as STAR. Each line starts with its label and holds one sentence:
+
+```
+S: the situation the card described
+T: the task the brief set
+A: what you did, naming every file, skill and system you changed
+R: the outcome and the evidence for it, finished work only
+```
+
+After `R:`, write one `Remaining:` line for each action item still open.
+
+- Each line is a plain sentence with no dash that states the action and then what holds it: the blocker, the person who must act, or the event it waits on.
+- An item is open when the requested outcome still needs it, such as a blocked push, a step only the user can take, or a check that waits on a later event.
+- Never put an open item on an `R:` line.
+- Advice for future work, optional improvements, standing rules and finished steps are not open items.
+- Write one `Remaining: none` line when no item is open, as every `complete` report does.
+
+Then write one last line that starts `Recommended action:`.
+
+- A non-investigation `complete` report writes `Recommended action: none`.
+- An investigation may name one evidence-backed next action.
+- An `agent-done` or `incomplete` report may name one remaining item that a session can carry out once Nick approves it, such as a change a standing rule reserves for his approval.
+- Write `Recommended action: none` when no qualifying action waits.
+- Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker. Resume and finish anything your instructions allow.
+- The recommended action is never a remaining item that only the user can do or that waits on a later event, and never advice for future work, a standing rule or a finished step.
+
+Never ask for, suggest or invite a send anywhere in the report, and never tell the user how to open or send a draft, because the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked.
+
+A later question in this session gets a plain answer with no report. Later work ends with a report in the same shape.
+"#;
+/// Opens the report section of a brief that carries work out. It ends on a blank line, which
+/// makes `REPORT_STEP` the next paragraph.
+const ENVOY_STATUS_CONTRACT: &str = r#"## Final report
+
+Keep working until every part of the brief is finished or blocked. When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`.
+
+- `complete` means the whole requested outcome shipped through the project's normal pipeline, pushed or deployed as the task calls for, and the full test suite passed.
+- Work that is done but left a required push, deploy, full test gate, or Nick-owned approval open reports `agent-done` and names that step.
+- `incomplete` means the run could not use the method its brief named.
+
+"#;
+/// Opens the report section of a read-only investigation, which ends on an answer.
+const INVESTIGATE_STATUS_CONTRACT: &str = r#"## Final report
+
+When finished, end with a final reply whose first line is `ENVOY_STATUS: complete` or `ENVOY_STATUS: incomplete`.
+
+- `complete` means the answer is reported with its evidence and nothing changed beyond what the direction from the user asked for.
+- `incomplete` means the question could not be answered, and the reply names what blocked it.
+
+"#;
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
 const ACT_INSTRUCTION: &str = "Take the whole action this card calls for, end to end in this run. Complete every part and every environment the request covers. Do not stop at the first working slice. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. When an in-scope edit may need harness approval, make the normal call and let the harness answer. Do not predict a denial. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 /// The direction an Act launch carries when the user typed none. It asks for the work to be
@@ -3501,8 +3579,8 @@ const PLAN_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a d
 const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The harness approves the plan on its own and hands it to the execution model, which carries out the work end to end.";
 /// Plan approval hands the work to a model that may see only the plan. omp's default
 /// "Approve and execute" starts a fresh session, and Plan into switches to the execution
-/// model, so the plan has to carry the status contract.
-const PLAN_REPORT_STEP: &str = "Approval hands the plan to a model that may see only the plan. End the plan with a section headed \"Final report\" that repeats the previous paragraph word for word.";
+/// model, so the plan has to carry the report section.
+const PLAN_REPORT_STEP: &str = "## Plan handoff\n\nApproval hands the plan to a model that may see only the plan. End the plan with a section headed \"Final report\" that repeats the Final report section above word for word.";
 
 /// The directory a dsh workspace session must work from. A workspace session starts in the
 /// workspace directory, so its brief names the project directory and the tool that moves it.

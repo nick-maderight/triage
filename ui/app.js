@@ -111,6 +111,8 @@ const S = {
     // Cards written before a reply without a status line read as no final report keep their
     // stored word and show the same line.
     'no-status': ['No final report', 'warning'],
+    // A plain reply from a session that owes no report, such as an answer to a typed question.
+    reply: ['Reply'],
     'plan-ready': ['Plan ready'],
     waiting: ['Waiting on you'],
     notice: ['Notice'],

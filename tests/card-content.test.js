@@ -196,6 +196,11 @@ test('every card states the status the daemon gives it', () => {
     'a reply that missed its status line reads as no final report',
   );
   assert.deepEqual(
+    head({ id: 'a', kind: 'info', title: 'Run it from the repo root.', body: 'Run it from the repo root.', star: {}, refs: ['/tmp/t.jsonl'], status: 'reply' }),
+    { status: ['Reply', undefined], title: 'Run it from the repo root.' },
+    'a reply from a session that owes no report reads as a reply, in no warning color',
+  );
+  assert.deepEqual(
     head({ id: 'q', kind: 'ask', title: 'Which branch ships?', star: {}, options: [], status: 'waiting' }),
     { status: ['Waiting on you', undefined], title: 'Which branch ships?' },
     'a decision card states it waits on you',
