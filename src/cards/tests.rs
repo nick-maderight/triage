@@ -5293,6 +5293,8 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
         let contract = blank.is_err()
             && launched.as_deref() == Ok("%42")
             && brief.starts_with("Reply with pong.\n")
+            && brief.contains(DEFAULT_ACT_DIRECTION)
+            && brief.contains("Investigate and fix the root cause permanently and generically")
             && brief.contains("ENVOY_STATUS: complete")
             && brief.contains("ENVOY_STATUS: agent-done")
             && brief.contains("and names that step")

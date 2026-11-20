@@ -171,19 +171,28 @@ The # marks of each heading are hidden."
           (setq pos next)))
       result)))
 
+(defvar triage-render--markdown-cache
+  (make-hash-table :test #'equal :weakness 'value)
+  "Propertized Markdown keyed by source text.  Unused entries can be reclaimed.")
+
 (defun triage-render-markdown (text)
   "Return TEXT as a propertized string ready for display.
 JSON becomes one pretty-printed block.  Other text is fontified by `gfm-mode'
-when markdown-mode is installed.  Otherwise TEXT is returned unchanged."
-  (let ((trimmed (string-trim text)))
-    (cond
-     ((and (string-match-p "\\`[[{]" trimmed) (triage-render--json-p trimmed))
-      (with-temp-buffer
-        (insert trimmed)
-        (json-pretty-print-buffer)
-        (buffer-string)))
-     ((require 'markdown-mode nil t) (triage-render--gfm text))
-     (t text))))
+when markdown-mode is installed.  Otherwise TEXT is returned unchanged.
+Equal source text reuses the earlier result."
+  (or (gethash text triage-render--markdown-cache)
+      (puthash
+       text
+       (let ((trimmed (string-trim text)))
+         (cond
+          ((and (string-match-p "\\`[[{]" trimmed) (triage-render--json-p trimmed))
+           (with-temp-buffer
+             (insert trimmed)
+             (json-pretty-print-buffer)
+             (buffer-string)))
+          ((require 'markdown-mode nil t) (triage-render--gfm text))
+          (t text)))
+       triage-render--markdown-cache)))
 
 (defun triage-render--insert-markdown (text &optional indent)
   "Insert TEXT as Markdown indented by INDENT, and make its links clickable.

@@ -3616,7 +3616,7 @@ fn session_brief(prompt: &str, plan: bool, workdir: Option<String>) -> String {
         brief.push_str(&workdir_note(cwd));
     }
     brief.push_str(&format!(
-        "{}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}",
+        "{}\n\n{DEFAULT_INVESTIGATE_FIX_DIRECTION}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}",
         prompt.trim()
     ));
     if plan {

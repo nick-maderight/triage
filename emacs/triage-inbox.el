@@ -183,8 +183,8 @@ CARD is no longer in the queue."
      (pos
       (setq idx pos))
      ((and old-id (gethash old-id triage-queue--inflight))
-      ;; Our own action removed the card, so the deck goes back to the lead.
-      (setq idx (if (> old-idx 0) 0 old-idx)))
+      ;; Our own action removed the card, so the next card takes its place.
+      nil)
      (old-id
       (setq remote-title (triage-card-title-of old-card))))
     ;; A card that outranks the old lead takes the view, unless the shown card has text.

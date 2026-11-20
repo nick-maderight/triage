@@ -57,5 +57,23 @@
   (should (equal (triage-render--untitled "# Other\nText" "Backup report")
                  "# Other\nText")))
 
+(ert-deftest triage-render-test-markdown-reuses-fontification ()
+  "Equal Markdown text is fontified once and different text stays distinct."
+  (skip-unless (require 'markdown-mode nil t))
+  (when (boundp 'triage-render--markdown-cache)
+    (clrhash (symbol-value 'triage-render--markdown-cache)))
+  (let ((calls 0)
+        (original (symbol-function 'triage-render--gfm)))
+    (cl-letf (((symbol-function 'triage-render--gfm)
+               (lambda (text)
+                 (setq calls (1+ calls))
+                 (funcall original text))))
+      (let ((first (triage-render-markdown "## Summary\n\nAll hosts finished."))
+            (second (triage-render-markdown "## Summary\n\nAll hosts finished.")))
+        (should (equal-including-properties first second))
+        (should (= calls 1)))
+      (triage-render-markdown "## Different\n\nText.")
+      (should (= calls 2)))))
+
 (provide 'triage-render-test)
 ;;; triage-render-test.el ends here

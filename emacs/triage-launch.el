@@ -407,12 +407,21 @@ Return nil when DEFAULT is chosen.  Free text is accepted and trimmed."
     (unless (equal choice default)
       (triage-launch--nonempty choice))))
 
+(defun triage-launch--read-fixed (prompt choices)
+  "Read PROMPT with one digit from fixed CHOICES, a list of (LABEL . VALUE) pairs."
+  (let* ((entries (cl-loop for (label . _value) in choices
+                           for index from 1
+                           collect (list (+ ?0 index) label)))
+         (picked (read-multiple-choice prompt entries)))
+    (cdr (nth (- (car picked) ?1) choices))))
+
 (defun triage-launch--read-level (prompt default levels)
   "Read a thinking level for PROMPT from DEFAULT and LEVELS.
 Return nil when DEFAULT is chosen."
-  (let ((choice (completing-read prompt (cons default levels) nil t)))
-    (unless (equal choice default)
-      choice)))
+  (triage-launch--read-fixed
+   prompt
+   (cons (cons default nil)
+         (mapcar (lambda (level) (cons level level)) levels))))
 
 (defun triage-launch--launch-fields (card)
   "Return the launch fields that a Dispatch request sends for CARD."
@@ -587,8 +596,9 @@ A failed request leaves the lists empty."
                     (and triage-launch--answers
                          (member (car row) '("investigate" "investigate-fix"))))
                   (triage-launch--rows)))
-           (label (completing-read "Mode: " (mapcar #'cadr rows) nil t))
-           (mode (car (seq-find (lambda (row) (equal (cadr row) label)) rows))))
+           (mode (triage-launch--read-fixed
+                  "Mode"
+                  (mapcar (lambda (row) (cons (cadr row) (car row))) rows))))
       (triage-launch--set-mode mode)
       (when (eq triage-launch--kind 'compose)
         (setq triage-launch--last-compose-mode mode))
@@ -598,8 +608,9 @@ A failed request leaves the lists empty."
   "Choose the engine of the launch sheet, or Default."
   (interactive)
   (triage-launch--in-sheet
-    (let* ((choice (completing-read "Engine: " '("Default" "omp" "dsh") nil t))
-           (engine (unless (equal choice "Default") choice)))
+    (let ((engine (triage-launch--read-fixed
+                   "Engine"
+                   '(("Default" . nil) ("omp" . "omp") ("dsh" . "dsh")))))
       (setq triage-launch--engine engine
             triage-launch--model nil
             triage-launch--thinking nil

@@ -36,6 +36,14 @@ Every card carries a context thread one click away: `t`, the Context control in 
 
 Every new omp window triage opens for a brief through a dispatch, a finding answer or the compose sheet starts in goal mode. The objective is the brief's first line and its file path, with an instruction to read the whole brief, so the launch command stays short whatever the brief's size; tmux refuses a command longer than about 16 KiB. Finding answers can choose Investigate, Investigate + fix, Act, Plan, or Plan into. Plan and Plan into start those modes instead. A plan dispatch also starts in plan mode. omp records the objective as the session's first user message, and the exit audit recognizes a triage dispatch by the brief path in it. A brief sent to a waiting source pane stays typed text and keeps that pane's modes, except Plan toggles its plan mode.
 
+### New session direction
+
+Every New session brief adds these directions after your prompt. They apply to Goal, Plan, Plan into, omp, and dsh.
+
+> Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.
+>
+> Investigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.
+
 
 ### Plan mode
 
@@ -192,6 +200,12 @@ A pane that vanishes while the daemon is down is never audited, because the trac
 ## Known Issues
 
 Two performance limits are known. Each poll tick scans and parses every open and deferred card under the database mutex, and the poller runs the full queue query twice per tick. Open behavior limits are the ones under Scope and limits.
+
+## Emacs inbox
+
+The Emacs client uses `j`/`k` or Left/Right to switch cards. After you answer a card, the next card takes its place. Repeated card switches reuse Markdown fontification.
+
+Open Dispatch or New session options with `C-c C-o`. Mode, Engine, Thinking, and Execution effort accept one digit. Model and Working directory keep completion because they accept free text and can hold long catalogs.
 
 ## Development
 
