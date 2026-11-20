@@ -259,6 +259,8 @@ pub fn new_window(session: &str, cwd: &str, cmd: &str) -> io::Result<String> {
         "new-window",
         "-e",
         &path,
+        "-e",
+        "OMP_MCP_STARTUP_TIMEOUT_MS=0",
         "-t",
         &target,
         "-c",
@@ -472,7 +474,7 @@ fi
     }
 
     #[test]
-    fn new_window_passes_daemon_path_to_tmux() {
+    fn new_window_passes_daemon_path_and_mcp_wait_to_tmux() {
         const TMUX_SCRIPT: &str = r##"#!/bin/sh
 printf '%s\n' "$@" > "$TRIAGE_TMUX_LOG"
 printf '%%12\n'
@@ -487,7 +489,7 @@ printf '%%12\n'
         let scratch = Scratch::new("new-window");
         let tmux_dir = scratch.fake_tmux("bin", TMUX_SCRIPT);
         let log = scratch.0.join("calls");
-        let output = child_test("new_window_passes_daemon_path_to_tmux", &tmux_dir)
+        let output = child_test("new_window_passes_daemon_path_and_mcp_wait_to_tmux", &tmux_dir)
             .env("TRIAGE_NEW_WINDOW_CHILD", "1")
             .env("TRIAGE_TMUX_LOG", &log)
             .output()
@@ -505,6 +507,8 @@ printf '%%12\n'
         let daemon_path = tmux_dir.to_string_lossy();
         let forwarded_path = format!("PATH={daemon_path}");
         assert_eq!(args.next(), Some(forwarded_path.as_str()));
+        assert_eq!(args.next(), Some("-e"));
+        assert_eq!(args.next(), Some("OMP_MCP_STARTUP_TIMEOUT_MS=0"));
         assert_eq!(args.next(), Some("-t"));
         // A bare name is a window target, so tmux prefix-matches a window such as
         // `emacsclient` for session `emacs` and fails because index 0 is in use.

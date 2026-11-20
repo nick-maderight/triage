@@ -500,46 +500,68 @@ Return nil when DEFAULT is chosen."
         (when done
           (kill-buffer (current-buffer)))))))
 
+(cl-defun triage-start-session (prompt &key cwd session engine model thinking
+                                      (mode "goal") executor executor-thinking
+                                      image then else)
+  "Start a session through the daemon and return its request process.
+PROMPT is the task.  CWD, SESSION, ENGINE, MODEL and THINKING set launch
+options.
+MODE, EXECUTOR, EXECUTOR-THINKING and IMAGE match `/v1/sessions'.
+THEN receives a successful response and ELSE receives status and message."
+  (when (string-empty-p (string-trim prompt))
+    (user-error "Type what the session should do"))
+  (triage-api-request
+   'post "/v1/sessions"
+   :body (append
+          `((prompt . ,prompt)
+            (cwd . ,(triage-launch--or-null cwd))
+            (session . ,(triage-launch--or-null session))
+            (engine . ,(triage-launch--or-null engine))
+            (model . ,(triage-launch--or-null model))
+            (thinking . ,(triage-launch--or-null thinking))
+            (mode . ,mode))
+          (when image
+            `((image . ,(triage-launch--image-json image))))
+          (when (equal mode "plan-into")
+            `((executor . ,(triage-launch--or-null executor))
+              (executor_thinking . ,(triage-launch--or-null executor-thinking)))))
+   :then then
+   :else else))
+
 (defun triage-launch--submit-compose ()
   "Start the New session that the sheet describes.
 Port of submitCompose in ui/app.js."
-  (let ((prompt (string-trim (triage-launch--body))))
+  (let* ((prompt (string-trim (triage-launch--body)))
+         (engine (triage-launch--effective-engine))
+         (dsh (equal engine "dsh"))
+         (buffer (current-buffer)))
     (when (string-empty-p prompt)
       (user-error "Type what the session should do"))
-    (let* ((engine (triage-launch--effective-engine))
-           (dsh (equal engine "dsh"))
-           (buffer (current-buffer))
-           (body (append
-                  `((prompt . ,prompt)
-                    (cwd . ,(triage-launch--or-null triage-launch--cwd))
-                    (session . ,(triage-launch--or-null triage-launch--session))
-                    (engine . ,(triage-launch--or-null triage-launch--engine))
-                    (model . ,(triage-launch--or-null triage-launch--model))
-                    (thinking . ,(triage-launch--or-null triage-launch--thinking))
-                    (mode . ,triage-launch--mode))
-                  (when triage-launch--image
-                    `((image . ,(triage-launch--image-json triage-launch--image))))
-                  (when (equal triage-launch--mode "plan-into")
-                    `((executor . ,(triage-launch--or-null triage-launch--executor))
-                      (executor_thinking
-                       . ,(triage-launch--or-null triage-launch--executor-thinking)))))))
-      (quit-window nil)
-      (message "Starting…")
-      (triage-api-request
-       'post "/v1/sessions"
-       :body body
-       :then (lambda (response)
-               (when (buffer-live-p buffer)
-                 (kill-buffer buffer))
-               (message "%s"
-                        (cond ((alist-get 'starting response)
-                               (if dsh "Starting a dsh session." "Starting the session."))
-                              (dsh "Started a dsh session.")
-                              (t (format "Started · %s" (alist-get 'pane response))))))
-       :else (lambda (_status message)
-               (when (buffer-live-p buffer)
-                 (pop-to-buffer buffer))
-               (message "%s" (propertize message 'face 'error)))))))
+    (quit-window nil)
+    (message "Starting…")
+    (triage-start-session
+     prompt
+     :cwd triage-launch--cwd
+     :session triage-launch--session
+     :engine triage-launch--engine
+     :model triage-launch--model
+     :thinking triage-launch--thinking
+     :mode triage-launch--mode
+     :executor triage-launch--executor
+     :executor-thinking triage-launch--executor-thinking
+     :image triage-launch--image
+     :then (lambda (response)
+             (when (buffer-live-p buffer)
+               (kill-buffer buffer))
+             (message "%s"
+                      (cond ((alist-get 'starting response)
+                             (if dsh "Starting a dsh session." "Starting the session."))
+                            (dsh "Started a dsh session.")
+                            (t (format "Started · %s" (alist-get 'pane response))))))
+     :else (lambda (_status message)
+             (when (buffer-live-p buffer)
+               (pop-to-buffer buffer))
+             (message "%s" (propertize message 'face 'error))))))
 
 (defun triage-launch-submit ()
   "Launch the Dispatch sheet's card, or start the New session the sheet describes."
@@ -604,8 +626,9 @@ A failed request leaves the lists empty."
           triage-launch--directories (alist-get 'directories data))))
 
 ;;;###autoload
-(defun triage-new-session ()
-  "Open the New session sheet.  Port of openCompose in ui/app.js."
+(defun triage-new-session (&optional prompt cwd engine)
+  "Open the New session sheet.  Port of openCompose in ui/app.js.
+When PROMPT is non-nil, fill the body and use CWD and ENGINE for the launch."
   (interactive)
   (let ((buffer (get-buffer-create triage-launch--compose-buffer)))
     (with-current-buffer buffer
@@ -621,10 +644,30 @@ A failed request leaves the lists empty."
             triage-launch--catalogs nil
             triage-launch--catalog-waiters nil
             triage-launch--generation (1+ triage-launch--generation))
+      (when prompt
+        (setq triage-launch--cwd cwd
+              triage-launch--engine engine
+              triage-launch--model nil
+              triage-launch--thinking nil
+              triage-launch--session nil
+              triage-launch--image nil)
+        (triage-launch--set-body prompt)
+        (goto-char (point-max)))
       (triage-launch--load-tmux-sessions)
       (triage-launch--draw)
-      (triage-launch--with-catalog nil (lambda (_catalog) (triage-launch--draw))))
+      (triage-launch--with-catalog triage-launch--engine
+                                   (lambda (_catalog) (triage-launch--draw))))
     (pop-to-buffer buffer)))
+
+;;;###autoload
+(defun triage-model-selectors (engine)
+  "Return the daemon's model selectors for ENGINE."
+  (delq nil
+        (mapcar (lambda (model) (alist-get 'selector model))
+                (alist-get 'models
+                           (triage-api-request-sync
+                            'get (format "/v1/models?engine=%s"
+                                         (url-hexify-string engine)))))))
 
 (defun triage-launch-set-mode ()
   "Choose the mode of the launch sheet."

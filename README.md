@@ -209,6 +209,10 @@ Card actions use Magit-style mnemonic keys, and every dock button prints its key
 
 Open Dispatch or New session options with `C-c C-o`. Mode, Engine, Thinking, Later and Execution effort take one mnemonic key, shown in the prompt: Engine reads `(d Default, o omp, D dsh, ?)` and Later reads `(1 1 hour, 4 4 hours, t Tomorrow, ?)`. `?` inside a prompt lists each choice with its description. Model and Working directory keep completion because they accept free text and can hold long catalogs. Model catalogs load in the background and redraw the defaults when they arrive.
 
+`M-x triage-delegate` captures an Org heading or agenda entry, a notmuch thread, marked Dired files, or an active file region into a New session sheet. The sheet starts in the context's directory and keeps the prompt editable before launch. Org tasks name their attachment directory when one exists. A selected mail passage limits the task to that passage. The whole thread remains reference. `triage-delegate-omp` and `triage-delegate-dsh` preselect the engine. A prefix argument opens the launch options after the sheet appears. `triage-start-session` starts a prompt through `/v1/sessions` for unattended fallbacks such as mail unsubscribe.
+
+New omp windows set `OMP_MCP_STARTUP_TIMEOUT_MS=0`, so the first turn waits for MCP servers before it uses their tools.
+
 ## Development
 
 Run `cargo test --release`, `node --check ui/app.js && node --check ui/sw.js`, `node --test tests/*.test.js`, `cargo build && tests/smoke.sh`, and `cargo clippy --release`. The smoke test uses `target/debug/triage` unless `TRIAGE_BIN` names another binary. The Rust unit tests of `cards`, `server` and `db` live beside their module in `src/<module>/tests.rs`.

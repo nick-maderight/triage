@@ -76,5 +76,25 @@
                                (name . "Default model"))))))
         (should prompt-called)))))
 
+
+(ert-deftest triage-launch-test-new-session-prefills-context ()
+  "A contextual launch replaces the draft and loads the chosen engine's catalog."
+  (let ((buffer (get-buffer-create triage-launch--compose-buffer))
+        catalog-engine)
+    (unwind-protect
+        (cl-letf (((symbol-function 'triage-launch--load-tmux-sessions) #'ignore)
+                  ((symbol-function 'triage-launch--with-catalog)
+                   (lambda (engine _fn) (setq catalog-engine engine)))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (target) (set-buffer target) target)))
+          (triage-new-session "Context prompt" "/tmp/" "dsh")
+          (with-current-buffer buffer
+            (should (equal (triage-launch--body) "Context prompt"))
+            (should (equal triage-launch--cwd "/tmp/"))
+            (should (equal triage-launch--engine "dsh"))
+            (should (= (point) (point-max))))
+          (should (equal catalog-engine "dsh")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 (provide 'triage-launch-test)
 ;;; triage-launch-test.el ends here
