@@ -640,14 +640,16 @@ The session opens in a window of its own."
   (interactive)
   (let* ((card (triage-inbox--card 'later))
          (choices (triage-card-later-choices (float-time)))
+         (keys (triage-card-choice-keys
+                (mapcar (lambda (choice) (plist-get choice :label)) choices)))
          (picked (read-multiple-choice
-               "Later"
-               (mapcar (lambda (choice)
-                         (list (plist-get choice :key)
-                               (plist-get choice :label)
-                               (format-time-string "%a %H:%M" (plist-get choice :at))))
-                       choices)))
-         (choice (cl-find (car picked) choices :key (lambda (c) (plist-get c :key)))))
+                  "Later"
+                  (cl-mapcar (lambda (key choice)
+                               (list key (plist-get choice :label)
+                                     (format-time-string "%a %H:%M"
+                                                         (plist-get choice :at))))
+                             keys choices)))
+         (choice (nth (cl-position (car picked) keys) choices)))
     (triage-inbox--act card "later"
                        `((minutes . ,(plist-get choice :minutes)))
                        choice)))
@@ -721,10 +723,9 @@ Signal a `user-error' until an execution model is chosen."
        (when (equal id (alist-get 'id triage-inbox--shown-card))
          (let* ((default "Default (Planner effort)")
                 (levels (triage-card-effort-levels catalog executor))
-                (choice (completing-read "Execution effort: " (cons default levels)
-                                         nil t nil nil default)))
-           (setf (triage-draft-executor-thinking draft)
-                 (if (equal choice default) "" choice))
+                (choice (triage-launch--read-level
+                         "Execution effort: " default levels)))
+           (setf (triage-draft-executor-thinking draft) (or choice ""))
            (triage-inbox--render)))))))
 
 (defun triage-inbox-peek ()
@@ -771,7 +772,7 @@ Signal a `user-error' until an execution model is chosen."
      :inapt-if-not (lambda () (triage-inbox--offers-p 'other)))
     ("a" "Acknowledge" triage-inbox-acknowledge
      :inapt-if-not (lambda () (triage-inbox--offers-p 'ack)))
-    ("x" "Acknowledge & close" triage-inbox-close
+    ("C" "Acknowledge & close" triage-inbox-close
      :inapt-if-not (lambda () (triage-inbox--offers-p 'close)))
     ("s" "Skip" triage-inbox-skip
      :inapt-if-not (lambda () (triage-inbox--offers-p 'skip)))
@@ -786,9 +787,9 @@ Signal a `user-error' until an execution model is chosen."
     ("E" "Execution effort" triage-inbox-effort
      :inapt-if-not (lambda () (triage-inbox--offers-p 'effort)))]
    ["Launch"
-    ("i" "Dispatch" triage-inbox-dispatch
+    ("d" "Dispatch" triage-inbox-dispatch
      :inapt-if-not (lambda () (triage-inbox--offers-p 'dispatch)))
-    ("F" "Investigate + fix" triage-inbox-fix
+    ("f" "Investigate + fix" triage-inbox-fix
      :inapt-if-not (lambda () (triage-inbox--offers-p 'fix)))
     ("A" "Act" triage-inbox-act
      :inapt-if-not (lambda () (triage-inbox--offers-p 'act)))
@@ -796,7 +797,7 @@ Signal a `user-error' until an execution model is chosen."
      :inapt-if-not (lambda () (triage-inbox--offers-p 'plan-into)))
     ("p" "Plan" triage-inbox-plan
      :inapt-if-not (lambda () (triage-inbox--offers-p 'plan)))
-    ("d" "Do next step" triage-inbox-do-next
+    ("D" "Do next step" triage-inbox-do-next
      :inapt-if-not (lambda () (triage-inbox--offers-p 'do-next)))]
    ["Session"
     ("v" "Peek" triage-inbox-peek

@@ -293,7 +293,7 @@ MS is milliseconds since the epoch.  NOW is a float time."
 
 (defun triage-card-later-choices (now)
   "Return the Later choices for NOW, a float time.
-Each choice is a plist with :key, :label, :minutes and :at, where :at is
+Each choice is a plist with :label, :minutes and :at, where :at is
 a float time.  Port of laterChoices in ui/app.js."
   (let* ((decoded (decode-time now))
          (tomorrow-nine
@@ -306,9 +306,38 @@ a float time.  Port of laterChoices in ui/app.js."
                   (nth 8 local) nil)
             (float-time (encode-time local))))
          (minutes (max 1 (ceiling (/ (- tomorrow-nine now) 60.0)))))
-    (list (list :key ?1 :label "1 hour" :minutes 60 :at (+ now 3600.0))
-          (list :key ?2 :label "4 hours" :minutes 240 :at (+ now 14400.0))
-          (list :key ?3 :label "Tomorrow" :minutes minutes :at tomorrow-nine))))
+    (list (list :label "1 hour" :minutes 60 :at (+ now 3600.0))
+          (list :label "4 hours" :minutes 240 :at (+ now 14400.0))
+          (list :label "Tomorrow" :minutes minutes :at tomorrow-nine))))
+
+(defun triage-card--word-keys (word)
+  "Return WORD's key candidates: downcase then upcase of each character."
+  (mapcan (lambda (char) (list (downcase char) (upcase char)))
+          word))
+
+(defun triage-card-choice-keys (labels)
+  "Return one single key per label in LABELS, mnemonic and unique.
+A label takes the first free candidate its words offer in order, the
+first word leading, the way Magit's dispatch menus key their commands.
+Earlier labels keep their key, so every label gets its own.  Digits
+finish the candidates when the letters run out."
+  (let ((used ())
+        (keys ()))
+    (dolist (label labels (nreverse keys))
+      (let ((candidates
+             (append
+              (mapcan #'triage-card--word-keys
+                      (split-string label "[^[:alnum:]]+" t))
+              (number-sequence ?1 ?9)))
+            (key nil))
+        (while (and candidates (null key))
+          (unless (memq (car candidates) used)
+            (setq key (car candidates)))
+          (setq candidates (cdr candidates)))
+        (unless key
+          (error "No key left for choice %s" label))
+        (push key used)
+        (push key keys)))))
 
 (defun triage-card-effort-levels (catalog selector)
   "Return the thinking levels that the model SELECTOR accepts in CATALOG.
@@ -422,14 +451,14 @@ Port resultMessage from ui/app.js."
    (list 'plan :key "p"
          :label (lambda (card) (and (triage-card-has-step-p card) "Plan next step"))
          :command 'triage-inbox-plan)
-   (list 'dispatch :key "i" :label "Dispatch" :command 'triage-inbox-dispatch)
-   (list 'fix :key "F" :command 'triage-inbox-fix)
+   (list 'dispatch :key "d" :label "Dispatch" :command 'triage-inbox-dispatch)
+   (list 'fix :key "f" :command 'triage-inbox-fix)
    (list 'act :key "A" :command 'triage-inbox-act)
    (list 'plan-into :key "P" :command 'triage-inbox-plan-into)
-   (list 'do-next :key "d" :label "Do next step"
+   (list 'do-next :key "D" :label "Do next step"
          :offered (lambda (card _step) (triage-card-has-step-p card))
          :command 'triage-inbox-do-next)
-   (list 'close :key "x" :label "Acknowledge & close"
+   (list 'close :key "C" :label "Acknowledge & close"
          :offered (lambda (card _step) (triage-card-pane card))
          :command 'triage-inbox-close)
    (list 'request :key "r" :label "Request final report"

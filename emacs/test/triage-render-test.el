@@ -29,7 +29,7 @@
       (dolist (line lines)
         (should (<= (string-width line) 40)))
       (dolist (item '("Kind finding" "Directory /srv/projects/long-name"
-                      "x Acknowledge & close" "v Peek" "J Jump" "? more"))
+                      "C Acknowledge & close" "v Peek" "J Jump" "? more"))
         (should (cl-some (lambda (line) (string-search item line)) lines)))
       (dolist (heading '("Situation ─" "Action ─"))
         (should (cl-some (lambda (line) (string-prefix-p heading line)) lines))))))

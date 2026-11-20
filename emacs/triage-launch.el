@@ -432,21 +432,29 @@ Return nil when DEFAULT is chosen.  Free text is accepted and trimmed."
     (unless (equal choice default)
       (triage-launch--nonempty choice))))
 
-(defun triage-launch--read-fixed (prompt choices)
-  "Read PROMPT with one digit from fixed CHOICES, a list of (LABEL . VALUE) pairs."
-  (let* ((entries (cl-loop for (label . _value) in choices
-                           for index from 1
-                           collect (list (+ ?0 index) label)))
-         (picked (read-multiple-choice prompt entries)))
-    (cdr (nth (- (car picked) ?1) choices))))
+(defun triage-launch--read-fixed (prompt rows)
+  "Read a choice from ROWS through PROMPT with one mnemonic key.
+Each row is (LABEL VALUE) or (LABEL VALUE HELP).  Every label gets its
+key from its first letters, the way Magit's dispatch menus key their
+commands, and PROMPT shows each key.  HELP reaches the `?' help.
+Return the VALUE of the row the picked key names."
+  (let* ((keys (triage-card-choice-keys (mapcar #'car rows)))
+         (picked (read-multiple-choice
+                  prompt
+                  (cl-mapcar (lambda (key row)
+                               (if (nth 2 row)
+                                   (list key (car row) (nth 2 row))
+                                 (list key (car row))))
+                             keys rows))))
+    (nth 1 (nth (cl-position (car picked) keys) rows))))
 
 (defun triage-launch--read-level (prompt default levels)
   "Read a thinking level for PROMPT from DEFAULT and LEVELS.
 Return nil when DEFAULT is chosen."
   (triage-launch--read-fixed
    prompt
-   (cons (cons default nil)
-         (mapcar (lambda (level) (cons level level)) levels))))
+   (cons (list default nil)
+         (mapcar (lambda (level) (list level level)) levels))))
 
 (defun triage-launch--launch-fields (card)
   "Return the launch fields that a Dispatch request sends for CARD."
@@ -627,9 +635,10 @@ A failed request leaves the lists empty."
                     (and triage-launch--answers
                          (member (car row) '("investigate" "investigate-fix"))))
                   (triage-launch--rows)))
-           (mode (triage-launch--read-fixed
-                  "Mode"
-                  (mapcar (lambda (row) (cons (cadr row) (car row))) rows))))
+          (mode (triage-launch--read-fixed
+                 "Mode"
+                 (mapcar (lambda (row) (list (cadr row) (car row) (nth 2 row)))
+                         rows))))
       (triage-launch--set-mode mode)
       (when (eq triage-launch--kind 'compose)
         (setq triage-launch--last-compose-mode mode))
@@ -641,7 +650,7 @@ A failed request leaves the lists empty."
   (triage-launch--in-sheet
     (let ((engine (triage-launch--read-fixed
                    "Engine"
-                   '(("Default" . nil) ("omp" . "omp") ("dsh" . "dsh")))))
+                   '(("Default" nil) ("omp" "omp") ("dsh" "dsh")))))
       (setq triage-launch--engine engine
             triage-launch--model nil
             triage-launch--thinking nil

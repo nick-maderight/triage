@@ -205,7 +205,9 @@ Two performance limits are known. Each poll tick scans and parses every open and
 
 The Emacs client uses `j`/`k` or Left/Right to switch cards. After you answer a card, the next card takes its place. Repeated card switches reuse Markdown fontification.
 
-Open Dispatch or New session options with `C-c C-o`. Mode, Engine, Thinking, and Execution effort accept one digit. Model and Working directory keep completion because they accept free text and can hold long catalogs. Model catalogs load in the background and redraw the defaults when they arrive.
+Card actions use Magit-style mnemonic keys, and every dock button prints its key: `d` Dispatch, `D` Do next step, `f` Investigate + fix, `A` Act, `p` Plan, `P` Plan into, `a` Acknowledge, `C` Acknowledge & close, `r` Request final report, `R` Restore run, `s` Skip, `l` Later, `t` Context, `v` Peek, `J` Jump, `n` Note, `o` Other, `w` Copy reply. `?` lists every key on the shown card.
+
+Open Dispatch or New session options with `C-c C-o`. Mode, Engine, Thinking, Later and Execution effort take one mnemonic key, shown in the prompt: Engine reads `(d Default, o omp, D dsh, ?)` and Later reads `(1 1 hour, 4 4 hours, t Tomorrow, ?)`. `?` inside a prompt lists each choice with its description. Model and Working directory keep completion because they accept free text and can hold long catalogs. Model catalogs load in the background and redraw the defaults when they arrive.
 
 ## Development
 

@@ -8,7 +8,7 @@
 (require 'triage-launch)
 
 (ert-deftest triage-launch-test-engine-takes-one-key ()
-  "The fixed Engine choices accept one digit instead of a completion prompt."
+  "The fixed Engine choices accept one mnemonic key instead of a completion prompt."
   (with-temp-buffer
     (triage-launch-mode)
     (setq triage-launch--active (current-buffer))
@@ -17,7 +17,7 @@
                 ((symbol-function 'read-multiple-choice)
                  (lambda (_prompt choices)
                    (setq used-multiple-choice t)
-                   (should (equal (mapcar #'car choices) '(?1 ?2 ?3)))
+                   (should (equal (mapcar #'car choices) '(?d ?o ?D)))
                    (nth 1 choices)))
                 ((symbol-function 'completing-read)
                  (lambda (&rest _args) "omp")))

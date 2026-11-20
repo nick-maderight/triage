@@ -297,7 +297,7 @@
                    "Restoring run · T"))
     (should (equal (triage-card-result-message
                     finding "later" '((minutes . 60))
-                    '(:key ?1 :label "1 hour" :minutes 60 :at nil))
+                    '(:label "1 hour" :minutes 60 :at nil))
                    "Later 1 hour · T"))
     (should (equal (triage-card-result-message
                     info "answer" '((option . :null) (text . :null) (note . :null)) nil)
@@ -334,6 +334,20 @@
   "Every action row has its own key, so the keymap cannot collide."
   (let ((keys (mapcar (lambda (row) (plist-get (cdr row) :key)) triage-card-actions)))
     (should (= (length keys) (length (delete-dups (copy-sequence keys)))))))
+
+(ert-deftest triage-card-test-choice-keys-are-mnemonic ()
+  "Choice prompts take one mnemonic key per label, unique across labels."
+  (should (equal (triage-card-choice-keys
+                  (mapcar #'cadr triage-card-dispatch-modes))
+                 '(?i ?I ?a ?p ?P)))
+  (should (equal (triage-card-choice-keys '("Default" "omp" "dsh"))
+                 '(?d ?o ?D)))
+  (should (equal (triage-card-choice-keys
+                  '("Default (omp default)" "auto" "off" "minimal"
+                    "low" "medium" "high" "xhigh" "max"))
+                 '(?d ?a ?o ?m ?l ?M ?h ?x ?A)))
+  (should (equal (triage-card-choice-keys '("1 hour" "4 hours" "Tomorrow"))
+                 '(?1 ?4 ?t))))
 
 (provide 'triage-card-test)
 ;;; triage-card-test.el ends here

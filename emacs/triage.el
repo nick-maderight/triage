@@ -18,7 +18,7 @@
 ;;   M-x triage-mode-line-mode toggle the global counter
 ;;
 ;; In the inbox, use RET for the primary action, 1-9 for options, j/k to move,
-;; i to dispatch, s to skip, l to defer, t for context, v to peek and ? for keys.
+;; d to dispatch, s to skip, l to defer, t for context, v to peek and ? for keys.
 ;;
 ;;; Code:
 
