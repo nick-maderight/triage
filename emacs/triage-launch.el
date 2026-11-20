@@ -97,6 +97,12 @@
 (defvar-local triage-launch--catalogs nil
   "Alist from engine name to the model catalog loaded in this sheet.")
 
+(defvar-local triage-launch--catalog-waiters nil
+  "Alist from request key to callbacks waiting for that catalog.")
+
+(defvar-local triage-launch--generation 0
+  "Generation of this sheet, incremented when it opens another task.")
+
 (defvar-local triage-launch--tmux-sessions nil
   "Tmux session names that a New session offers.")
 
@@ -154,37 +160,56 @@
   "Return non-nil when BODY is the default instruction the sheet inserted."
   (and triage-launch--default-text (string= body triage-launch--default-text)))
 
-(defun triage-launch-catalog (engine)
-  "Return the model catalog for ENGINE, or the daemon's when ENGINE is nil.
-The catalog is cached in this sheet.  Signal `user-error' when the daemon
-cannot list its models."
-  (let* ((key (or engine triage-launch--daemon-engine))
-         (cached (and key (assoc key triage-launch--catalogs))))
-    (if cached
-        (cdr cached)
-      (let ((catalog (condition-case err
-                         (triage-api-request-sync
-                          'get (if engine
-                                   (format "/v1/models?engine=%s" (url-hexify-string engine))
-                                 "/v1/models"))
-                       (triage-api-error
-                        (user-error "Could not load models: %s" (nth 2 err))))))
-        (unless engine
-          (setq triage-launch--daemon-engine (alist-get 'engine catalog)))
-        (push (cons (or engine (alist-get 'engine catalog)) catalog)
-              triage-launch--catalogs)
-        catalog))))
+(defun triage-launch--cached-catalog (engine)
+  "Return the cached catalog for ENGINE, or the daemon's when ENGINE is nil."
+  (cdr (assoc (or engine triage-launch--daemon-engine) triage-launch--catalogs)))
 
-(defun triage-launch--catalog-quietly (engine)
-  "Return the model catalog for ENGINE, or nil when the daemon cannot list models."
-  (condition-case nil
-      (triage-launch-catalog engine)
-    (user-error nil)))
+(defun triage-launch--with-catalog (engine fn)
+  "Call FN with the model catalog for ENGINE, loading it asynchronously if needed."
+  (if-let* ((cached (triage-launch--cached-catalog engine)))
+      (funcall fn cached)
+    (let* ((buffer (current-buffer))
+           (generation triage-launch--generation)
+           (key (cons generation (or engine "")))
+           (pending (assoc key triage-launch--catalog-waiters)))
+      (message "Loading models…")
+      (if pending
+          (setcdr pending (cons fn (cdr pending)))
+        (push (cons key (list fn)) triage-launch--catalog-waiters)
+        (triage-api-request
+         'get (if engine
+                  (format "/v1/models?engine=%s" (url-hexify-string engine))
+                "/v1/models")
+         :then
+         (lambda (catalog)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (when (= generation triage-launch--generation)
+                 (unless engine
+                   (setq triage-launch--daemon-engine (alist-get 'engine catalog)))
+                 (push (cons (or engine (alist-get 'engine catalog)) catalog)
+                       triage-launch--catalogs)
+                 (let ((callbacks (cdr (assoc key triage-launch--catalog-waiters))))
+                   (setq triage-launch--catalog-waiters
+                         (delq (assoc key triage-launch--catalog-waiters)
+                               triage-launch--catalog-waiters))
+                   (dolist (callback (reverse callbacks))
+                     (funcall callback catalog)))))))
+         :else
+         (lambda (_status text)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (when (= generation triage-launch--generation)
+                 (setq triage-launch--catalog-waiters
+                       (delq (assoc key triage-launch--catalog-waiters)
+                             triage-launch--catalog-waiters))
+                 (message "%s"
+                          (propertize (format "Could not load models: %s" text)
+                                      'face 'error)))))))))))
 
 (defun triage-launch--effective-engine ()
   "Return the engine this sheet launches on: its own choice, else the daemon's."
-  (or triage-launch--engine
-      (progn (triage-launch--catalog-quietly nil) triage-launch--daemon-engine)))
+  (or triage-launch--engine triage-launch--daemon-engine))
 
 (defun triage-launch--dsh-p ()
   "Return non-nil when this sheet launches on dsh."
@@ -211,11 +236,11 @@ cannot list its models."
 (defun triage-launch--model-default ()
   "Return the Default row label for the model."
   (triage-launch--default-label
-   (triage-launch--model-fallback (triage-launch--catalog-quietly triage-launch--engine))))
+   (triage-launch--model-fallback (triage-launch--cached-catalog triage-launch--engine))))
 
 (defun triage-launch--thinking-default ()
   "Return the Default row label for the thinking level."
-  (let ((catalog (triage-launch--catalog-quietly triage-launch--engine)))
+  (let ((catalog (triage-launch--cached-catalog triage-launch--engine)))
     (triage-launch--default-label
      (or (alist-get 'default_thinking catalog)
          (format "%s default" (triage-launch--engine-name))))))
@@ -550,10 +575,13 @@ finding's questions.  Port of openDispatch in ui/app.js."
               triage-launch--executor-thinking
               (triage-launch--nonempty (triage-draft-executor-thinking draft))
               triage-launch--default-text nil
-              triage-launch--catalogs nil)
+              triage-launch--catalogs nil
+              triage-launch--catalog-waiters nil
+              triage-launch--generation (1+ triage-launch--generation))
         (triage-launch--set-body (triage-draft-note draft))
         (triage-launch--set-mode mode)
         (triage-launch--draw)
+        (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw)))
         (goto-char (point-max))))
     (pop-to-buffer buffer)))
 
@@ -582,9 +610,12 @@ A failed request leaves the lists empty."
             triage-launch--new-window nil
             triage-launch--mode triage-launch--last-compose-mode
             triage-launch--default-text nil
-            triage-launch--catalogs nil)
+            triage-launch--catalogs nil
+            triage-launch--catalog-waiters nil
+            triage-launch--generation (1+ triage-launch--generation))
       (triage-launch--load-tmux-sessions)
-      (triage-launch--draw))
+      (triage-launch--draw)
+      (triage-launch--with-catalog nil (lambda (_catalog) (triage-launch--draw))))
     (pop-to-buffer buffer)))
 
 (defun triage-launch-set-mode ()
@@ -618,42 +649,57 @@ A failed request leaves the lists empty."
             triage-launch--executor-thinking nil)
       (when (eq triage-launch--kind 'dispatch)
         (setq triage-launch--last-dispatch-engine engine))
-      (triage-launch--draw))))
+      (triage-launch--draw)
+      (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw))))))
 
 (defun triage-launch-set-model ()
   "Choose the model of the launch sheet."
   (interactive)
   (triage-launch--in-sheet
-    (let* ((catalog (triage-launch-catalog triage-launch--engine))
-           (model (triage-launch--read-model "Model: " (triage-launch--model-default) catalog)))
-      (setq triage-launch--model model)
-      (unless (member triage-launch--thinking (triage-card-effort-levels catalog model))
-        (setq triage-launch--thinking nil))
-      (triage-launch--draw))))
+    (let ((engine triage-launch--engine))
+      (triage-launch--with-catalog
+       engine
+       (lambda (catalog)
+         (when (equal engine triage-launch--engine)
+           (let ((model (triage-launch--read-model
+                         "Model: " (triage-launch--model-default) catalog)))
+             (setq triage-launch--model model)
+             (unless (member triage-launch--thinking
+                             (triage-card-effort-levels catalog model))
+               (setq triage-launch--thinking nil))
+             (triage-launch--draw))))))))
 
 (defun triage-launch-set-thinking ()
   "Choose the thinking level of the launch sheet."
   (interactive)
   (triage-launch--in-sheet
-    (let* ((catalog (triage-launch-catalog triage-launch--engine))
-           (choice (triage-launch--read-level
-                    "Thinking: " (triage-launch--thinking-default)
-                    (triage-card-effort-levels catalog triage-launch--model))))
-      (setq triage-launch--thinking choice)
-      (triage-launch--draw))))
+    (let ((engine triage-launch--engine))
+      (triage-launch--with-catalog
+       engine
+       (lambda (catalog)
+         (when (equal engine triage-launch--engine)
+           (let ((choice (triage-launch--read-level
+                          "Thinking: " (triage-launch--thinking-default)
+                          (triage-card-effort-levels catalog triage-launch--model))))
+             (setq triage-launch--thinking choice)
+             (triage-launch--draw))))))))
 
 (defun triage-launch-set-executor ()
   "Choose the execution model for plan-into, or Default."
   (interactive)
   (triage-launch--in-sheet
-    (let* ((catalog (triage-launch-catalog triage-launch--engine))
-           (executor (triage-launch--read-model
-                      "Execution model: " (triage-launch--executor-default) catalog)))
-      (setq triage-launch--executor executor)
-      (unless (member triage-launch--executor-thinking
-                      (triage-card-effort-levels catalog executor))
-        (setq triage-launch--executor-thinking nil))
-      (triage-launch--draw))))
+    (let ((engine triage-launch--engine))
+      (triage-launch--with-catalog
+       engine
+       (lambda (catalog)
+         (when (equal engine triage-launch--engine)
+           (let ((executor (triage-launch--read-model
+                            "Execution model: " (triage-launch--executor-default) catalog)))
+             (setq triage-launch--executor executor)
+             (unless (member triage-launch--executor-thinking
+                             (triage-card-effort-levels catalog executor))
+               (setq triage-launch--executor-thinking nil))
+             (triage-launch--draw))))))))
 
 (defun triage-launch-set-executor-effort ()
   "Choose the execution effort for plan-into."
@@ -661,12 +707,16 @@ A failed request leaves the lists empty."
   (triage-launch--in-sheet
     (when (and (triage-launch--dsh-p) (not triage-launch--executor))
       (user-error "Choose an execution model first"))
-    (let* ((catalog (triage-launch-catalog triage-launch--engine))
-           (choice (triage-launch--read-level
-                    "Execution effort: " (triage-launch--executor-effort-default)
-                    (triage-card-effort-levels catalog triage-launch--executor))))
-      (setq triage-launch--executor-thinking choice)
-      (triage-launch--draw))))
+    (let ((engine triage-launch--engine))
+      (triage-launch--with-catalog
+       engine
+       (lambda (catalog)
+         (when (equal engine triage-launch--engine)
+           (let ((choice (triage-launch--read-level
+                          "Execution effort: " (triage-launch--executor-effort-default)
+                          (triage-card-effort-levels catalog triage-launch--executor))))
+             (setq triage-launch--executor-thinking choice)
+             (triage-launch--draw))))))))
 
 (defun triage-launch-set-directory ()
   "Choose the working directory of the New session sheet."

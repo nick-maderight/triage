@@ -676,48 +676,56 @@ The session opens in a window of its own."
 The choices come from the engine's catalog."
   (interactive)
   (let* ((card (triage-inbox--card 'executor))
+         (id (alist-get 'id card))
          (draft (triage-queue-draft card))
          (engine (or (alist-get 'engine card) "omp"))
-         (dsh (equal engine "dsh"))
-         (catalog (triage-launch-catalog engine))
-         (models (alist-get 'execution_models catalog))
-         (default (format "Default (%s)"
-                          (if dsh "current model" "current Plan Review role")))
-         (names (mapcar (lambda (model)
-                          (cons (alist-get 'selector model) (alist-get 'name model)))
-                        models))
-         (completion-extra-properties
-          (list :annotation-function
-                (lambda (selector)
-                  (when-let* ((name (cdr (assoc selector names))))
-                    (concat "  " name)))))
-         (choice (completing-read "Execution model: " (cons default (mapcar #'car names))
-                                  nil t nil nil default))
-         (selector (if (equal choice default) "" choice)))
-    (setf (triage-draft-executor draft) selector)
-    (when (and dsh
-               (not (member (triage-draft-executor-thinking draft)
-                            (triage-card-effort-levels catalog selector))))
-      (setf (triage-draft-executor-thinking draft) ""))
-    (triage-inbox--render)))
+         (dsh (equal engine "dsh")))
+    (triage-launch--with-catalog
+     engine
+     (lambda (catalog)
+       (when (equal id (alist-get 'id triage-inbox--shown-card))
+         (let* ((models (alist-get 'execution_models catalog))
+                (default (format "Default (%s)"
+                                 (if dsh "current model" "current Plan Review role")))
+                (names (mapcar (lambda (model)
+                                 (cons (alist-get 'selector model) (alist-get 'name model)))
+                               models))
+                (completion-extra-properties
+                 (list :annotation-function
+                       (lambda (selector)
+                         (when-let* ((name (cdr (assoc selector names))))
+                           (concat "  " name)))))
+                (choice (completing-read "Execution model: " (cons default (mapcar #'car names))
+                                         nil t nil nil default))
+                (selector (if (equal choice default) "" choice)))
+           (setf (triage-draft-executor draft) selector)
+           (when (and dsh
+                      (not (member (triage-draft-executor-thinking draft)
+                                   (triage-card-effort-levels catalog selector))))
+             (setf (triage-draft-executor-thinking draft) ""))
+           (triage-inbox--render)))))))
 
 (defun triage-inbox-effort ()
   "Choose the execution effort for the shown plan card.
 Signal a `user-error' until an execution model is chosen."
   (interactive)
   (let* ((card (triage-inbox--card 'effort))
+         (id (alist-get 'id card))
          (draft (triage-queue-draft card))
          (executor (triage-draft-executor draft)))
     (when (string-empty-p executor)
       (user-error "Choose an execution model first (e)"))
-    (let* ((catalog (triage-launch-catalog (or (alist-get 'engine card) "omp")))
-           (default "Default (Planner effort)")
-           (levels (triage-card-effort-levels catalog executor))
-           (choice (completing-read "Execution effort: " (cons default levels)
-                                    nil t nil nil default)))
-      (setf (triage-draft-executor-thinking draft)
-            (if (equal choice default) "" choice))
-      (triage-inbox--render))))
+    (triage-launch--with-catalog
+     (or (alist-get 'engine card) "omp")
+     (lambda (catalog)
+       (when (equal id (alist-get 'id triage-inbox--shown-card))
+         (let* ((default "Default (Planner effort)")
+                (levels (triage-card-effort-levels catalog executor))
+                (choice (completing-read "Execution effort: " (cons default levels)
+                                         nil t nil nil default)))
+           (setf (triage-draft-executor-thinking draft)
+                 (if (equal choice default) "" choice))
+           (triage-inbox--render)))))))
 
 (defun triage-inbox-peek ()
   "Open a live peek of the shown card's pane."
