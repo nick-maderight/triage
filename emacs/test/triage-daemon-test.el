@@ -303,13 +303,39 @@
                                        message detail)
                                  (when else
                                    (funcall else status-code detail)))))))))
-          (triage-launch--submit-compose))
+          (triage-launch--submit-session))
         (triage-test--wait
          (lambda () (and status (not (bound-and-true-p triage-launch--starting))))
          5)
         (should (= status 400))
         (should (string-match-p "tmux" message))
         (should (buffer-live-p buffer))))))
+
+(ert-deftest triage-daemon-test-context-dispatch-reaches-the-launch ()
+  "The daemon takes a context Dispatch with its note and mode and tries to launch it."
+  (triage-test-with-daemon
+    (with-temp-buffer
+      (triage-launch-mode)
+      (setq triage-launch--kind 'context
+            triage-launch--context "Org: Ping\n\n### Task\n\n* TODO Ping\n"
+            triage-launch--mode "act"
+            triage-launch--engine "omp")
+      (insert "Reply pong.")
+      (let ((request (symbol-function 'triage-api-request))
+            status message body)
+        (cl-letf (((symbol-function 'triage-api-request)
+                   (lambda (method path &rest args)
+                     (setq body (plist-get args :body))
+                     (apply request method path
+                            (plist-put args :else
+                                       (lambda (status-code detail)
+                                         (setq status status-code
+                                               message detail)))))))
+          (triage-launch--submit-session))
+        (triage-test--wait (lambda () status) 5)
+        (should (equal (alist-get 'note body) "Reply pong."))
+        (should (= status 400))
+        (should (string-match-p "tmux" message))))))
 
 (ert-deftest triage-daemon-test-mode-line ()
   "The mode-line counter shows one queued card."

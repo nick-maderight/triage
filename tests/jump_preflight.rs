@@ -1,10 +1,10 @@
 use std::{
-    io::{Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    io::{BufRead, BufReader, Read, Write},
+    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 struct TestDir(PathBuf);
@@ -72,24 +72,25 @@ fn isolate_server(command: &mut Command, directory: &TestDir, path: &Path) {
         .env_remove("TMUX");
 }
 
-fn server_address() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-    address
-}
-
+/// Start a server on a port the kernel picks and return the address it reports. A port picked
+/// here and released before the server binds it can go to another process first.
 #[cfg(unix)]
-fn start_server(address: SocketAddr, database: &Path, directory: &TestDir, path: &Path) -> Server {
-    let address = address.to_string();
-    let database = database.to_str().unwrap();
+fn start_server(database: &Path, directory: &TestDir, path: &Path) -> (SocketAddr, Server) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_triage"));
     command
-        .args(["serve", "--listen", &address, "--db", database])
+        .args(["serve", "--listen", "127.0.0.1:0", "--db", database.to_str().unwrap()])
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     isolate_server(&mut command, directory, path);
-    Server(command.spawn().unwrap())
+    let mut child = command.spawn().unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let server = Server(child);
+    let address = lines
+        .find_map(|line| line.ok()?.strip_prefix("triage: listening on ")?.parse().ok())
+        .expect("server exited before it listened");
+    // Drain the rest so a chatty server never blocks on a full pipe.
+    thread::spawn(move || lines.for_each(drop));
+    (address, server)
 }
 
 fn request(address: SocketAddr, method: &str, path: &str, body: &str) -> std::io::Result<Response> {
@@ -120,23 +121,9 @@ fn request(address: SocketAddr, method: &str, path: &str, body: &str) -> std::io
 }
 
 #[cfg(unix)]
-fn request_when_ready(
-    address: SocketAddr,
-    server: &mut Server,
-    method: &str,
-    path: &str,
-    body: &str,
-) -> Response {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match request(address, method, path, body) {
-            Ok(response) => return response,
-            Err(_) if Instant::now() < deadline && server.0.try_wait().unwrap().is_none() => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => panic!("server did not answer {method} {path}: {error}"),
-        }
-    }
+fn answer(address: SocketAddr, method: &str, path: &str, body: &str) -> Response {
+    request(address, method, path, body)
+        .unwrap_or_else(|error| panic!("server did not answer {method} {path}: {error}"))
 }
 
 #[cfg(unix)]
@@ -155,16 +142,15 @@ fn pane_routes_return_404_for_missing_panes_and_preserve_other_statuses() {
         "empty-list",
         "#!/bin/sh\nif [ \"$1\" = \"list-panes\" ]; then exit 0; fi\nprintf '%s\\n' 'tmux command failed' >&2\nexit 1\n",
     );
-    let address = server_address();
     let database = directory.0.join("triage.db");
-    let mut server = start_server(address, &database, &directory, &empty_list);
+    let (address, server) = start_server(&database, &directory, &empty_list);
     for (method, path, body) in [
         ("GET", "/v1/panes/missing/peek", ""),
         ("POST", "/v1/panes/missing/send", r#"{"text":"hello"}"#),
         ("POST", "/v1/panes/missing/jump", ""),
     ] {
         assert_error(
-            request_when_ready(address, &mut server, method, path, body),
+            answer(address, method, path, body),
             404,
             "pane not found",
         );
@@ -173,13 +159,13 @@ fn pane_routes_return_404_for_missing_panes_and_preserve_other_statuses() {
     drop(server);
     let empty_path = directory.0.join("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
-    let mut server = start_server(address, &database, &directory, &empty_path);
+    let (address, _server) = start_server(&database, &directory, &empty_path);
     for (method, path, body, expected) in [
         ("GET", "/v1/panes/missing/peek", "", 400),
         ("POST", "/v1/panes/missing/send", r#"{"text":"hello"}"#, 409),
     ] {
         assert_eq!(
-            request_when_ready(address, &mut server, method, path, body).status,
+            answer(address, method, path, body).status,
             expected,
             "{method} {path}",
         );
@@ -192,11 +178,10 @@ fn jump_returns_500_when_pane_listing_fails() {
     let directory = TestDir::new();
     let empty_path = directory.0.join("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
-    let address = server_address();
     let database = directory.0.join("triage.db");
-    let mut server = start_server(address, &database, &directory, &empty_path);
+    let (address, _server) = start_server(&database, &directory, &empty_path);
     assert_eq!(
-        request_when_ready(address, &mut server, "POST", "/v1/panes/%2512/jump", "").status,
+        answer(address, "POST", "/v1/panes/%2512/jump", "").status,
         500,
     );
 }
@@ -213,11 +198,10 @@ fn jump_returns_404_when_pane_disappears_after_preflight() {
             "#!/bin/sh\nif [ \"$1\" = \"list-panes\" ]; then printf '%s' '{PANE}'; exit 0; fi\nif [ \"$1\" = \"display\" ]; then printf '%s\\n' \"can't find pane: %12\" >&2; exit 1; fi\nexit 0\n"
         ),
     );
-    let address = server_address();
     let database = directory.0.join("triage.db");
-    let mut server = start_server(address, &database, &directory, &path);
+    let (address, _server) = start_server(&database, &directory, &path);
     assert_error(
-        request_when_ready(address, &mut server, "POST", "/v1/panes/%2512/jump", ""),
+        answer(address, "POST", "/v1/panes/%2512/jump", ""),
         404,
         "pane not found",
     );
@@ -235,11 +219,10 @@ fn jump_keeps_bad_request_for_other_tmux_failures() {
             "#!/bin/sh\nif [ \"$1\" = \"list-panes\" ]; then printf '%s' '{PANE}'; exit 0; fi\nprintf '%s\\n' 'tmux command failed' >&2\nexit 1\n"
         ),
     );
-    let address = server_address();
     let database = directory.0.join("triage.db");
-    let mut server = start_server(address, &database, &directory, &path);
+    let (address, _server) = start_server(&database, &directory, &path);
     assert_error(
-        request_when_ready(address, &mut server, "POST", "/v1/panes/%2512/jump", ""),
+        answer(address, "POST", "/v1/panes/%2512/jump", ""),
         400,
         "tmux command failed",
     );

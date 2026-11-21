@@ -3,17 +3,21 @@
 ;;; Commentary:
 
 ;; The Dispatch and New session sheets.  Each is an edit buffer.  Its
-;; read-only preamble shows the options.  The body below it is the
-;; instruction or the prompt.  `C-c C-c' launches, `C-c C-k' cancels and
-;; `C-c C-o' opens the option menu.  The functions here port openDispatch,
-;; submitDispatch, openCompose and submitCompose from ui/app.js.
+;; read-only preamble lists the options, each beside the key that changes
+;; it, the way a Magit menu does.  On those rows one key changes an
+;; option, RET launches, q cancels and TAB moves into the body
+;; below, which holds the instruction or the prompt.  There `C-c C-c'
+;; launches, `C-c C-k' cancels and S-TAB or `C-c C-o' returns to the
+;; options.  A context Dispatch sends an Org heading, a mail thread or other
+;; Emacs context the way a card is dispatched.  The functions here port
+;; openDispatch, submitDispatch, openCompose and submitCompose from
+;; ui/app.js.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
-(require 'transient)
 (require 'url-util)
 (require 'triage-api)
 (require 'triage-card)
@@ -25,6 +29,9 @@
 
 (defconst triage-launch--compose-buffer "*triage new session*"
   "Name of the New session sheet buffer.")
+
+(defconst triage-launch--context-buffer "*triage dispatch context*"
+  "Name of the Dispatch sheet buffer that sends Emacs context.")
 
 (defconst triage-launch--max-image-bytes 10485760
   "Largest image the daemon accepts, in decoded bytes.")
@@ -43,14 +50,14 @@
 (defvar triage-launch--last-compose-mode "goal"
   "Mode last chosen in the New session sheet.")
 
-(defvar triage-launch--active nil
-  "Launch sheet that the option menu acts on.")
-
 (defvar-local triage-launch--kind nil
-  "Kind of this sheet: `dispatch' or `compose'.")
+  "Kind of this sheet, one of `dispatch', `context' or `compose'.")
 
 (defvar-local triage-launch--card-id nil
   "Id of the card a Dispatch sheet launches.")
+
+(defvar-local triage-launch--context nil
+  "Emacs context that a context Dispatch sheet sends as its prompt.")
 
 (defvar-local triage-launch--mode nil
   "Wire name of the mode the sheet shows.")
@@ -65,11 +72,11 @@
   "Thinking level the sheet launches with, or nil for Default.")
 
 (defvar-local triage-launch--starting nil
-  "Non-nil while this New session sheet has a launch request in flight.")
+  "Non-nil while this sheet has a session launch request in flight.")
 
-(defun triage-launch--compose-starting-p ()
-  "Return non-nil when the New session sheet has a launch in flight."
-  (let ((buffer (get-buffer triage-launch--compose-buffer)))
+(defun triage-launch--starting-p (name)
+  "Return non-nil when the sheet buffer called NAME has a launch in flight."
+  (let ((buffer (get-buffer name)))
     (and buffer (buffer-local-value 'triage-launch--starting buffer))))
 
 (defvar-local triage-launch--executor nil
@@ -79,10 +86,10 @@
   "Execution effort for plan-into, or nil for Default.")
 
 (defvar-local triage-launch--cwd nil
-  "Working directory of a New session, or nil for the home directory.")
+  "Working directory of a session launch, or nil for the home directory.")
 
 (defvar-local triage-launch--session nil
-  "Tmux session for a New session, or nil for the default session.")
+  "Tmux session of a session launch, or nil for the default session.")
 
 (defvar-local triage-launch--image nil
   "Image plist (:media_type :data :name) attached to the sheet, or nil.")
@@ -102,6 +109,9 @@
 (defvar-local triage-launch--body-start nil
   "Marker at the start of the editable body, after the preamble.")
 
+(defvar-local triage-launch--body-offset nil
+  "Offset into the body where point was when it left for the options, or nil.")
+
 (defvar-local triage-launch--catalogs nil
   "Alist from engine name to the model catalog loaded in this sheet.")
 
@@ -119,11 +129,6 @@
 
 (defvar-local triage-launch--directories nil
   "Working directories that a New session offers.")
-
-(defmacro triage-launch--in-sheet (&rest body)
-  "Run BODY in the launch sheet that `triage-launch-options' opened."
-  (declare (indent 0) (debug t))
-  `(with-current-buffer triage-launch--active ,@body))
 
 (defun triage-launch--nonempty (value)
   "Return VALUE trimmed when it is a non-empty string, else nil."
@@ -153,20 +158,26 @@
   (nth 1 (assoc triage-launch--mode (triage-launch--rows))))
 
 (defun triage-launch--card-title ()
-  "Return the title of the Dispatch sheet's card, or its id when it left the queue."
-  (let ((card (and triage-launch--card-id (triage-queue-find triage-launch--card-id))))
-    (if card (triage-card-title-of card) (or triage-launch--card-id ""))))
+  "Return the title of the Dispatch sheet's card or context.
+A card that left the queue shows its id.  A context shows its first line."
+  (if (eq triage-launch--kind 'context)
+      (car (split-string triage-launch--context "\n"))
+    (let ((card (and triage-launch--card-id (triage-queue-find triage-launch--card-id))))
+      (if card (triage-card-title-of card) (or triage-launch--card-id "")))))
 
 (defun triage-launch--body ()
   "Return the body text of the sheet, without the preamble."
   (buffer-substring-no-properties triage-launch--body-start (point-max)))
 
 (defun triage-launch--set-body (text)
-  "Replace the body of the sheet with TEXT and leave point at its start."
+  "Replace the body of the sheet with TEXT.
+Point on the option rows stays there."
   (let ((inhibit-read-only t))
-    (delete-region triage-launch--body-start (point-max))
-    (goto-char triage-launch--body-start)
-    (insert text)))
+    (save-excursion
+      (delete-region triage-launch--body-start (point-max))
+      (goto-char triage-launch--body-start)
+      (insert text)))
+  (setq triage-launch--body-offset nil))
 
 (defun triage-launch--defaulted-p (body)
   "Return non-nil when BODY is the default instruction the sheet inserted."
@@ -302,16 +313,59 @@
   "Return the value shown in the Image row."
   (if triage-launch--image (plist-get triage-launch--image :name) "none"))
 
-(defun triage-launch--row (label value)
-  "Return a preamble row with LABEL in a muted column before VALUE.
-A long VALUE wraps under its own start."
-  (propertize (concat (propertize (format "%-15s" label) 'face 'triage-muted) value)
-              'wrap-prefix (make-string 15 ?\s)))
+(defvar-keymap triage-launch-options-map
+  :doc "Keys on the option rows of a launch sheet.
+One key changes an option, the way a Magit menu does."
+  :suppress t
+  "m" #'triage-launch-set-mode
+  "d" #'triage-launch-set-directory
+  "s" #'triage-launch-set-session
+  "e" #'triage-launch-set-engine
+  "M" #'triage-launch-set-model
+  "t" #'triage-launch-set-thinking
+  "x" #'triage-launch-set-executor
+  "X" #'triage-launch-set-executor-effort
+  "a" #'triage-launch-attach-image
+  "y" #'triage-launch-paste-image
+  "D" #'triage-launch-drop-image
+  "p" #'triage-launch-insert-phrase
+  "RET" #'triage-launch-submit
+  "q" #'triage-launch-cancel
+  "TAB" #'triage-launch-edit)
+
+(defun triage-launch--keys (hints)
+  "Return HINTS, a list of (KEY . WORD), as one line of key hints."
+  (mapconcat (lambda (hint)
+               (concat (propertize (car hint) 'face 'triage-key) " " (cdr hint)))
+             hints "   "))
+
+(defun triage-launch--offers-p (key)
+  "Return non-nil when KEY names an option on this sheet."
+  (pcase key
+    ((or "x" "X") (equal triage-launch--mode "plan-into"))
+    ("d" (memq triage-launch--kind '(compose context)))
+    ("s" (and (memq triage-launch--kind '(compose context))
+              (not (triage-launch--dsh-p))))
+    (_ t)))
+
+(defun triage-launch--require (key)
+  "Signal `user-error' unless KEY names an option on this sheet."
+  (unless (triage-launch--offers-p key)
+    (user-error "This sheet has no %s option" key)))
+
+(defun triage-launch--row (key label value)
+  "Return a preamble row of KEY, LABEL in a muted column and VALUE.
+KEY is the key that changes the option.  A long VALUE wraps under its
+own start.  Return nil when the sheet does not offer the option."
+  (when (triage-launch--offers-p key)
+    (propertize (concat (propertize (format "%-3s" key) 'face 'triage-key)
+                        (propertize (format "%-14s" label) 'face 'triage-muted)
+                        value)
+                'wrap-prefix (make-string 17 ?\s))))
 
 (defun triage-launch--preamble ()
   "Return the read-only preamble that sits above the body."
-  (let ((compose (eq triage-launch--kind 'compose))
-        (plan-into (equal triage-launch--mode "plan-into")))
+  (let ((compose (eq triage-launch--kind 'compose)))
     (concat
      (mapconcat
       #'identity
@@ -322,24 +376,27 @@ A long VALUE wraps under its own start."
                            (format "Dispatch · %s" (triage-launch--card-title)))
                          'face 'bold)
              ""
-             (triage-launch--row "Mode" (format "%s · %s" (triage-launch--mode-label)
-                                                (nth 2 (assoc triage-launch--mode
-                                                              (triage-launch--rows)))))
-             (and compose (triage-launch--row "Directory" (triage-launch--directory-text)))
-             (and compose (not (triage-launch--dsh-p))
-                  (triage-launch--row "tmux session" (triage-launch--session-text)))
-             (triage-launch--row "Engine" (triage-launch--engine-text))
-             (triage-launch--row "Model" (triage-launch--model-text))
-             (triage-launch--row "Thinking" (triage-launch--thinking-text))
-             (and plan-into (triage-launch--row "Exec model" (triage-launch--executor-text)))
-             (and plan-into (triage-launch--row "Exec effort"
-                                                (triage-launch--executor-effort-text)))
-             (triage-launch--row "Image" (triage-launch--image-text))
+             (triage-launch--row "m" "Mode"
+                                 (format "%s · %s" (triage-launch--mode-label)
+                                         (nth 2 (assoc triage-launch--mode
+                                                       (triage-launch--rows)))))
+             (triage-launch--row "d" "Directory" (triage-launch--directory-text))
+             (triage-launch--row "s" "tmux session" (triage-launch--session-text))
+             (triage-launch--row "e" "Engine" (triage-launch--engine-text))
+             (triage-launch--row "M" "Model" (triage-launch--model-text))
+             (triage-launch--row "t" "Thinking" (triage-launch--thinking-text))
+             (triage-launch--row "x" "Exec model" (triage-launch--executor-text))
+             (triage-launch--row "X" "Exec effort" (triage-launch--executor-effort-text))
+             (triage-launch--row "a" "Image"
+                                 (concat (triage-launch--image-text) "   "
+                                         (triage-launch--keys '(("y" . "paste")
+                                                                ("D" . "drop")))))
              ""
-             (mapconcat (lambda (hint)
-                          (concat (propertize (car hint) 'face 'triage-key) " " (cdr hint)))
-                        '(("C-c C-c" . "launch") ("C-c C-o" . "options") ("C-c C-k" . "cancel"))
-                        "   ")
+             (triage-launch--keys '(("RET" . "launch") ("q" . "cancel")
+                                    ("TAB" . "edit text") ("p" . "phrase")))
+             (concat (propertize "In the text  " 'face 'triage-muted)
+                     (triage-launch--keys '(("C-c C-c" . "launch") ("C-c C-k" . "cancel")
+                                            ("S-TAB" . "back"))))
              ""
              (propertize (if compose "──── Prompt ────" "──── Instruction ────")
                          'face 'shadow)))
@@ -347,19 +404,37 @@ A long VALUE wraps under its own start."
      "\n")))
 
 (defun triage-launch--draw ()
-  "Redraw the read-only preamble above the body of this sheet."
-  (let ((inhibit-read-only t)
-        (text (triage-launch--preamble)))
+  "Redraw the read-only preamble above the body of this sheet.
+The preamble carries `triage-launch-options-map', so its keys act while
+point is anywhere on it and typing in the body is left alone.  Point and
+the point of every window on the sheet stay in the zone they were in."
+  (let* ((inhibit-read-only t)
+         (text (triage-launch--preamble))
+         (windows (get-buffer-window-list nil nil t))
+         (spots (mapcar (lambda (pos)
+                          (if (>= pos triage-launch--body-start)
+                              (cons t (- pos triage-launch--body-start))
+                            (cons nil (- pos (point-min)))))
+                        (cons (point) (mapcar #'window-point windows)))))
     (add-text-properties
      0 (length text)
-     '(read-only t front-sticky (read-only) rear-nonsticky (read-only))
+     (list 'read-only t 'keymap triage-launch-options-map
+           'front-sticky t 'rear-nonsticky t)
      text)
-    (save-excursion
-      (delete-region (point-min) triage-launch--body-start)
-      (set-marker-insertion-type triage-launch--body-start t)
-      (goto-char (point-min))
-      (insert text)
-      (set-marker-insertion-type triage-launch--body-start nil))))
+    (delete-region (point-min) triage-launch--body-start)
+    (set-marker-insertion-type triage-launch--body-start t)
+    (goto-char (point-min))
+    (insert text)
+    (set-marker-insertion-type triage-launch--body-start nil)
+    ;; The delete moved every point to the top, which would turn typing into option keys.
+    (let ((places (mapcar (lambda (spot)
+                            (if (car spot)
+                                (+ triage-launch--body-start (cdr spot))
+                              (min (+ (point-min) (cdr spot))
+                                   (1- triage-launch--body-start))))
+                          spots)))
+      (goto-char (car places))
+      (cl-mapc #'set-window-point windows (cdr places)))))
 
 (defun triage-launch--set-mode (mode)
   "Make MODE the mode of this sheet and fill in its default instruction.
@@ -513,17 +588,19 @@ Return nil when DEFAULT is chosen."
           (kill-buffer (current-buffer)))))))
 
 (cl-defun triage-start-session (prompt &key cwd session engine model thinking
-                                      (mode "goal") executor executor-thinking
+                                      (mode "goal") note executor executor-thinking
                                       image then else)
   "Start a session through the daemon and return its request process.
 PROMPT is the task.  CWD, SESSION, ENGINE, MODEL and THINKING set launch
-options.
+options.  A non-nil NOTE dispatches PROMPT as context with NOTE as the
+direction from the user.  MODE is then a Dispatch mode.
 MODE, EXECUTOR, EXECUTOR-THINKING and IMAGE match `/v1/sessions'.
 THEN receives a successful response and ELSE receives status and message."
   (when (string-empty-p (string-trim prompt))
     (user-error "Type what the session should do"))
-  (unless (triage-launch--compose-mode-name mode)
-    (user-error "Invalid New session mode: %S" mode))
+  (unless (and (stringp mode)
+               (assoc mode (if note triage-card-dispatch-modes triage-card-compose-modes)))
+    (user-error "Invalid session mode: %S" mode))
   (triage-api-request
    'post "/v1/sessions"
    :body (append
@@ -534,6 +611,8 @@ THEN receives a successful response and ELSE receives status and message."
             (model . ,(triage-launch--or-null model))
             (thinking . ,(triage-launch--or-null thinking))
             (mode . ,mode))
+          (when note
+            `((note . ,note)))
           (when image
             `((image . ,(triage-launch--image-json image))))
           (when (equal mode "plan-into")
@@ -542,21 +621,25 @@ THEN receives a successful response and ELSE receives status and message."
    :then then
    :else else))
 
-(defun triage-launch--submit-compose ()
-  "Start the New session that the sheet describes.
+(defun triage-launch--submit-session ()
+  "Start the session that a New session or context Dispatch sheet describes.
 Port of submitCompose in ui/app.js."
   (when triage-launch--starting
     (user-error "Session is already starting"))
-  (let* ((prompt (string-trim (triage-launch--body)))
-         (mode (or (triage-launch--compose-mode-name triage-launch--mode) "goal"))
+  (let* ((context (eq triage-launch--kind 'context))
+         (prompt (if context triage-launch--context (string-trim (triage-launch--body))))
+         (mode (if context
+                   triage-launch--mode
+                 (or (triage-launch--compose-mode-name triage-launch--mode) "goal")))
          (engine (triage-launch--effective-engine))
          (dsh (equal engine "dsh"))
          (buffer (current-buffer)))
     (when (string-empty-p prompt)
       (user-error "Type what the session should do"))
     (setq triage-launch--mode mode
-          triage-launch--last-compose-mode mode
           triage-launch--starting t)
+    (unless context
+      (setq triage-launch--last-compose-mode mode))
     (message "Starting…")
     (condition-case err
         (triage-start-session
@@ -567,6 +650,7 @@ Port of submitCompose in ui/app.js."
          :model triage-launch--model
          :thinking triage-launch--thinking
          :mode mode
+         :note (and context (string-trim (triage-launch--body)))
          :executor triage-launch--executor
          :executor-thinking triage-launch--executor-thinking
          :image triage-launch--image
@@ -588,27 +672,47 @@ Port of submitCompose in ui/app.js."
        (signal (car err) (cdr err))))))
 
 (defun triage-launch-submit ()
-  "Launch the Dispatch sheet's card, or start the New session the sheet describes."
+  "Launch the card, the context or the New session that the sheet describes."
   (interactive)
-  (if (eq triage-launch--kind 'compose)
-      (triage-launch--submit-compose)
-    (triage-launch--submit-dispatch)))
+  (if (eq triage-launch--kind 'dispatch)
+      (triage-launch--submit-dispatch)
+    (triage-launch--submit-session)))
 
 (defun triage-launch-cancel ()
   "Close the sheet without launching.
-A Dispatch sheet keeps its text in its card's draft."
+A Dispatch sheet keeps its text in its card's draft.  The other sheets
+keep their text in their buffers for the next time they open."
   (interactive)
   (when triage-launch--starting
     (user-error "Wait for the session to finish starting"))
-  (when (eq triage-launch--kind 'dispatch)
-    (triage-launch--remember-current))
-  (kill-buffer (current-buffer)))
+  (let ((kill (eq triage-launch--kind 'dispatch))
+        (window (get-buffer-window)))
+    (when kill
+      (triage-launch--remember-current))
+    (cond (window (quit-window kill window))
+          (kill (kill-buffer)))))
+
+(defun triage-launch-edit ()
+  "Move point from the option rows into the body, back where it left."
+  (interactive)
+  (when (< (point) triage-launch--body-start)
+    (goto-char (if triage-launch--body-offset
+                   (min (point-max) (+ triage-launch--body-start triage-launch--body-offset))
+                 (point-max)))))
+
+(defun triage-launch-options ()
+  "Move point to the option rows, where one key edits an option."
+  (interactive)
+  (when (>= (point) triage-launch--body-start)
+    (setq triage-launch--body-offset (- (point) triage-launch--body-start)))
+  (goto-char (point-min)))
 
 (cl-defun triage-launch-dispatch (card mode &key new-window option answers)
   "Open the Dispatch sheet for CARD in MODE and show it.
 NEW-WINDOW asks for a tmux window of its own.  OPTION is the index of the
 option that the card's answer picks.  ANSWERS is the vector of answers to a
-finding's questions.  Port of openDispatch in ui/app.js."
+finding's questions.  Point starts on the option rows.  Port of
+openDispatch in ui/app.js."
   (let ((buffer (get-buffer-create triage-launch--dispatch-buffer)))
     (with-current-buffer buffer
       (triage-launch--remember-current)
@@ -637,12 +741,57 @@ finding's questions.  Port of openDispatch in ui/app.js."
         (triage-launch--set-body (triage-draft-note draft))
         (triage-launch--set-mode mode)
         (triage-launch--draw)
-        (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw)))
-        (goto-char (point-max))))
-    (pop-to-buffer buffer)))
+        (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw)))))
+    (pop-to-buffer buffer)
+    (with-current-buffer buffer
+      (goto-char (point-min)))))
+
+;;;###autoload
+(defun triage-launch-context (context cwd &optional engine)
+  "Open a Dispatch sheet that sends CONTEXT from CWD and show it.
+CONTEXT is an Org heading, a mail thread or other text captured in
+Emacs.  The body is the direction from the user.  ENGINE names the
+launch engine.  The sheet asks before it replaces a direction typed for
+another context.  Point starts on the option rows."
+  (when (triage-launch--starting-p triage-launch--context-buffer)
+    (user-error "Wait for the current session to finish starting"))
+  (let ((buffer (get-buffer-create triage-launch--context-buffer)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'triage-launch-mode)
+        (triage-launch-mode))
+      (let ((same (equal context triage-launch--context))
+            (body (triage-launch--body)))
+        (when (and triage-launch--context (not same)
+                   (not (string-empty-p (string-trim body)))
+                   (not (triage-launch--defaulted-p body))
+                   (not (y-or-n-p "Replace the Dispatch draft? ")))
+          (user-error "Dispatch draft kept"))
+        (setq triage-launch--kind 'context
+              triage-launch--context context
+              triage-launch--cwd cwd
+              triage-launch--engine engine
+              triage-launch--model nil
+              triage-launch--thinking nil
+              triage-launch--session nil
+              triage-launch--image nil
+              triage-launch--executor nil
+              triage-launch--executor-thinking nil
+              triage-launch--catalogs nil
+              triage-launch--catalog-waiters nil
+              triage-launch--generation (1+ triage-launch--generation))
+        (unless same
+          (setq triage-launch--default-text nil)
+          (triage-launch--set-body ""))
+        (triage-launch--set-mode (if same triage-launch--mode "investigate-fix")))
+      (triage-launch--load-tmux-sessions)
+      (triage-launch--draw)
+      (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw))))
+    (pop-to-buffer buffer)
+    (with-current-buffer buffer
+      (goto-char (point-min)))))
 
 (defun triage-launch--load-tmux-sessions ()
-  "Load the tmux sessions and directories for a New session.
+  "Load the tmux sessions and directories for a session launch.
 A failed request leaves the lists empty."
   (let ((data (condition-case nil
                   (triage-api-request-sync 'get "/v1/tmux-sessions")
@@ -652,52 +801,33 @@ A failed request leaves the lists empty."
           triage-launch--directories (alist-get 'directories data))))
 
 ;;;###autoload
-(defun triage-new-session (&optional prompt cwd engine)
+(defun triage-new-session ()
   "Open the New session sheet.  Port of openCompose in ui/app.js.
-When PROMPT is non-nil, fill the body and use CWD and ENGINE for the launch."
+A prompt left there by a cancel is still in the sheet.  Point starts in
+the prompt."
   (interactive)
+  (when (triage-launch--starting-p triage-launch--compose-buffer)
+    (user-error "Wait for the current session to finish starting"))
   (let ((buffer (get-buffer-create triage-launch--compose-buffer)))
-    (when (triage-launch--compose-starting-p)
-      (user-error "Wait for the current session to finish starting"))
     (with-current-buffer buffer
       (unless (derived-mode-p 'triage-launch-mode)
         (triage-launch-mode))
-      (when prompt
-        (let ((draft (string-trim (triage-launch--body))))
-          (when (and (not (string-empty-p draft))
-                     (not (equal draft (string-trim prompt)))
-                     (not (y-or-n-p "Replace the New session draft? ")))
-            (user-error "New session draft kept"))))
       (setq triage-launch--kind 'compose
-            triage-launch--card-id nil
-            triage-launch--option nil
-            triage-launch--answers nil
-            triage-launch--new-window nil
             triage-launch--mode
             (or (triage-launch--compose-mode-name triage-launch--last-compose-mode)
                 "goal")
             triage-launch--last-compose-mode triage-launch--mode
-            triage-launch--starting nil
             triage-launch--default-text nil
             triage-launch--catalogs nil
             triage-launch--catalog-waiters nil
             triage-launch--generation (1+ triage-launch--generation))
-      (when prompt
-        (setq triage-launch--cwd cwd
-              triage-launch--engine engine
-              triage-launch--model nil
-              triage-launch--thinking nil
-              triage-launch--session nil
-              triage-launch--image nil
-              triage-launch--executor nil
-              triage-launch--executor-thinking nil)
-        (triage-launch--set-body prompt)
-        (goto-char (point-max)))
       (triage-launch--load-tmux-sessions)
       (triage-launch--draw)
       (triage-launch--with-catalog triage-launch--engine
                                    (lambda (_catalog) (triage-launch--draw))))
-    (pop-to-buffer buffer)))
+    (pop-to-buffer buffer)
+    (with-current-buffer buffer
+      (triage-launch-edit))))
 
 ;;;###autoload
 (defun triage-model-selectors (engine)
@@ -712,228 +842,180 @@ When PROMPT is non-nil, fill the body and use CWD and ENGINE for the launch."
 (defun triage-launch-set-mode ()
   "Choose the mode of the launch sheet."
   (interactive)
-  (triage-launch--in-sheet
-    (let* ((rows (seq-remove
-                  (lambda (row)
-                    (and triage-launch--answers
-                         (member (car row) '("investigate" "investigate-fix"))))
-                  (triage-launch--rows)))
-          (mode (triage-launch--read-fixed
-                 "Mode"
-                 (mapcar (lambda (row) (list (cadr row) (car row) (nth 2 row)))
-                         rows))))
-      (triage-launch--set-mode mode)
-      (when (eq triage-launch--kind 'compose)
-        (setq triage-launch--last-compose-mode mode))
-      (triage-launch--draw))))
+  (let* ((rows (seq-remove
+                (lambda (row)
+                  (and triage-launch--answers
+                       (member (car row) '("investigate" "investigate-fix"))))
+                (triage-launch--rows)))
+         (mode (triage-launch--read-fixed
+                "Mode"
+                (mapcar (lambda (row) (list (cadr row) (car row) (nth 2 row)))
+                        rows))))
+    (triage-launch--set-mode mode)
+    (when (eq triage-launch--kind 'compose)
+      (setq triage-launch--last-compose-mode mode))
+    (triage-launch--draw)))
 
 (defun triage-launch-set-engine ()
   "Choose the engine of the launch sheet, or Default."
   (interactive)
-  (triage-launch--in-sheet
-    (let ((engine (triage-launch--read-fixed
-                   "Engine"
-                   '(("Default" nil) ("omp" "omp") ("dsh" "dsh")))))
-      (setq triage-launch--engine engine
-            triage-launch--model nil
-            triage-launch--thinking nil
-            triage-launch--executor nil
-            triage-launch--executor-thinking nil)
-      (when (eq triage-launch--kind 'dispatch)
-        (setq triage-launch--last-dispatch-engine engine))
-      (triage-launch--draw)
-      (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw))))))
+  (let ((engine (triage-launch--read-fixed
+                 "Engine"
+                 '(("Default" nil) ("omp" "omp") ("dsh" "dsh")))))
+    (setq triage-launch--engine engine
+          triage-launch--model nil
+          triage-launch--thinking nil
+          triage-launch--executor nil
+          triage-launch--executor-thinking nil)
+    (when (eq triage-launch--kind 'dispatch)
+      (setq triage-launch--last-dispatch-engine engine))
+    (triage-launch--draw)
+    (triage-launch--with-catalog engine (lambda (_catalog) (triage-launch--draw)))))
 
 (defun triage-launch-set-model ()
   "Choose the model of the launch sheet."
   (interactive)
-  (triage-launch--in-sheet
-    (let ((engine triage-launch--engine))
-      (triage-launch--with-catalog
-       engine
-       (lambda (catalog)
-         (when (equal engine triage-launch--engine)
-           (let ((model (triage-launch--read-model
-                         "Model: " (triage-launch--model-default) catalog)))
-             (setq triage-launch--model model)
-             (unless (member triage-launch--thinking
-                             (triage-card-effort-levels catalog model))
-               (setq triage-launch--thinking nil))
-             (triage-launch--draw))))))))
+  (let ((engine triage-launch--engine))
+    (triage-launch--with-catalog
+     engine
+     (lambda (catalog)
+       (when (equal engine triage-launch--engine)
+         (let ((model (triage-launch--read-model
+                       "Model: " (triage-launch--model-default) catalog)))
+           (setq triage-launch--model model)
+           (unless (member triage-launch--thinking
+                           (triage-card-effort-levels catalog model))
+             (setq triage-launch--thinking nil))
+           (triage-launch--draw)))))))
 
 (defun triage-launch-set-thinking ()
   "Choose the thinking level of the launch sheet."
   (interactive)
-  (triage-launch--in-sheet
-    (let ((engine triage-launch--engine))
-      (triage-launch--with-catalog
-       engine
-       (lambda (catalog)
-         (when (equal engine triage-launch--engine)
-           (let ((choice (triage-launch--read-level
-                          "Thinking: " (triage-launch--thinking-default)
-                          (triage-card-effort-levels catalog triage-launch--model))))
-             (setq triage-launch--thinking choice)
-             (triage-launch--draw))))))))
+  (let ((engine triage-launch--engine))
+    (triage-launch--with-catalog
+     engine
+     (lambda (catalog)
+       (when (equal engine triage-launch--engine)
+         (let ((choice (triage-launch--read-level
+                        "Thinking: " (triage-launch--thinking-default)
+                        (triage-card-effort-levels catalog triage-launch--model))))
+           (setq triage-launch--thinking choice)
+           (triage-launch--draw)))))))
 
 (defun triage-launch-set-executor ()
   "Choose the execution model for plan-into, or Default."
   (interactive)
-  (triage-launch--in-sheet
-    (let ((engine triage-launch--engine))
-      (triage-launch--with-catalog
-       engine
-       (lambda (catalog)
-         (when (equal engine triage-launch--engine)
-           (let ((executor (triage-launch--read-model
-                            "Execution model: " (triage-launch--executor-default) catalog)))
-             (setq triage-launch--executor executor)
-             (unless (member triage-launch--executor-thinking
-                             (triage-card-effort-levels catalog executor))
-               (setq triage-launch--executor-thinking nil))
-             (triage-launch--draw))))))))
+  (triage-launch--require "x")
+  (let ((engine triage-launch--engine))
+    (triage-launch--with-catalog
+     engine
+     (lambda (catalog)
+       (when (equal engine triage-launch--engine)
+         (let ((executor (triage-launch--read-model
+                          "Execution model: " (triage-launch--executor-default) catalog)))
+           (setq triage-launch--executor executor)
+           (unless (member triage-launch--executor-thinking
+                           (triage-card-effort-levels catalog executor))
+             (setq triage-launch--executor-thinking nil))
+           (triage-launch--draw)))))))
 
 (defun triage-launch-set-executor-effort ()
   "Choose the execution effort for plan-into."
   (interactive)
-  (triage-launch--in-sheet
-    (when (and (triage-launch--dsh-p) (not triage-launch--executor))
-      (user-error "Choose an execution model first"))
-    (let ((engine triage-launch--engine))
-      (triage-launch--with-catalog
-       engine
-       (lambda (catalog)
-         (when (equal engine triage-launch--engine)
-           (let ((choice (triage-launch--read-level
-                          "Execution effort: " (triage-launch--executor-effort-default)
-                          (triage-card-effort-levels catalog triage-launch--executor))))
-             (setq triage-launch--executor-thinking choice)
-             (triage-launch--draw))))))))
+  (triage-launch--require "X")
+  (when (and (triage-launch--dsh-p) (not triage-launch--executor))
+    (user-error "Choose an execution model first"))
+  (let ((engine triage-launch--engine))
+    (triage-launch--with-catalog
+     engine
+     (lambda (catalog)
+       (when (equal engine triage-launch--engine)
+         (let ((choice (triage-launch--read-level
+                        "Execution effort: " (triage-launch--executor-effort-default)
+                        (triage-card-effort-levels catalog triage-launch--executor))))
+           (setq triage-launch--executor-thinking choice)
+           (triage-launch--draw)))))))
 
 (defun triage-launch-set-directory ()
-  "Choose the working directory of the New session sheet."
+  "Choose the working directory of a session launch."
   (interactive)
-  (triage-launch--in-sheet
-    (let* ((default "Default (Home directory)")
-           (choice (completing-read "Directory: " (cons default triage-launch--directories)
-                                    nil nil)))
-      (setq triage-launch--cwd
-            (unless (equal choice default)
-              (triage-launch--nonempty choice)))
-      (triage-launch--draw))))
+  (triage-launch--require "d")
+  (let* ((default "Default (Home directory)")
+         (choice (completing-read "Directory: " (cons default triage-launch--directories)
+                                  nil nil)))
+    (setq triage-launch--cwd
+          (unless (equal choice default)
+            (triage-launch--nonempty choice)))
+    (triage-launch--draw)))
 
 (defun triage-launch-set-session ()
-  "Choose the tmux session of the New session sheet."
+  "Choose the tmux session of a session launch."
   (interactive)
-  (triage-launch--in-sheet
-    (let* ((default (triage-launch--default-label triage-launch--tmux-default))
-           (choice (completing-read "tmux session: " (cons default triage-launch--tmux-sessions)
-                                    nil t)))
-      (setq triage-launch--session (unless (equal choice default) choice))
-      (triage-launch--draw))))
+  (triage-launch--require "s")
+  (let* ((default (triage-launch--default-label triage-launch--tmux-default))
+         (choice (completing-read "tmux session: " (cons default triage-launch--tmux-sessions)
+                                  nil t)))
+    (setq triage-launch--session (unless (equal choice default) choice))
+    (triage-launch--draw)))
 
 (defun triage-launch-attach-image ()
   "Attach a PNG, JPEG, WebP or GIF image from a file to the sheet."
   (interactive)
-  (triage-launch--in-sheet
-    (let ((file (read-file-name "Image: " nil nil t)))
-      (setq triage-launch--image (triage-launch--file-image file))
-      (triage-launch--draw))))
+  (let ((file (read-file-name "Image: " nil nil t)))
+    (setq triage-launch--image (triage-launch--file-image file))
+    (triage-launch--draw)))
 
 (defun triage-launch-paste-image ()
   "Attach the PNG image on the clipboard to the sheet."
   (interactive)
-  (triage-launch--in-sheet
-    (let ((data (and (display-graphic-p)
-                     (gui-get-selection 'CLIPBOARD 'image/png))))
-      (unless data
-        (user-error "The clipboard holds no PNG image"))
-      (triage-launch--check-image-size (length data))
-      (setq triage-launch--image (list :media_type "image/png"
-                                       :data (base64-encode-string data t)
-                                       :name "clipboard.png"))
-      (triage-launch--draw))))
+  (let ((data (and (display-graphic-p)
+                   (gui-get-selection 'CLIPBOARD 'image/png))))
+    (unless data
+      (user-error "The clipboard holds no PNG image"))
+    (triage-launch--check-image-size (length data))
+    (setq triage-launch--image (list :media_type "image/png"
+                                     :data (base64-encode-string data t)
+                                     :name "clipboard.png"))
+    (triage-launch--draw)))
 
 (defun triage-launch-drop-image ()
   "Remove the attached image from the sheet."
   (interactive)
-  (triage-launch--in-sheet
-    (setq triage-launch--image nil)
-    (triage-launch--draw)))
+  (setq triage-launch--image nil)
+  (triage-launch--draw))
 
 (defun triage-launch-insert-phrase ()
-  "Insert one of the saved dictation phrases at point."
+  "Insert one of the saved dictation phrases into the body.
+The phrase goes where point last was in the body, or at its end."
   (interactive)
-  (triage-launch--in-sheet
-    (let* ((data (triage-api-request-sync 'get "/v1/dictation"))
-           (phrases (seq-remove
-                     #'string-empty-p
-                     (mapcar #'string-trim
-                             (split-string (or (alist-get 'phrases data) "") "\n")))))
-      (unless phrases
-        (user-error "No saved phrases.  Add them with M-x triage-settings"))
-      (let ((phrase (completing-read "Phrase: " phrases nil t)))
-        (when (< (point) triage-launch--body-start)
-          (goto-char (point-max)))
-        (insert phrase)))))
-
-(transient-define-prefix triage-launch--options-menu ()
-  "Options for the triage launch sheet."
-  [["Launch"
-    ("m" (lambda ()
-           (triage-launch--in-sheet (format "Mode: %s" (triage-launch--mode-label))))
-     triage-launch-set-mode)
-    ("e" (lambda ()
-           (triage-launch--in-sheet (format "Engine: %s" (triage-launch--engine-text))))
-     triage-launch-set-engine)
-    ("M" (lambda ()
-           (triage-launch--in-sheet (format "Model: %s" (triage-launch--model-text))))
-     triage-launch-set-model)
-    ("t" (lambda ()
-           (triage-launch--in-sheet (format "Thinking: %s" (triage-launch--thinking-text))))
-     triage-launch-set-thinking)]
-   ["Plan into"
-    :if (lambda () (triage-launch--in-sheet (equal triage-launch--mode "plan-into")))
-    ("x" (lambda ()
-           (triage-launch--in-sheet (format "Exec model: %s" (triage-launch--executor-text))))
-     triage-launch-set-executor)
-    ("X" (lambda ()
-           (triage-launch--in-sheet
-             (format "Exec effort: %s" (triage-launch--executor-effort-text))))
-     triage-launch-set-executor-effort)]
-   ["New session"
-    :if (lambda () (triage-launch--in-sheet (eq triage-launch--kind 'compose)))
-    ("d" (lambda ()
-           (triage-launch--in-sheet (format "Directory: %s" (triage-launch--directory-text))))
-     triage-launch-set-directory)
-    ("s" (lambda ()
-           (triage-launch--in-sheet (format "tmux session: %s" (triage-launch--session-text))))
-     triage-launch-set-session
-     :inapt-if (lambda () (triage-launch--in-sheet (triage-launch--dsh-p))))]
-   ["Image"
-    ("a" "Attach image" triage-launch-attach-image)
-    ("y" "Paste image" triage-launch-paste-image)
-    ("D" "Drop image" triage-launch-drop-image
-     :inapt-if-not (lambda () (triage-launch--in-sheet triage-launch--image)))]
-   ["Text"
-    ("p" "Insert phrase" triage-launch-insert-phrase)]])
-
-(defun triage-launch-options ()
-  "Open the option menu for the launch sheet in the current buffer."
-  (interactive)
-  (setq triage-launch--active (current-buffer))
-  (transient-setup 'triage-launch--options-menu))
+  (let* ((data (triage-api-request-sync 'get "/v1/dictation"))
+         (phrases (seq-remove
+                   #'string-empty-p
+                   (mapcar #'string-trim
+                           (split-string (or (alist-get 'phrases data) "") "\n")))))
+    (unless phrases
+      (user-error "No saved phrases.  Add them with M-x triage-settings"))
+    (let ((phrase (completing-read "Phrase: " phrases nil t)))
+      (save-excursion
+        (triage-launch-edit)
+        (insert phrase)
+        (setq triage-launch--body-offset (- (point) triage-launch--body-start))))))
 
 (defvar-keymap triage-launch-mode-map
   :parent text-mode-map
   "C-c C-c" #'triage-launch-submit
   "C-c C-k" #'triage-launch-cancel
-  "C-c C-o" #'triage-launch-options)
+  "C-c C-o" #'triage-launch-options
+  "<backtab>" #'triage-launch-options)
 
 (define-derived-mode triage-launch-mode text-mode "Triage-Launch"
   "Major mode for the triage Dispatch and New session sheets.
-The top of the buffer is a read-only preamble that shows the options.  The
-body below it is the instruction or the prompt."
+The top of the buffer is a read-only preamble that lists the options.
+There one key changes an option:
+\\{triage-launch-options-map}
+The body below it is the instruction or the prompt.  There
+\\<triage-launch-mode-map>\\[triage-launch-submit] launches, \\[triage-launch-cancel] cancels and
+\\[triage-launch-options] returns to the options."
   (triage-render-setup-view)
   ;; The rows carry their own wrap prefix, which this mode would replace.
   (visual-wrap-prefix-mode -1)

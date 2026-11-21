@@ -15,7 +15,7 @@
 ;;   M-x triage-new-session start a session
 ;;   M-x triage-history     browse handled cards
 ;;   M-x triage-settings    edit dictation phrases
-;;   M-x triage-delegate   turn the current context into a new session
+;;   M-x triage-delegate   dispatch the current Org, mail, Dired or region context
 ;;   M-x triage-mode-line-mode toggle the global counter
 ;;
 ;; In the inbox, use RET for the primary action, 1-9 for options, j/k to move,

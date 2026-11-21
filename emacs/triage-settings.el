@@ -48,7 +48,7 @@
     (unless (or (string-empty-p dictionary) (string-suffix-p "\n" dictionary))
       (insert "\n"))
     (triage-settings--fixed
-     "──── Phrases: one per line, offered by C-c C-o p in launch buffers ────"
+     "──── Phrases: one per line, offered by p on a launch sheet's options ────"
      'triage-muted 'phrases)
     (insert phrases)
     (goto-char dictionary-start)))

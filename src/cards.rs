@@ -892,6 +892,38 @@ impl<'a> Start<'a> {
     }
 }
 
+/// What a `/v1/sessions` prompt is. Without a note it is the task of a New session. With one
+/// it is context, such as an Org heading or a mail thread sent from Emacs, dispatched the way
+/// a card is. The note is then the direction from the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject<'a> {
+    Task,
+    Context(DispatchMode, &'a str),
+}
+
+impl<'a> Subject<'a> {
+    /// Read a `/v1/sessions` mode for a prompt with or without a note. Context takes a Dispatch
+    /// mode, Investigate by default. It starts the way a card dispatch in that mode starts.
+    pub fn parse(
+        mode: Option<&str>,
+        note: Option<&'a str>,
+        executor: Option<&'a str>,
+        executor_thinking: Option<&'a str>,
+    ) -> Result<(Self, Start<'a>), String> {
+        let Some(note) = note else {
+            return Ok((Self::Task, Start::parse(mode, executor, executor_thinking)?));
+        };
+        let mode = DispatchMode::parse(mode.unwrap_or("investigate"))
+            .ok_or_else(|| "unknown mode".to_owned())?;
+        let start = match mode {
+            DispatchMode::Plan => "plan",
+            DispatchMode::PlanInto => "plan-into",
+            DispatchMode::Investigate | DispatchMode::InvestigateFix | DispatchMode::Act => "goal",
+        };
+        Ok((Self::Context(mode, note), Start::parse(Some(start), executor, executor_thinking)?))
+    }
+}
+
 /// A dispatch can investigate read-only, investigate and fix, act on the card, plan for review,
 /// or plan into an execution model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1203,7 +1235,42 @@ pub fn start_session(
     start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
-    if prompt.trim().is_empty() {
+    launch_text(db, prompt, cwd, launch, start, image, |workdir| {
+        session_brief(prompt, plans_for_review(start), workdir)
+    })
+}
+
+/// Launch a session that dispatches free text the way a card is dispatched. The brief is about
+/// `context`, `note` is the direction from the user and `mode` picks the instructions and the
+/// report. `start` must be the start `mode` takes, as `Subject::parse` returns it.
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_context(
+    db: &Db,
+    context: &str,
+    mode: DispatchMode,
+    note: &str,
+    cwd: &str,
+    launch: &Launch,
+    start: Start,
+    image: Option<&Upload>,
+) -> Result<String, String> {
+    launch_text(db, context, cwd, launch, start, image, |workdir| {
+        context_brief(context, mode, note, workdir)
+    })
+}
+
+/// Launch a brief written from free text in a new omp window or dsh session. `brief` writes it
+/// from the working directory a dsh workspace session must move to.
+fn launch_text(
+    db: &Db,
+    text: &str,
+    cwd: &str,
+    launch: &Launch,
+    start: Start,
+    image: Option<&Upload>,
+    brief: impl FnOnce(Option<String>) -> String,
+) -> Result<String, String> {
+    if text.trim().is_empty() {
         return Err("prompt is empty".to_owned());
     }
     if launch.engine == Engine::Dsh {
@@ -1211,8 +1278,8 @@ pub fn start_session(
         if let Start::PlanInto(executor, effort) = start {
             plan_into_choices(Engine::Dsh, executor, effort)?;
         }
-        let path = write_brief(db, session_brief(prompt, plans_for_review(start), workspace_workdir(launch, cwd)))?;
-        let title = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
+        let path = write_brief(db, brief(workspace_workdir(launch, cwd)))?;
+        let title = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
         return dsh_track::launch_new(launch, cwd, &path, title, start, image);
     }
     // Validate before writing the brief so a bad choice leaves nothing behind.
@@ -1220,7 +1287,7 @@ pub fn start_session(
     if let Start::PlanInto(executor, effort) = start {
         plan_into_choices(Engine::Omp, executor, effort)?;
     }
-    let path = write_brief(db, session_brief(prompt, plans_for_review(start), None))?;
+    let path = write_brief(db, brief(None))?;
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
     let command = omp_command(
         &path,
@@ -3296,7 +3363,7 @@ fn finding_answers_brief(
     ));
     push_refs(&mut brief, card);
     brief.push_str(&format!("\n## Rules for these decisions\n{FINDING_ANSWER_RULES}\n"));
-    push_instructions(&mut brief, mode);
+    push_instructions(&mut brief, mode, INVESTIGATE_INSTRUCTION);
     brief.push_str(REPORT_STEP);
     if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
         brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
@@ -3456,10 +3523,10 @@ fn push_refs(brief: &mut String, card: &Card) {
     }
 }
 
-fn push_instructions(brief: &mut String, mode: DispatchMode) {
+fn push_instructions(brief: &mut String, mode: DispatchMode, investigate: &str) {
     brief.push_str("\n## Instructions\n");
     brief.push_str(match mode {
-        DispatchMode::Investigate => INVESTIGATE_INSTRUCTION,
+        DispatchMode::Investigate => investigate,
         DispatchMode::Act | DispatchMode::InvestigateFix => ACT_INSTRUCTION,
         DispatchMode::Plan => PLAN_INSTRUCTION,
         DispatchMode::PlanInto => PLAN_INTO_INSTRUCTION,
@@ -3488,7 +3555,7 @@ fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: Dis
         direction_of(note, mode),
     );
     push_refs(&mut brief, card);
-    push_instructions(&mut brief, mode);
+    push_instructions(&mut brief, mode, INVESTIGATE_INSTRUCTION);
     brief.push_str(REPORT_STEP);
     if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
         brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
@@ -3552,7 +3619,9 @@ When finished, end with a final reply whose first line is `ENVOY_STATUS: complet
 
 "#;
 const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
-const ACT_INSTRUCTION: &str = "Take the whole action this card calls for, end to end in this run. Complete every part and every environment the request covers. Do not stop at the first working slice. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. When an in-scope edit may need harness approval, make the normal call and let the harness answer. Do not predict a denial. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
+/// The Investigate instruction for free text, which has no producer or proposed action.
+const CONTEXT_INVESTIGATE_INSTRUCTION: &str = "Investigate what the context above describes and answer the direction from the user, or report what you find when it gives none. Confirm each claim against the files, mail, live systems and logs it names and say plainly where the evidence contradicts it. Change nothing unless the direction from the user asks for a change, and then make only that change.";
+const ACT_INSTRUCTION: &str = "Take the whole action this brief calls for, end to end in this run. Complete every part and every environment the request covers. Do not stop at the first working slice. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. When an in-scope edit may need harness approval, make the normal call and let the harness answer. Do not predict a denial. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 /// The direction an Act launch carries when the user typed none. It asks for the work to be
 /// thought through and for no more to be spent than it requires. The inbox prefills its Instruction
 /// with it. A finding answer or API dispatch that names no note gets the same text. Every Act
@@ -3644,7 +3713,31 @@ fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>, workdir: 
         workdir.as_deref().map(workdir_section).unwrap_or_default(),
     );
     push_refs(&mut brief, card);
-    push_instructions(&mut brief, mode);
+    push_instructions(&mut brief, mode, INVESTIGATE_INSTRUCTION);
+    brief.push_str(REPORT_STEP);
+    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
+        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
+    }
+    brief
+}
+
+/// The brief of a context dispatch, laid out like a card's Dispatch brief with the context in
+/// place of the card.
+fn context_brief(context: &str, mode: DispatchMode, note: &str, workdir: Option<String>) -> String {
+    let context = context.trim();
+    let mut brief = format!(
+        "# {}: {}\n\n## Context\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n",
+        mode.swipe_text(),
+        context.lines().next().unwrap_or_default().trim(),
+        context,
+        direction_of(Some(note), mode),
+    );
+    if let Some(cwd) = workdir.as_deref() {
+        brief.push('\n');
+        brief.push_str(workdir_section(cwd).trim_end());
+        brief.push('\n');
+    }
+    push_instructions(&mut brief, mode, CONTEXT_INVESTIGATE_INSTRUCTION);
     brief.push_str(REPORT_STEP);
     if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
         brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));

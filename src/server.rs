@@ -728,6 +728,10 @@ struct SessionRequest {
     thinking: Option<String>,
     #[serde(default)]
     mode: Option<String>,
+    /// The direction from the user. A request that names one dispatches its prompt as context
+    /// in a Dispatch mode.
+    #[serde(default)]
+    note: Option<String>,
     #[serde(default)]
     executor: Option<String>,
     /// Effort the Plan into execution model takes, which only a dsh plan can name.
@@ -1062,8 +1066,9 @@ async fn start_session(
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     // Reject a bad mode now; the worker parses it again, because `Start` borrows the request.
-    if let Err(error) = crate::cards::Start::parse(
+    if let Err(error) = crate::cards::Subject::parse(
         request.mode.as_deref(),
+        request.note.as_deref(),
         request.executor.as_deref(),
         request.executor_thinking.as_deref(),
     ) {
@@ -1077,8 +1082,9 @@ async fn start_session(
     let prompt = request.prompt.clone();
     tokio::task::spawn_blocking(move || {
         let outcome = (|| {
-            let start = crate::cards::Start::parse(
+            let (subject, start) = crate::cards::Subject::parse(
                 request.mode.as_deref(),
+                request.note.as_deref(),
                 request.executor.as_deref(),
                 request.executor_thinking.as_deref(),
             )?;
@@ -1091,14 +1097,26 @@ async fn start_session(
                 )?),
                 None => None,
             };
-            crate::cards::start_session(
-                &action_state.db,
-                &request.prompt,
-                &cwd,
-                &launch,
-                start,
-                image.as_ref(),
-            )
+            match subject {
+                crate::cards::Subject::Task => crate::cards::start_session(
+                    &action_state.db,
+                    &request.prompt,
+                    &cwd,
+                    &launch,
+                    start,
+                    image.as_ref(),
+                ),
+                crate::cards::Subject::Context(mode, note) => crate::cards::dispatch_context(
+                    &action_state.db,
+                    &request.prompt,
+                    mode,
+                    note,
+                    &cwd,
+                    &launch,
+                    start,
+                    image.as_ref(),
+                ),
+            }
         })();
         let _ = tx.send(Some(outcome));
     });
@@ -1660,6 +1678,7 @@ pub async fn serve(
     addr: std::net::SocketAddr,
 ) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    eprintln!("triage: listening on {}", listener.local_addr()?);
     std::sync::LazyLock::force(&MODELS_LOAD);
     let poll_state = Arc::clone(&state);
     tokio::spawn(async move {

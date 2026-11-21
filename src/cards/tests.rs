@@ -791,6 +791,45 @@ fn investigate_first_option_briefs_a_read_only_answer() {
     assert!(brief.contains("`Recommended action:`"));
     assert!(brief.contains(&format!("{INVESTIGATE_STATUS_CONTRACT}{REPORT_STEP}")));
 }
+
+#[test]
+fn a_session_request_with_a_note_takes_a_dispatch_mode() {
+    let parse = |mode, note, executor| Subject::parse(mode, note, executor, None);
+    assert_eq!(parse(None, None, None), Ok((Subject::Task, Start::Goal)));
+    assert_eq!(
+        parse(None, Some(""), None),
+        Ok((Subject::Context(DispatchMode::Investigate, ""), Start::Goal))
+    );
+    assert_eq!(
+        parse(Some("investigate-fix"), Some("go"), None),
+        Ok((Subject::Context(DispatchMode::InvestigateFix, "go"), Start::Goal))
+    );
+    assert_eq!(
+        parse(Some("plan-into"), Some(""), Some("fast")),
+        Ok((Subject::Context(DispatchMode::PlanInto, ""), Start::PlanInto(Some("fast"), None)))
+    );
+    assert!(parse(Some("goal"), Some(""), None).is_err());
+    assert!(parse(Some("act"), None, None).is_err());
+    assert!(parse(Some("act"), Some(""), Some("fast")).is_err());
+}
+
+#[test]
+fn a_context_brief_reads_like_a_card_dispatch() {
+    let context = "Org: Child\n\n### Task\n\n** TODO Child\n";
+    let look = context_brief(context, DispatchMode::Investigate, "", None);
+    assert!(look.starts_with("# Investigate: Org: Child\n\n## Context\nOrg: Child\n"), "{look}");
+    assert!(look.contains(&format!("{CONTEXT_INVESTIGATE_INSTRUCTION}\n\n{INVESTIGATE_STATUS_CONTRACT}{REPORT_STEP}")));
+    assert!(!look.contains(DEFAULT_INVESTIGATE_FIX_DIRECTION) && !look.contains(INVESTIGATE_INSTRUCTION));
+
+    let fix = context_brief(context, DispatchMode::InvestigateFix, " \n", Some("/work".to_owned()));
+    assert!(fix.contains(&format!(
+        "## Direction from the user (overrides the action and any skill)\n{DEFAULT_INVESTIGATE_FIX_DIRECTION}\n\n## Working directory\n`/work`"
+    )), "{fix}");
+    assert!(fix.contains(ACT_INSTRUCTION) && fix.contains(ENVOY_STATUS_CONTRACT));
+
+    let typed = context_brief(context, DispatchMode::Plan, "Only the docs", None);
+    assert!(typed.contains("skill)\nOnly the docs\n") && typed.contains(PLAN_REPORT_STEP), "{typed}");
+}
 #[test]
 fn finding_brief_plan_mode_includes_review_contract() {
     let card = finding_card(Path::new("/tmp"));

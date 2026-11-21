@@ -302,6 +302,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         model: None,
         thinking: None,
         mode: None,
+        note: None,
         executor: None,
         executor_thinking: None,
         engine: None,
@@ -323,6 +324,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         model: Some("provider/chosen".to_owned()),
         thinking: Some("high".to_owned()),
         mode: None,
+        note: None,
         executor: None,
         executor_thinking: None,
         engine: None,
@@ -349,6 +351,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         model: None,
         thinking: None,
         mode: None,
+        note: None,
         executor: None,
         executor_thinking: None,
         engine: None,
@@ -383,6 +386,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
         model: None,
         thinking: None,
         mode: Some("plan".to_owned()),
+        note: None,
         executor: None,
         executor_thinking: None,
         engine: None,
@@ -432,6 +436,53 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
     );
 }
 
+// An Org heading or a mail thread sent from Emacs opens Triage Dispatch. A request with a note
+// dispatches its prompt as context in a Dispatch mode.
+#[cfg(unix)]
+#[tokio::test]
+async fn new_session_with_a_note_dispatches_its_prompt_as_context() {
+    if run_with_fake_tmux_child(
+        "server::tests::new_session_with_a_note_dispatches_its_prompt_as_context",
+    ) {
+        return;
+    }
+    let directory = TestDir::new("triage-session-context");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let state = state(db, None);
+    for refused in [
+        serde_json::json!({"prompt": "Email: Pong", "note": "", "mode": "goal"}),
+        serde_json::json!({"prompt": "Email: Pong", "mode": "act"}),
+    ] {
+        let request = serde_json::from_value(refused).unwrap();
+        let response =
+            super::start_session(axum::extract::State(state.clone()), axum::Json(request)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let request = serde_json::from_value(serde_json::json!({
+        "prompt": "Email: Pong\n\nCURRENT THREAD\nPing?",
+        "cwd": "/tmp",
+        "note": "Draft a reply.",
+        "mode": "act",
+    }))
+    .unwrap();
+    let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let brief = std::fs::read_dir(directory.0.join("briefs"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .next()
+        .unwrap();
+    assert!(
+        brief.starts_with("# Act: Email: Pong\n\n## Context\nEmail: Pong\n")
+            && brief.contains(
+                "## Direction from the user (overrides the action and any skill)\nDraft a reply.\n"
+            )
+            && brief.contains("Take the whole action this brief calls for")
+            && !brief.contains("Investigate and fix the root cause"),
+        "{brief}"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
@@ -459,6 +510,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
         model: None,
         thinking: None,
         mode: Some("plan".to_owned()),
+        note: None,
         executor: None,
         executor_thinking: None,
         engine: None,
@@ -509,6 +561,7 @@ async fn new_session_plan_into_applies_effort_to_default_execution_model() {
         model: None,
         thinking: None,
         mode: Some("plan-into".to_owned()),
+        note: None,
         executor: None,
         executor_thinking: Some("medium".to_owned()),
         engine: None,
@@ -572,6 +625,7 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
         model: None,
         thinking: None,
         mode: Some("goal".to_owned()),
+        note: None,
         executor: None,
         executor_thinking: None,
         image: Some(super::ImageRequest {
@@ -603,6 +657,7 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
         model: None,
         thinking: None,
         mode: Some("goal".to_owned()),
+        note: None,
         executor: None,
         executor_thinking: None,
         image: Some(super::ImageRequest {
@@ -633,6 +688,7 @@ async fn new_session_rejects_plan_into_effort_the_engine_cannot_take() {
             model: None,
             thinking: None,
             mode: Some("plan-into".to_owned()),
+            note: None,
             executor: executor.map(str::to_owned),
             executor_thinking: effort.map(str::to_owned),
             image: None,
