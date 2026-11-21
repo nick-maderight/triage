@@ -38,7 +38,7 @@ try {
 <ul class="counts" id="counts" aria-label="Cards waiting by kind" data-od-id="counts"></ul>
 <div class="connection" id="connection" data-state="connecting" role="status" aria-live="polite" data-od-id="connection"><span class="connection-dot" aria-hidden="true"></span><span class="connection-label">Connecting</span></div>
 <div class="top-actions" data-od-id="header-actions">
-<button type="button" class="btn ghost square" id="btn-settings" aria-label="Settings" aria-haspopup="dialog" data-od-id="settings-button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg></button>
+<button type="button" class="btn ghost square" id="btn-settings" aria-label="Settings" aria-keyshortcuts="S" aria-haspopup="dialog" data-od-id="settings-button"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></svg></button>
 <button type="button" class="btn ghost square" id="btn-theme" aria-label="Switch to dark mode" data-od-id="theme-toggle"></button>
 <button type="button" class="btn ghost" id="btn-compose" aria-keyshortcuts="c" data-od-id="compose-button"><svg class="compose-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="compose-label">New session</span> <kbd class="hint" aria-hidden="true">c</kbd></button>
 <button type="button" class="btn ghost" id="btn-history" aria-keyshortcuts="h" data-od-id="history-button">History <kbd class="hint" aria-hidden="true">h</kbd></button>
@@ -86,7 +86,7 @@ try {
 <h2 id="compose-title" data-od-id="compose-title">Session</h2>
 <button type="button" class="btn ghost" data-close data-od-id="compose-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
 </header>
-<form class="compose" id="compose-form" data-od-id="compose-form">
+<form class="compose" id="compose-form" tabindex="-1" data-od-id="compose-form">
 <div class="sheet-context" id="compose-context" hidden data-od-id="compose-context">
 <span class="sheet-context-title" id="compose-context-title" data-od-id="compose-context-title"></span>
 <span class="sheet-context-source" id="compose-context-source" data-od-id="compose-context-source"></span>
@@ -97,48 +97,48 @@ try {
 <div class="attach" data-od-id="compose-attach">
 <button type="button" class="btn ghost square mic" data-dictate="compose-prompt" aria-label="Dictate the prompt" aria-pressed="false" data-od-id="compose-dictate"></button>
 <input type="file" class="sr-only" id="compose-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="compose-image">
-<button type="button" class="btn ghost attach-add" id="compose-image-add" aria-controls="compose-image" data-od-id="compose-image-add">Attach image</button>
+<button type="button" class="btn ghost attach-add" id="compose-image-add" aria-keyshortcuts="a" aria-controls="compose-image" data-od-id="compose-image-add">Attach image <kbd class="hint" aria-hidden="true">a</kbd></button>
 <div class="attach-preview" id="compose-image-preview" hidden data-od-id="compose-image-preview">
 <img id="compose-image-thumb" alt="" width="56" height="56" data-od-id="compose-image-thumb">
 <span id="compose-image-name" data-od-id="compose-image-name"></span>
-<button type="button" class="btn ghost" id="compose-image-remove" aria-label="Remove the attached image">Remove</button>
+<button type="button" class="btn ghost" id="compose-image-remove" aria-label="Remove the attached image" aria-keyshortcuts="D">Remove <kbd class="hint" aria-hidden="true">D</kbd></button>
 </div>
 </div>
 <div class="compose-grid" id="compose-target" data-od-id="compose-target">
-<div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory</label>
-<button type="button" class="field picker-field" id="compose-cwd" value="" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
-<div class="pair" id="compose-session-pair"><label id="compose-session-label" for="compose-session">tmux session</label>
-<button type="button" class="field picker-field" id="compose-session" value="" aria-labelledby="compose-session-label compose-session" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-session"></button></div>
+<div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory <kbd class="hint" aria-hidden="true">d</kbd></label>
+<button type="button" class="field picker-field" id="compose-cwd" value="" aria-keyshortcuts="d" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
+<div class="pair" id="compose-session-pair"><label id="compose-session-label" for="compose-session">tmux session <kbd class="hint" aria-hidden="true">s</kbd></label>
+<button type="button" class="field picker-field" id="compose-session" value="" aria-keyshortcuts="s" aria-labelledby="compose-session-label compose-session" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-session"></button></div>
 </div>
 <div class="compose-grid" id="compose-launch" data-od-id="compose-launch">
-<div class="pair"><label id="compose-engine-label" for="compose-engine">Engine</label>
-<button type="button" class="field picker-field" id="compose-engine" value="" aria-labelledby="compose-engine-label compose-engine" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-engine"></button></div>
-<div class="pair"><label id="compose-model-label" for="compose-model">Model</label>
-<button type="button" class="field picker-field" id="compose-model" value="" aria-labelledby="compose-model-label compose-model" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-model"></button></div>
-<div class="pair"><label id="compose-thinking-label" for="compose-thinking">Thinking</label>
-<button type="button" class="field picker-field" id="compose-thinking" value="" aria-labelledby="compose-thinking-label compose-thinking" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-thinking"></button></div>
+<div class="pair"><label id="compose-engine-label" for="compose-engine">Engine <kbd class="hint" aria-hidden="true">e</kbd></label>
+<button type="button" class="field picker-field" id="compose-engine" value="" aria-keyshortcuts="e" aria-labelledby="compose-engine-label compose-engine" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-engine"></button></div>
+<div class="pair"><label id="compose-model-label" for="compose-model">Model <kbd class="hint" aria-hidden="true">M</kbd></label>
+<button type="button" class="field picker-field" id="compose-model" value="" aria-keyshortcuts="M" aria-labelledby="compose-model-label compose-model" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-model"></button></div>
+<div class="pair"><label id="compose-thinking-label" for="compose-thinking">Thinking <kbd class="hint" aria-hidden="true">t</kbd></label>
+<button type="button" class="field picker-field" id="compose-thinking" value="" aria-keyshortcuts="t" aria-labelledby="compose-thinking-label compose-thinking" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-thinking"></button></div>
 </div>
-<span id="compose-mode-label" data-od-id="compose-mode-label">Mode</span>
-<div class="segmented" id="compose-mode" role="radiogroup" aria-labelledby="compose-mode-label" data-od-id="compose-mode">
-<button type="button" role="radio" class="seg" id="compose-mode-goal" data-value="goal" aria-checked="true" aria-keyshortcuts="g" data-od-id="compose-mode-goal">Goal</button>
-<button type="button" role="radio" class="seg" id="compose-mode-plan" data-value="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="compose-mode-plan">Plan</button>
-<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-value="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="compose-mode-plan-into">Plan into</button>
+<span id="compose-mode-label" data-od-id="compose-mode-label">Mode <kbd class="hint" aria-hidden="true">m</kbd></span>
+<div class="segmented" id="compose-mode" role="radiogroup" aria-keyshortcuts="m" aria-labelledby="compose-mode-label" data-od-id="compose-mode">
+<button type="button" role="radio" class="seg" id="compose-mode-goal" data-value="goal" aria-checked="true" aria-keyshortcuts="g" data-od-id="compose-mode-goal">Goal<kbd class="hint" aria-hidden="true">g</kbd></button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan" data-value="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="compose-mode-plan">Plan<kbd class="hint" aria-hidden="true">p</kbd></button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-value="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="compose-mode-plan-into">Plan into<kbd class="hint" aria-hidden="true">P</kbd></button>
 </div>
 <p class="mode-help" id="compose-mode-help" data-od-id="compose-mode-help"></p>
-<span id="compose-task-label" data-od-id="compose-task-label">Task</span>
-<div class="segmented" id="compose-task" role="radiogroup" aria-labelledby="compose-task-label" data-od-id="compose-task">
-<button type="button" role="radio" class="seg" id="compose-task-investigate" data-value="investigate" aria-checked="false" tabindex="-1" aria-keyshortcuts="i" data-od-id="compose-task-investigate">Investigate</button>
-<button type="button" role="radio" class="seg" id="compose-task-fix" data-value="fix" aria-checked="true" aria-keyshortcuts="F" data-od-id="compose-task-fix">Fix</button>
-<button type="button" role="radio" class="seg" id="compose-task-act" data-value="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="A" data-od-id="compose-task-act">Act</button>
-<button type="button" role="radio" class="seg" id="compose-task-verify" data-value="verify" aria-checked="false" tabindex="-1" aria-keyshortcuts="V" data-od-id="compose-task-verify">Verify</button>
-<button type="button" role="radio" class="seg" id="compose-task-simplify" data-value="simplify" aria-checked="false" tabindex="-1" aria-keyshortcuts="S" data-od-id="compose-task-simplify">Simplify</button>
+<span id="compose-task-label" data-od-id="compose-task-label">Task <kbd class="hint" aria-hidden="true">T</kbd></span>
+<div class="segmented" id="compose-task" role="radiogroup" aria-keyshortcuts="T" aria-labelledby="compose-task-label" data-od-id="compose-task">
+<button type="button" role="radio" class="seg" id="compose-task-investigate" data-value="investigate" aria-checked="false" tabindex="-1" aria-keyshortcuts="i" data-od-id="compose-task-investigate">Investigate<kbd class="hint" aria-hidden="true">i</kbd></button>
+<button type="button" role="radio" class="seg" id="compose-task-fix" data-value="fix" aria-checked="true" aria-keyshortcuts="f" data-od-id="compose-task-fix">Fix<kbd class="hint" aria-hidden="true">f</kbd></button>
+<button type="button" role="radio" class="seg" id="compose-task-act" data-value="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="a" data-od-id="compose-task-act">Act<kbd class="hint" aria-hidden="true">a</kbd></button>
+<button type="button" role="radio" class="seg" id="compose-task-verify" data-value="verify" aria-checked="false" tabindex="-1" aria-keyshortcuts="v" data-od-id="compose-task-verify">Verify<kbd class="hint" aria-hidden="true">v</kbd></button>
+<button type="button" role="radio" class="seg" id="compose-task-simplify" data-value="simplify" aria-checked="false" tabindex="-1" aria-keyshortcuts="s" data-od-id="compose-task-simplify">Simplify<kbd class="hint" aria-hidden="true">s</kbd></button>
 </div>
 <p class="mode-help" id="compose-task-help" data-od-id="compose-task-help"></p>
 <div class="compose-grid" id="compose-models" hidden data-od-id="compose-models">
-<div class="pair"><label id="compose-executor-label" for="compose-executor">Execution model</label>
-<button type="button" class="field picker-field" id="compose-executor" value="" aria-labelledby="compose-executor-label compose-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor"></button></div>
-<div class="pair" id="compose-executor-effort-pair"><label id="compose-executor-effort-label" for="compose-executor-effort">Execution effort</label>
-<button type="button" class="field picker-field" id="compose-executor-effort" value="" aria-labelledby="compose-executor-effort-label compose-executor-effort" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor-effort"></button></div>
+<div class="pair"><label id="compose-executor-label" for="compose-executor">Execution model <kbd class="hint" aria-hidden="true">x</kbd></label>
+<button type="button" class="field picker-field" id="compose-executor" value="" aria-keyshortcuts="x" aria-labelledby="compose-executor-label compose-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor"></button></div>
+<div class="pair" id="compose-executor-effort-pair"><label id="compose-executor-effort-label" for="compose-executor-effort">Execution effort <kbd class="hint" aria-hidden="true">X</kbd></label>
+<button type="button" class="field picker-field" id="compose-executor-effort" value="" aria-keyshortcuts="X" aria-labelledby="compose-executor-effort-label compose-executor-effort" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor-effort"></button></div>
 </div>
 <button type="submit" class="btn primary" id="compose-start" data-od-id="compose-start">Start</button>
 </form>
@@ -181,30 +181,39 @@ try {
 <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Pick an option</dd>
 <dt><kbd>Enter</kbd></dt><dd>Run the primary action on this card</dd>
 <dt><kbd>a</kbd></dt><dd>Acknowledge</dd>
-<dt><kbd>x</kbd></dt><dd>Acknowledge and close the card's session, which exits omp and closes its tmux pane or archives its dsh session</dd>
+<dt><kbd>C</kbd></dt><dd>Acknowledge and close the card's session, which exits omp and closes its tmux pane or archives its dsh session</dd>
 <dt><kbd>p</kbd></dt><dd>Plan next step, or the session sheet with Plan preselected</dd>
-<dt><kbd>d</kbd></dt><dd>Do next step, the session sheet with Goal and Act preselected in a window of its own</dd>
-<dt><kbd>i</kbd></dt><dd>The session sheet with Investigate preselected</dd>
-<dt><kbd>F</kbd></dt><dd>The session sheet with Fix preselected</dd>
+<dt><kbd>D</kbd></dt><dd>Do next step, the session sheet with Goal and Act preselected in a window of its own</dd>
+<dt><kbd>d</kbd></dt><dd>Dispatch, the session sheet with Investigate preselected</dd>
+<dt><kbd>f</kbd></dt><dd>The session sheet with Fix preselected</dd>
 <dt><kbd>A</kbd></dt><dd>The session sheet with Act preselected</dd>
 <dt><kbd>P</kbd></dt><dd>The session sheet with Plan into preselected</dd>
-<dt><kbd>g</kbd></dt><dd>The session sheet for a new goal</dd>
-<dt><kbd>g</kbd> <kbd>p</kbd> <kbd>P</kbd> <kbd>i</kbd> <kbd>F</kbd> <kbd>A</kbd> <kbd>V</kbd> <kbd>S</kbd></dt><dd>Inside the session sheet, pick the Mode, then the Task</dd>
+<dt><kbd>m</kbd> <kbd>T</kbd></dt><dd>Inside the session sheet, move to Mode or Task, then press the key its button shows</dd>
+<dt><kbd>d</kbd> <kbd>s</kbd> <kbd>e</kbd> <kbd>M</kbd> <kbd>t</kbd> <kbd>x</kbd> <kbd>X</kbd></dt><dd>Inside the session sheet, choose the directory, tmux session, engine, model, thinking, execution model or execution effort</dd>
+<dt><kbd>a</kbd> <kbd>D</kbd></dt><dd>Inside the session sheet, attach or drop an image</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>V</kbd></dt><dd>Inside the session sheet, paste an image</dd>
+<dt><kbd>Tab</kbd></dt><dd>Inside the session sheet, move from the options into the text</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt><dd>Start from the session sheet</dd>
 <dt><kbd>o</kbd></dt><dd>Other answer</dd>
 <dt><kbd>n</kbd></dt><dd>Note for this action, which the session sheet takes as its instruction</dd>
+<dt><kbd>w</kbd></dt><dd>Copy the reply</dd>
+<dt><kbd>e</kbd> <kbd>E</kbd></dt><dd>Execution model, or execution effort for dsh, on a plan card</dd>
 <dt><kbd>r</kbd></dt><dd>Request the final report from a session whose reply missed it</dd>
 <dt><kbd>R</kbd></dt><dd>Restore a run that ended without its report</dd>
 <dt><kbd>s</kbd></dt><dd>Skip</dd>
-<dt><kbd>l</kbd></dt><dd>Later menu, then <kbd>1</kbd>–<kbd>3</kbd></dd>
+<dt><kbd>l</kbd></dt><dd>Later menu, then <kbd>1</kbd>, <kbd>4</kbd> or <kbd>t</kbd></dd>
 <dt><kbd>v</kbd></dt><dd>Peek at the card's pane or dsh session</dd>
 <dt><kbd>t</kbd></dt><dd>Context thread of the shown card</dd>
 <dt><kbd>J</kbd></dt><dd>Jump to the tmux pane, or open dsh for a dsh card</dd>
 <dt><kbd>j</kbd> <kbd>k</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>Next / previous without acting</dd>
+<dt><kbd>g</kbd></dt><dd>Refresh the inbox, or the open Peek, History or Context</dd>
 <dt><kbd>h</kbd></dt><dd>History</dd>
 <dt><kbd>c</kbd></dt><dd>New session from your own prompt</dd>
-<dt><kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt><dd>Start from the session sheet</dd>
+<dt><kbd>S</kbd></dt><dd>Settings</dd>
 <dt><kbd>?</kbd></dt><dd>This sheet</dd>
-<dt><kbd>f</kbd></dt><dd>Fit / Readable in Peek</dd>
+<dt><kbd>f</kbd> <kbd>s</kbd> <kbd>J</kbd></dt><dd>In Peek, switch Fit and Readable, move to the text to send, or jump to the pane</dd>
+<dt><kbd>t</kbd> <kbd>r</kbd></dt><dd>In History, open the context or reload the card of the row with focus</dd>
+<dt><kbd>q</kbd></dt><dd>Close the session sheet, Peek, History or Context</dd>
 <dt><kbd>Esc</kbd></dt><dd>Close a dialog or popover, or cancel inline Other</dd>
 </dl>
 </dialog>

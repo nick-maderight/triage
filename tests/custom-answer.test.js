@@ -41,6 +41,11 @@ test('custom answers are hidden from findings and available on ask and plan card
     functions = ['otherAllowed', 'optionsView', 'questionView', 'otherRow', 'toggleOther', 'sendOther', 'answerStep', 'goStep', 'mdInline', 'mdNodes']
       .map(functionSource)
       .join('\n'),
+    // optionsView shows a plan card's execution fields through the same rule the dock uses.
+    planFields = app
+      .match(/^ +planFields = \(c\) => [^\n]*$/m)[0]
+      .trim()
+      .replace(/^planFields =/, 'const planFields ='),
     context = vm.createContext({
       S: state,
       answerable: (card) => card.answerable !== false,
@@ -68,7 +73,7 @@ test('custom answers are hidden from findings and available on ask and plan card
     });
   vm.runInContext(markedSource, context);
   vm.runInContext(
-    `${functions}\nObject.assign(globalThis, { optionsView, toggleOther, sendOther });`,
+    `${planFields}\n${functions}\nObject.assign(globalThis, { optionsView, toggleOther, sendOther });`,
     context,
   );
 

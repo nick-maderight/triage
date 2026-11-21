@@ -980,37 +980,58 @@
     checkSessionDraft = async () => {
       await waitFor(() => document.querySelector('.card'), 'a card to dispatch');
       const dialog = document.querySelector('#compose'),
+        form = document.querySelector('#compose-form'),
+        preview = document.querySelector('#compose-image-preview'),
         note = document.querySelector('#compose-prompt'),
         cardNote = () => document.querySelector('#note'),
         mode = (name) => document.querySelector(`#compose-mode-${name}`),
         task = (name) => document.querySelector(`#compose-task-${name}`),
         press = (key) =>
           document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
-        pressIn = (key) => dialog.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
+        pressIn = (key, target = dialog) => target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })),
         type = (field, value) => {
           field.value = value;
           field.dispatchEvent(new Event('input', { bubbles: true }));
         };
       try {
-        press('i');
+        press('d');
         await waitFor(() => dialog.open, 'session sheet open');
-        assert(mode('goal').getAttribute('aria-checked') === 'true', 'i selects Goal');
+        assert(mode('goal').getAttribute('aria-checked') === 'true', 'd selects Goal');
         assert(!mode('goal').hidden, 'a card shows Goal');
-        assert(task('investigate').getAttribute('aria-checked') === 'true', 'i selects Investigate');
+        assert(task('investigate').getAttribute('aria-checked') === 'true', 'd selects Investigate');
         assert(task('act').getAttribute('aria-checked') === 'false', 'Act starts unchecked');
         assert(document.querySelector('#compose-target').hidden, 'a card hides the directory and tmux session');
+        assert(document.activeElement === form, 'a card sheet opens on its options');
         task('fix').click();
         assert(task('fix').getAttribute('aria-checked') === 'true', 'Fix is selected after click');
         assert(note.value === '', 'a task never writes into the Instruction');
         task('act').click();
         assert(task('act').getAttribute('aria-checked') === 'true', 'Act is selected after click');
         assert(task('investigate').getAttribute('aria-checked') === 'false', 'Act replaces Investigate');
-        pressIn('V');
-        assert(task('verify').getAttribute('aria-checked') === 'true', 'V selects Verify');
+        pressIn('T');
+        assert(document.activeElement === task('act'), 'T moves to the checked task');
+        const taskKeys = [...document.querySelectorAll('#compose-task .seg:not([hidden]) kbd')].map((k) => k.textContent).join(' ');
+        assert(taskKeys === 'i f a v s', `the tasks take the Emacs keys (${taskKeys})`);
+        pressIn('v', document.activeElement);
+        assert(task('verify').getAttribute('aria-checked') === 'true', 'v selects Verify');
+        assert(document.activeElement === form, 'a picked task hands focus back to the options');
+        pressIn('M');
+        const picker = document.querySelector('#picker');
+        assert(picker.open, 'M opens the Model picker');
+        picker.close();
+        await waitFor(() => document.activeElement === form, 'the picker hands focus back to the options');
+        const shot = new DataTransfer();
+        shot.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' }));
+        form.dispatchEvent(new ClipboardEvent('paste', { clipboardData: shot, bubbles: true, cancelable: true }));
+        assert(!preview.hidden, 'an image pastes into the sheet from its options');
+        pressIn('D');
+        assert(preview.hidden, 'D drops the image');
+        pressIn('Tab', form);
+        assert(document.activeElement === note, 'Tab moves from the options into the Instruction');
         task('act').click();
         type(note, 'fixture instruction\nsecond line');
-        dialog.close();
-        assert(!dialog.open, 'the session sheet closes');
+        pressIn('q', form);
+        assert(!dialog.open, 'q closes the session sheet');
         assert(cardNote().value === 'fixture instruction second line', 'the card shows the instruction as its note');
         document.querySelector('#dispatch-btn').click();
         await waitFor(() => dialog.open, 'session sheet reopened from the dock');
@@ -1225,10 +1246,10 @@
     await waitFor(() => document.querySelector('.dock button'), 'a card with a dock');
     const fixed = {
         Acknowledge: 'a',
-        'Acknowledge & close': 'x',
+        'Acknowledge & close': 'C',
         'Plan next step': 'p',
-        'Do next step': 'd',
-        Dispatch: 'i',
+        'Do next step': 'D',
+        Dispatch: 'd',
         Skip: 's',
         Context: 't',
         Later: 'l',
@@ -1261,6 +1282,14 @@
     }
     if (innerWidth > 639 && matchMedia('(pointer: fine)').matches)
       assert(shown.length > 0, 'a dock button shows its action key on a pointer screen');
+    if (document.querySelector('#later-btn')) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+      await waitFor(() => document.querySelector('#later-menu'), 'the Later menu');
+      const laterKeys = [...document.querySelectorAll('#later-menu kbd')].map((k) => k.textContent).join(' ');
+      assert(laterKeys === '1 4 t', `Later takes the Emacs keys (${laterKeys})`);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+      await waitFor(() => !document.querySelector('#later-menu'), 'the Later menu closes');
+    }
     return { scenario: 'card-keys', passed: true, keys: shown };
   };
 

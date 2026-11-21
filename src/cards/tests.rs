@@ -6469,16 +6469,20 @@ fn omp_title_flicker_makes_no_exit_card() {
 fn dead_pane_whose_session_runs_elsewhere_makes_no_card() {
     if let Some(root) = child_root("dead_pane_whose_session_runs_elsewhere_makes_no_card") {
         let transcript = root.join("transcript.jsonl");
+        // Both ttys are fake and far above any real pty, so a pty the kernel hands another test
+        // can never share one of these breadcrumbs.
+        fs::write(root.join("tmux-tty"), b"/dev/pts/9012\n").unwrap();
         write_transcript(
             &root,
-            "/dev/pts/12",
+            "/dev/pts/9012",
             &transcript,
             &[
                 user_brief_line(),
                 assistant_text_line("a1", "Resumed in another pane, still going."),
             ],
         );
-        map_transcript(&root, "/dev/pts/13", &transcript);
+        fs::write(root.join("tmux-tty-13"), b"/dev/pts/9013\n").unwrap();
+        map_transcript(&root, "/dev/pts/9013", &transcript);
         fs::write(root.join("tmux-dead"), b"").unwrap();
         fs::write(root.join("tmux-second-pane"), b"").unwrap();
         let db = Db::open(&root.join("triage.db")).unwrap();

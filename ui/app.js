@@ -53,6 +53,8 @@ const S = {
   peekHeight: 0,
   peekMonoRatio: 0,
   contextToken: 0,
+  contextId: null,
+  composeNote: '',
   picker: null,
   dictating: null,
   dictionary: [],
@@ -154,7 +156,9 @@ const S = {
     paneApi = (pane) => (pane.startsWith('dsh:') ? `/v1/dsh/${enc(pane.slice(4))}` : `/v1/panes/${enc(pane)}`),
     restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id),
     // The step a report left open, named by its `Recommended action:` line.
-    hasStep = (c) => c.kind === 'info' && Boolean(c.star?.action);
+    hasStep = (c) => c.kind === 'info' && Boolean(c.star?.action),
+    // A plan card shows its execution fields beside its options, never on a question step.
+    planFields = (c) => c.kind === 'plan' && answerable(c) && !c.questions?.length;
   // The three ways a session starts, each with the help line the sheet shows under Mode.
   const MODES = {
     goal: 'The session works on it until it reports done.',
@@ -174,7 +178,8 @@ const S = {
   // Every card action in dock order. Each entry holds its key, its button label, the cards that
   // offer it and what it does. An action without a label has no button. The dock, Enter and the
   // key handler all read this table. A card that offers an action shows one button for it under
-  // one key, while a card that does not offer it answers neither.
+  // one key, while a card that does not offer it answers neither. The keys match
+  // triage-card-actions in emacs/triage-card.el.
   const ACTIONS = {
     // Plan keeps one shape wherever a card offers it. A report with an open step plans that step
     // in a window of its own when the report came from a tmux pane.
@@ -186,22 +191,22 @@ const S = {
     // Dispatch is the sheet's only button and also names the keys that open the sheet with another
     // mode or task.
     dispatch: {
-      key: 'i',
+      key: 'd',
       label: 'Dispatch',
       also: ['fix', 'act', 'plan', 'planInto'],
       run: (c) => openSheet(c, 'goal', 'investigate'),
     },
-    fix: { key: 'F', run: (c) => openSheet(c, 'goal', 'fix') },
+    fix: { key: 'f', run: (c) => openSheet(c, 'goal', 'fix') },
     act: { key: 'A', run: (c) => openSheet(c, 'goal', 'act') },
     planInto: { key: 'P', run: (c) => openSheet(c, 'plan-into', 'act') },
     doNext: {
-      key: 'd',
+      key: 'D',
       label: 'Do next step',
       offered: hasStep,
       run: (c) => openSheet(c, 'goal', 'act', { newWindow: true }),
     },
     close: {
-      key: 'x',
+      key: 'C',
       label: 'Acknowledge & close',
       offered: paneOf,
       run: (c) => act(c, 'close', { note: noteValue(c) }, 'close'),
@@ -237,6 +242,9 @@ const S = {
     },
     note: { key: 'n', run: () => $('#note')?.focus() },
     other: { key: 'o', offered: (c) => otherAllowed(c), run: (c) => toggleOther(c) },
+    copy: { key: 'w', offered: (c) => c.kind === 'info' && Boolean(String(c.body ?? '').trim()), run: (c) => copyReport(c) },
+    executor: { key: 'e', offered: planFields, run: () => keyPicker('plan-executor') },
+    effort: { key: 'E', offered: (c) => planFields(c) && c.engine === 'dsh', run: () => keyPicker('plan-executor-effort') },
   };
   const offers = (c, id) => !ACTIONS[id].offered || Boolean(ACTIONS[id].offered(c)),
     // The action a key runs on a card. A card that does not offer the action has none.
@@ -1025,7 +1033,7 @@ const S = {
       el(
         'div',
         'report-toolbar',
-        button(c, 'copy', 'btn ghost', {}, () => copyReport(c), 'Copy'),
+        button(c, 'copy', 'btn ghost', { 'aria-keyshortcuts': ACTIONS.copy.key }, () => copyReport(c), 'Copy', h('kbd', { class: 'hint', 'aria-hidden': 'true' }, ACTIONS.copy.key)),
       ),
       h(
         'div',
@@ -1176,7 +1184,7 @@ const S = {
     });
     if (otherAllowed(c)) rows.push(otherRow(c));
     const out = [
-      c.kind === 'plan' && live && planExecutorView(c),
+      planFields(c) && planExecutorView(c),
       h('ol', { class: 'options', 'aria-label': live ? 'Options' : 'Options, read only' }, ...rows),
     ];
     if (!live)
@@ -1429,15 +1437,29 @@ const S = {
       tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(9, 0, 0, 0);
-    return [
-      { label: '1 hour', minutes: 60, at: now + 3600000 },
-      { label: '4 hours', minutes: 240, at: now + 14400000 },
-      {
-        label: 'Tomorrow',
-        minutes: Math.max(1, Math.ceil((tomorrow - now) / 60000)),
-        at: tomorrow.getTime(),
-      },
-    ].map((x) => ({ ...x, local: local(x.at) }));
+    const choices = [
+        { label: '1 hour', minutes: 60, at: now + 3600000 },
+        { label: '4 hours', minutes: 240, at: now + 14400000 },
+        {
+          label: 'Tomorrow',
+          minutes: Math.max(1, Math.ceil((tomorrow - now) / 60000)),
+          at: tomorrow.getTime(),
+        },
+      ],
+      keys = choiceKeys(choices.map((x) => x.label));
+    return choices.map((x, i) => ({ ...x, key: keys[i], local: local(x.at) }));
+  }
+  // Each label takes the first free letter its words offer, lower case before upper, then a
+  // digit. Port of triage-card-choice-keys in emacs/triage-card.el.
+  function choiceKeys(labels) {
+    const used = new Set();
+    return labels.map((label) => {
+      const letters = label.split(/[^\p{L}\p{N}]+/u).filter(Boolean).flatMap((word) => [...word].flatMap((ch) => [ch.toLowerCase(), ch.toUpperCase()])),
+        key = [...letters, ...'123456789'].find((k) => !used.has(k));
+      if (!key) throw new Error(`No key left for choice ${label}`);
+      used.add(key);
+      return key;
+    });
   }
   // The dock draws the card's actions from the table. The lead becomes the primary button. Every
   // other labeled action the card offers follows it.
@@ -1483,7 +1505,7 @@ const S = {
               () => later(c, x),
               h('span', { class: 'later-label' }, x.label),
               h('span', { class: 'later-time' }, x.local),
-              hint(String(i + 1)),
+              hint(x.key),
             ),
           ),
         ),
@@ -1572,7 +1594,7 @@ const S = {
         { class: 'empty offline', 'aria-labelledby': 'empty-title' },
         h('h2', { id: 'empty-title' }, 'Daemon unreachable'),
         h('p', { class: 'empty-lead', role: 'status' }, 'Retrying automatically.'),
-        h('button', { type: 'button', class: 'btn', 'data-retry': true }, 'Retry now'),
+        h('button', { type: 'button', class: 'btn', 'data-retry': true, 'aria-keyshortcuts': 'g' }, 'Retry now', h('kbd', { class: 'hint', 'aria-hidden': 'true' }, 'g')),
       );
     const kids = [
       h('h2', { id: 'empty-title' }, 'Inbox zero'),
@@ -2464,6 +2486,12 @@ const S = {
     // user just left stay in place otherwise.
     if (MODEL_PICKERS.includes(id) && (!cfg.options.length || id.startsWith('plan-'))) void loadModels();
   }
+  // A picker opened by its key hands focus to `back` when it closes, or to the card's primary
+  // button. The next key then reaches the sheet or the card instead of typing into the field.
+  function keyPicker(id, back = null) {
+    openPicker(id);
+    S.dialogFocus.set($('#picker'), back);
+  }
   function renderPicker() {
     const p = S.picker,
       cfg = PICKERS[p.id],
@@ -2740,7 +2768,8 @@ const S = {
     add.addEventListener('click', () => input.click());
     input.addEventListener('change', () => attachSheetImage(input.files?.[0]));
     remove?.addEventListener('click', () => clearSheetImage());
-    $('#compose-prompt')?.addEventListener('paste', (e) => {
+    // The whole sheet takes a pasted image, because a card's sheet opens on its options.
+    $('#compose')?.addEventListener('paste', (e) => {
       const file = [...(e.clipboardData?.files || [])].find((f) => IMAGE_TYPES.has(f.type));
       if (file && !e.clipboardData.getData('text')) {
         e.preventDefault();
@@ -2802,6 +2831,7 @@ const S = {
     // The daemon does the launch, which can take it a while. The sheet closes now and the
     // toast reports the result. A busy host never holds the inbox.
     hint.textContent = '';
+    S.composeNote = '';
     $('#compose-prompt').value = '';
     $('#compose').close();
     announce('Starting a session.');
@@ -2821,6 +2851,7 @@ const S = {
     } catch (err) {
       // Put the draft back so a retry is one Start, unless a newer draft sits in the sheet.
       const message = err.message || 'Could not start the session.';
+      S.composeNote ||= prompt;
       if (!$('#compose-prompt').value.trim()) $('#compose-prompt').value = prompt;
       hint.textContent = message;
       if (!$('dialog[open]')) showDialog($('#compose'));
@@ -2884,6 +2915,17 @@ const S = {
       b.tabIndex = on ? 0 : -1;
     }
   }
+  // The keys of a radio group's shown buttons, mnemonic as in the Emacs launch sheet. Each
+  // button prints its key, which shows while the group holds focus.
+  function segmentKeys(group) {
+    const bs = [...group.children].filter((b) => !b.hidden),
+      keys = choiceKeys(bs.map((b) => b.firstChild.nodeValue.trim()));
+    bs.forEach((b, i) => {
+      b.querySelector('kbd').textContent = keys[i];
+      b.setAttribute('aria-keyshortcuts', keys[i]);
+    });
+    return new Map(keys.map((key, i) => [key, bs[i]]));
+  }
   // The card the sheet holds, or null for a plain session.
   function sheetCard() {
     return S.sheetCardId ? S.cards.find((x) => x.id === S.sheetCardId) || null : null;
@@ -2944,7 +2986,7 @@ const S = {
         same = (field.value || daemon) === (S.sheetEngine || daemon);
       if (field.value !== S.sheetEngine) setPickerValue('compose-engine', S.sheetEngine);
       if (!same) clearModels('compose');
-      $('#compose-prompt').value = '';
+      $('#compose-prompt').value = S.composeNote;
       void loadComposeSessions();
     }
     $('#compose-context').hidden = !c;
@@ -2961,7 +3003,8 @@ const S = {
     $('#compose-hint').textContent = '';
     $('#compose-start').disabled = false;
     showDialog($('#compose'));
-    $('#compose-prompt').focus({ preventScroll: true });
+    // A card's sheet opens on its options and a new session in its text, as in Emacs.
+    $(c ? '#compose-form' : '#compose-prompt').focus({ preventScroll: true });
     void loadModels();
   }
   // Clear drops the card and leaves a plain new session. The card's draft stays where it was.
@@ -2975,7 +3018,7 @@ const S = {
     $('#compose-context-source').textContent = '';
     $('#compose-prompt-label').textContent = 'What should the session do?';
     $('#compose-prompt').placeholder = 'Ask a question, give a task, or start a chat';
-    $('#compose-prompt').value = '';
+    $('#compose-prompt').value = S.composeNote;
     $('#compose-target').hidden = false;
     if (field.value !== S.sheetEngine) setPickerValue('compose-engine', S.sheetEngine);
     if (!same) clearModels('compose');
@@ -3077,6 +3120,7 @@ const S = {
             {
               type: 'button',
               class: 'btn ghost h-reload',
+              'aria-keyshortcuts': 'r',
               onclick: (e) => reloadHistoryCard(c, e.currentTarget),
             },
             'Reload',
@@ -3116,6 +3160,7 @@ const S = {
 
   // The context thread: one card's whole story, oldest first.
   async function openContext(id) {
+    S.contextId = id;
     const token = ++S.contextToken,
       d = $('#context'),
       list = $('#context-list'),
@@ -3234,9 +3279,10 @@ const S = {
       focus(bs.length - 1);
       return true;
     }
-    if (/^[1-3]$/.test(e.key)) {
+    const n = laterChoices().findIndex((x) => x.key === e.key);
+    if (n >= 0) {
       e.preventDefault();
-      bs[Number(e.key) - 1]?.click();
+      bs[n]?.click();
       return true;
     }
     return false;
@@ -3244,11 +3290,30 @@ const S = {
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
     const t = e.target,
-      peek = $('#peek');
-    if (peek.open) {
-      if (e.key === 'f' && !textField(t)) {
+      // Peek, History and Context take the keys of their Emacs buffers. Context opens above History.
+      view = ['context', 'history', 'peek'].map((id) => $(`#${id}`)).find((d) => d?.open);
+    if (view) {
+      if (textField(t)) return;
+      const shown = current(),
+        row = t.closest?.('.history-item'),
+        fn =
+          {
+            peek: {
+              f: togglePeekMode,
+              g: () => void refreshPeek(),
+              s: () => $('#peek-input').focus(),
+              J: () => shown && paneOf(shown) === S.peekPane && ACTIONS.jump.run(shown),
+            },
+            history: {
+              g: openHistory,
+              t: () => row && $('.h-context', row)?.click(),
+              r: () => row && $('.h-reload', row)?.click(),
+            },
+            context: { g: () => openContext(S.contextId) },
+          }[view.id][e.key] || (e.key === 'q' && (() => view.close()));
+      if (fn) {
         e.preventDefault();
-        togglePeekMode();
+        fn();
       }
       return;
     }
@@ -3286,7 +3351,8 @@ const S = {
     if (key === '?') return run(() => showDialog($('#keys')));
     if (key === 'h') return run(openHistory);
     if (key === 'c') return run(openCompose);
-    if (key === 'g') return run(() => openSheet(null, 'goal', S.composeTask));
+    if (key === 'S') return run(openSettings);
+    if (key === 'g') return run(retryNow);
     const c = current();
     if (!c) return;
     if (/^[1-9]$/.test(key)) return run(() => pick(c, Number(key) - 1));
@@ -3423,14 +3489,18 @@ const S = {
   $('#compose-form').addEventListener('submit', submitSheet);
   $('#compose-prompt').addEventListener('input', (e) => {
     const c = sheetCard();
-    if (!c) return;
+    if (!c) {
+      S.composeNote = e.target.value;
+      return;
+    }
     const d = draft(c);
     d.note = e.target.value;
     // The card's Note field shows the same note.
     if (S.shownId === c.id && $('#note')) $('#note').value = oneLine(d.note);
   });
   wireSheetImage();
-  // Mode and Task are radio groups. A click or an arrow key picks a button.
+  // Mode and Task are radio groups. A click, an arrow key or the key each button shows picks it. A
+  // picked key hands focus back to the sheet's options, the way an Emacs choice prompt does.
   for (const [group, pick] of [
     [$('#compose-mode'), (value) => setSheetMode(value)],
     [$('#compose-task'), (value) => setSheetTask(value)],
@@ -3439,10 +3509,18 @@ const S = {
       const b = e.target.closest('[data-value]');
       if (b) pick(b.dataset.value);
     });
+    group.addEventListener('focusin', () => segmentKeys(group));
     group.addEventListener('keydown', (e) => {
       const bs = [...group.children].filter((b) => !b.hidden),
         i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),
-        step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+        step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key],
+        keyed = !e.ctrlKey && !e.metaKey && !e.altKey && segmentKeys(group).get(e.key);
+      if (keyed) {
+        e.preventDefault();
+        pick(keyed.dataset.value);
+        $('#compose-form').focus();
+        return;
+      }
       if (!step) return;
       e.preventDefault();
       const next = bs[(i + step + bs.length) % bs.length];
@@ -3450,8 +3528,25 @@ const S = {
       next.focus();
     });
   }
+  // Outside a text field the sheet takes the option keys of the Emacs launch sheet. m and T move
+  // into Mode and Task, the picker keys open their picker, a attaches an image and D drops it.
+  // q closes the sheet and Tab moves from the options into the text. Ctrl+Enter starts the
+  // session. Enter alone never does, as RET never launches in Emacs.
+  const SHEET_KEYS = {
+    m: 'compose-mode',
+    T: 'compose-task',
+    d: 'compose-cwd',
+    s: 'compose-session',
+    e: 'compose-engine',
+    M: 'compose-model',
+    t: 'compose-thinking',
+    x: 'compose-executor',
+    X: 'compose-executor-effort',
+    a: 'compose-image-add',
+    D: 'compose-image-remove',
+  };
   $('#compose').addEventListener('keydown', (e) => {
-    if (e.isComposing) return;
+    if (e.isComposing || e.defaultPrevented) return;
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       $('#compose-form').requestSubmit();
@@ -3459,18 +3554,20 @@ const S = {
     }
     if (e.ctrlKey || e.metaKey || e.altKey || textField(e.target)) return;
     if (e.target.closest?.('.picker-field')) return;
-    if (e.key === 'Enter') {
-      if (e.target.closest?.('button, a, select')) return;
+    const form = $('#compose-form'),
+      id = SHEET_KEYS[e.key],
+      field = id && $(`#${id}`);
+    if (e.key === 'Tab' && !e.shiftKey && e.target === form) {
       e.preventDefault();
-      $('#compose-form').requestSubmit();
-      return;
-    }
-    const mode = { g: 'goal', p: 'plan', P: 'plan-into' }[e.key],
-      task = { i: 'investigate', F: 'fix', A: 'act', V: 'verify', S: 'simplify' }[e.key];
-    if (mode || task) {
+      $('#compose-prompt').focus();
+    } else if (e.key === 'q') {
       e.preventDefault();
-      if (mode) setSheetMode(mode);
-      if (task) setSheetTask(task);
+      $('#compose').close();
+    } else if (field && !field.closest('[hidden]')) {
+      e.preventDefault();
+      if (PICKERS[id]) keyPicker(id, form);
+      else if (field.matches('[role="radiogroup"]')) field.querySelector('[aria-checked="true"]').focus();
+      else field.click();
     }
   });
   for (const id of Object.keys(PICKERS)) {

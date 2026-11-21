@@ -37,7 +37,7 @@ const modes = (list) =>
   }));
 const checked = (group) => group.find((button) => button.getAttribute('aria-checked') === 'true').dataset.value;
 
-test('i, A, p, P and g open the session sheet with matching modes and tasks while v keeps Peek', () => {
+test('d, A, p, P and c open the session sheet with matching modes and tasks while g refreshes, S opens Settings and v keeps Peek', () => {
   const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests', source: { pane: '%7' } },
     modeButtons = modes(['goal', 'plan', 'plan-into']),
     taskButtons = modes(['investigate', 'fix', 'act', 'verify', 'simplify']),
@@ -51,6 +51,7 @@ test('i, A, p, P and g open the session sheet with matching modes and tasks whil
       '#compose-hint': { textContent: '' },
       '#compose-prompt': { value: '', focus() {} },
       '#compose-prompt-label': { textContent: '' },
+      '#compose-form': { focus() {} },
       '#compose-context': { hidden: true },
       '#compose-context-title': { textContent: '' },
       '#compose-context-source': { textContent: '' },
@@ -75,6 +76,7 @@ test('i, A, p, P and g open the session sheet with matching modes and tasks whil
       sheetEngine: '',
       composeMode: 'goal',
       composeTask: 'fix',
+      composeNote: '',
       drafts: new Map([[card.id, { dispatchMode: 'goal', dispatchTask: 'investigate', note: 'Review the plan', dispatchAnswers: null }]]),
     },
     context = vm.createContext({
@@ -109,9 +111,11 @@ test('i, A, p, P and g open the session sheet with matching modes and tasks whil
       openPeek: (current) => actions.push(['peek', current.id]),
       pick: (current, index) => actions.push(['pick', current.id, index]),
       primary: (current) => actions.push(['primary', current.id]),
+      retryNow: () => actions.push(['refresh']),
+      openSettings: () => actions.push(['settings']),
     });
   vm.runInContext(
-    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${keydownSource}`,
+    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${functionSource('openCompose')}\n${keydownSource}`,
     context,
   );
 
@@ -133,7 +137,7 @@ test('i, A, p, P and g open the session sheet with matching modes and tasks whil
   const selected = () => checked(modeButtons);
   const task = () => checked(taskButtons);
 
-  press('i');
+  press('d');
   assert.equal(dialog.open, true);
   assert.equal(state.sheetCardId, card.id);
   assert.equal(selected(), 'goal');
@@ -163,8 +167,8 @@ test('i, A, p, P and g open the session sheet with matching modes and tasks whil
   assert.equal(task(), 'act');
   assert.equal(elements['#compose-models'].hidden, true);
   dialog.open = false;
-  // g has no card to dispatch, so it opens a plain session on Goal with the remembered task.
-  press('g');
+  // c opens a plain session on the remembered mode and task.
+  press('c');
   assert.equal(dialog.open, true);
   assert.equal(state.sheetCardId, null);
   assert.equal(elements['#compose-prompt-label'].textContent, 'What should the session do?');
@@ -172,10 +176,14 @@ test('i, A, p, P and g open the session sheet with matching modes and tasks whil
   assert.equal(selected(), 'goal');
   assert.equal(task(), 'fix');
   dialog.open = false;
+  press('g');
+  press('S');
   press('v');
   press('2');
   press('Enter');
   assert.deepEqual(actions, [
+    ['refresh'],
+    ['settings'],
     ['peek', card.id],
     ['pick', card.id, 1],
     ['primary', card.id],
@@ -363,6 +371,7 @@ test('finding options open the session sheet and answer with its choices', async
       '#compose-models': { hidden: true },
       '#compose-prompt': { value: '', focus() {} },
       '#compose-prompt-label': { textContent: '' },
+      '#compose-form': { focus() {} },
       '#compose-context': { hidden: true },
       '#compose-context-title': { textContent: '' },
       '#compose-context-source': { textContent: '' },

@@ -61,6 +61,8 @@ const calls = [],
     jump: (card) => calls.push(['jump', card.id]),
     openDsh: () => calls.push(['open dsh']),
     toggleOther: (card) => calls.push(['other', card.id]),
+    copyReport: (card) => calls.push(['copy', card.id]),
+    keyPicker: (id) => calls.push(['picker', id]),
     pick: (card, index) => calls.push(['pick', card.id, index]),
     primaryStep: (card) => calls.push(['step', card.id]),
     recIndex: () => 0,
@@ -112,7 +114,7 @@ const SHAPES = {
   'dsh plan': { id: 'dsh-plan', kind: 'plan', engine: 'dsh', source: dsh('c'), allow_other: true, options },
   finding: { id: 'finding', kind: 'finding', source: { uri: 'urn:rule' }, options },
   'finding with questions': { id: 'finding-questions', kind: 'finding', source: { uri: 'urn:rule' }, allow_other: true, options, questions },
-  reply: { id: 'done:%5:entry', kind: 'info', source: tmux('%5') },
+  reply: { id: 'done:%5:entry', kind: 'info', source: tmux('%5'), body: 'Shipped the fix.' },
   'report with an open step': { id: 'done:%6:entry', kind: 'info', source: tmux('%6'), star: step },
   'reply without a final report': { id: 'done:%7:entry', kind: 'info', source: tmux('%7'), report_due: true },
   'ended session': { id: 'exited:%8:-', kind: 'info', source: tmux('%8') },
@@ -126,9 +128,9 @@ const SHAPES = {
 // The buttons each card shows, in order, each with its key. `*` marks the primary, which Enter
 // runs. A card without one answers Enter with its recommended option.
 const REST = ['Skip s', 'Context t', 'Later l'],
-  PROMPT = ['Dispatch i', 'Acknowledge & close x', ...REST],
+  PROMPT = ['Dispatch d', 'Acknowledge & close C', ...REST],
   REPLY = ['Acknowledge a', ...REST],
-  STEP = ['*Plan next step p', 'Dispatch i', 'Do next step d'];
+  STEP = ['*Plan next step p', 'Dispatch d', 'Do next step D'];
 const DOCKS = {
   ask: [...PROMPT, 'Peek v', 'Jump J'],
   'ask with questions': [...PROMPT, 'Peek v', 'Jump J'],
@@ -137,32 +139,37 @@ const DOCKS = {
   'read-only dsh ask': ['*Peek v', ...PROMPT, 'Open J'],
   plan: [...PROMPT, 'Peek v', 'Jump J'],
   'dsh plan': [...PROMPT, 'Peek v', 'Open J'],
-  finding: ['Dispatch i', ...REST],
-  'finding with questions': ['Dispatch i', ...REST],
-  reply: ['*Acknowledge & close x', 'Dispatch i', ...REPLY, 'Peek v', 'Jump J'],
-  'report with an open step': [...STEP, 'Acknowledge & close x', ...REPLY, 'Peek v', 'Jump J'],
-  'reply without a final report': ['*Acknowledge & close x', 'Dispatch i', 'Request final report r', ...REPLY, 'Peek v', 'Jump J'],
-  'ended session': ['*Acknowledge & close x', 'Dispatch i', 'Restore run R', ...REPLY, 'Peek v', 'Jump J'],
-  'dsh reply': ['*Acknowledge & close x', 'Dispatch i', ...REPLY, 'Peek v', 'Open J'],
-  'dsh report with an open step': [...STEP, 'Acknowledge & close x', ...REPLY, 'Peek v', 'Open J'],
-  'dsh reply without a final report': ['*Acknowledge & close x', 'Dispatch i', 'Request final report r', ...REPLY, 'Peek v', 'Open J'],
-  notice: ['*Acknowledge a', 'Dispatch i', ...REST],
+  finding: ['Dispatch d', ...REST],
+  'finding with questions': ['Dispatch d', ...REST],
+  reply: ['*Acknowledge & close C', 'Dispatch d', ...REPLY, 'Peek v', 'Jump J'],
+  'report with an open step': [...STEP, 'Acknowledge & close C', ...REPLY, 'Peek v', 'Jump J'],
+  'reply without a final report': ['*Acknowledge & close C', 'Dispatch d', 'Request final report r', ...REPLY, 'Peek v', 'Jump J'],
+  'ended session': ['*Acknowledge & close C', 'Dispatch d', 'Restore run R', ...REPLY, 'Peek v', 'Jump J'],
+  'dsh reply': ['*Acknowledge & close C', 'Dispatch d', ...REPLY, 'Peek v', 'Open J'],
+  'dsh report with an open step': [...STEP, 'Acknowledge & close C', ...REPLY, 'Peek v', 'Open J'],
+  'dsh reply without a final report': ['*Acknowledge & close C', 'Dispatch d', 'Request final report r', ...REPLY, 'Peek v', 'Open J'],
+  notice: ['*Acknowledge a', 'Dispatch d', ...REST],
   'notice with an open step': [...STEP, ...REPLY],
 };
 // Keys that work without a button. Every card takes the other Dispatch modes and the Note
-// field. Other works only where the card takes a custom answer.
-const KEYS_WITHOUT_BUTTON = ['p', 'F', 'A', 'P', 'n'],
-  TAKES_OTHER = ['ask', 'ask with questions', 'dsh ask', 'plan', 'dsh plan', 'finding with questions'];
+// field. The rest work only on the shapes listed beside them.
+const KEYS_WITHOUT_BUTTON = ['p', 'f', 'A', 'P', 'n'],
+  SHAPE_KEYS = {
+    o: ['ask', 'ask with questions', 'dsh ask', 'plan', 'dsh plan', 'finding with questions'],
+    w: ['reply'],
+    e: ['plan', 'dsh plan'],
+    E: ['dsh plan'],
+  };
 
 // Pinned on purpose, because a key that moves makes the user relearn it.
 const KEYS = {
   plan: 'p',
-  dispatch: 'i',
-  fix: 'F',
+  dispatch: 'd',
+  fix: 'f',
   act: 'A',
   planInto: 'P',
-  doNext: 'd',
-  close: 'x',
+  doNext: 'D',
+  close: 'C',
   request: 'r',
   restore: 'R',
   ack: 'a',
@@ -173,6 +180,9 @@ const KEYS = {
   jump: 'J',
   note: 'n',
   other: 'o',
+  copy: 'w',
+  executor: 'e',
+  effort: 'E',
 };
 
 test('every action keeps one key', () => {
@@ -211,7 +221,7 @@ test('a key does nothing on a card that does not offer its action', () => {
     const live = new Set([
       ...buttonsOf(card).map((item) => item.key),
       ...KEYS_WITHOUT_BUTTON,
-      ...(TAKES_OTHER.includes(name) ? ['o'] : []),
+      ...Object.keys(SHAPE_KEYS).filter((key) => SHAPE_KEYS[key].includes(name)),
     ]);
     for (const key of Object.values(KEYS))
       assert.equal(press(card, key).length, live.has(key) ? 1 : 0, `${name}: ${key} ${live.has(key) ? 'runs' : 'is inert'}`);
@@ -231,9 +241,9 @@ test('Enter runs the primary button, and the recommended option on a card withou
 test('each key keeps one meaning on every card', () => {
   const { ask, finding, reply, notice } = SHAPES,
     report = SHAPES['report with an open step'];
-  assert.deepEqual(press(reply, 'x'), ['close done:%5:entry']);
-  assert.deepEqual(press(ask, 'x'), ['close ask'], 'x closes the session of a prompt too');
-  assert.deepEqual(press(SHAPES['dsh reply'], 'x'), ['close done:dsh:d:1'], 'x closes a dsh session');
+  assert.deepEqual(press(reply, 'C'), ['close done:%5:entry']);
+  assert.deepEqual(press(ask, 'C'), ['close ask'], 'C closes the session of a prompt too');
+  assert.deepEqual(press(SHAPES['dsh reply'], 'C'), ['close done:dsh:d:1'], 'C closes a dsh session');
   assert.deepEqual(press(reply, 'a'), ['answer done:%5:entry']);
   assert.deepEqual(press(notice, 'a'), ['answer notice']);
   assert.deepEqual(press(SHAPES['reply without a final report'], 'r'), ['report done:%7:entry']);
@@ -247,18 +257,21 @@ test('each key keeps one meaning on every card', () => {
   assert.deepEqual(press(ask, 'J'), ['jump ask']);
   assert.deepEqual(press(SHAPES['dsh ask'], 'J'), ['open dsh'], 'J opens dsh for a dsh card');
   // Dispatch opens in the card's session. A report's open step starts a session of its own.
-  const launches = { i: ['goal', 'investigate'], F: ['goal', 'fix'], A: ['goal', 'act'], p: ['plan', 'act'], P: ['plan-into', 'act'] };
+  const launches = { d: ['goal', 'investigate'], f: ['goal', 'fix'], A: ['goal', 'act'], p: ['plan', 'act'], P: ['plan-into', 'act'] };
   for (const [key, [mode, task]] of Object.entries(launches))
     assert.deepEqual(press(finding, key), [`dispatch finding ${mode} ${task} card session`]);
   assert.deepEqual(press(report, 'p'), ['dispatch done:%6:entry plan act own session']);
-  assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry goal act own session']);
-  assert.deepEqual(press(report, 'i'), ['dispatch done:%6:entry goal investigate card session']);
+  assert.deepEqual(press(report, 'D'), ['dispatch done:%6:entry goal act own session']);
+  assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry goal investigate card session']);
+  assert.deepEqual(press(reply, 'w'), ['copy done:%5:entry']);
+  assert.deepEqual(press(SHAPES.plan, 'e'), ['picker plan-executor']);
+  assert.deepEqual(press(SHAPES['dsh plan'], 'E'), ['picker plan-executor-effort']);
 });
 
 test('Dispatch advertises the mode keys that have no button of their own', () => {
   const shortcuts = (card) => buttonsOf(card).find((item) => item.label === 'Dispatch').shortcuts;
-  assert.equal(shortcuts(SHAPES.finding), 'i F A p P');
-  assert.equal(shortcuts(SHAPES['report with an open step']), 'i F A P', 'p belongs to Plan next step there');
+  assert.equal(shortcuts(SHAPES.finding), 'd f A p P');
+  assert.equal(shortcuts(SHAPES['report with an open step']), 'd f A P', 'p belongs to Plan next step there');
 });
 
 test('an action announces the same result on every kind of card', () => {

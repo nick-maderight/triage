@@ -147,7 +147,8 @@ button:disabled {
   outline-offset: 2px;
 }
 main:focus-visible,
-.card:focus-visible {
+.card:focus-visible,
+#compose-form:focus-visible {
   outline: none;
 }
 [hidden] {
@@ -1447,6 +1448,17 @@ dialog.modal:has(.compose) {
 }
 .seg:hover:not([aria-checked='true']) {
   color: var(--fg);
+}
+/* The session sheet prints each option's key, as the Emacs launch sheet does. Mode and Task
+   show their buttons' keys only while the group holds focus. */
+:is(.compose label, #compose-mode-label, #compose-task-label, .seg) > .hint {
+  height: 18px;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 0 4px;
+}
+.segmented:not(:focus-within) .hint {
+  display: none;
 }
 .mode-help {
   color: var(--muted);

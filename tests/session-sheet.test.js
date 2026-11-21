@@ -41,6 +41,7 @@ function sheet(cards, daemon = 'omp') {
       '#note': { value: '' },
       '#compose-prompt': { value: '', focus() {}, addEventListener: (type, listener) => (listeners[type] = listener) },
       '#compose-prompt-label': { textContent: '' },
+      '#compose-form': { focus() {} },
       '#compose-hint': { textContent: '' },
       '#compose-start': { disabled: false },
       '#compose-context': { hidden: true },
@@ -76,6 +77,7 @@ function sheet(cards, daemon = 'omp') {
       sheetEngine: '',
       composeMode: 'goal',
       composeTask: 'fix',
+      composeNote: '',
       pending: null,
       remoteSwapUntil: 0,
       inflight: new Set(),
@@ -189,6 +191,23 @@ test('a card opens the sheet with its context and dispatches in a new window', a
   ui.state.cards.push(report);
   ui.context.openSheet(report, 'goal', 'investigate');
   assert.equal((await ui.launch()).body.new_window, false);
+});
+
+// A New session sheet keeps its text when it closes, as the Emacs sheet does. A card's sheet in
+// between shows the card's note, and a started session leaves no text behind.
+test('a closed New session sheet keeps its text until a session starts', async () => {
+  const ui = sheet([report]);
+  ui.context.openSheet(null, 'goal', 'fix');
+  ui.type('Check the backups');
+  ui.elements['#compose'].close();
+  ui.context.openSheet(report, 'goal', 'act');
+  assert.equal(ui.elements['#compose-prompt'].value, '', 'the card sheet shows the card note');
+  ui.elements['#compose'].close();
+  ui.context.openSheet(null, 'goal', 'fix');
+  assert.equal(ui.elements['#compose-prompt'].value, 'Check the backups');
+  await ui.launch();
+  ui.context.openSheet(null, 'goal', 'fix');
+  assert.equal(ui.elements['#compose-prompt'].value, '', 'a started session leaves no text');
 });
 
 // A task only says what the session is asked to do. It never fills the Instruction, so an empty
