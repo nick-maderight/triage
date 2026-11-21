@@ -58,7 +58,7 @@ test('finding question review allows per-question Other and opens Act dispatch',
       mdInline: (text) => text,
       ACTIONS: { other: { key: 'o' } },
       noteValue: () => null,
-      openDispatch: (...args) => calls.push(args),
+      openSheet: (...args) => calls.push(args),
       goStep() {},
     });
   vm.runInContext(
@@ -235,29 +235,32 @@ test('finding answer dispatch forwards answers, image, mode and plan-into effort
   const card = { id: 'finding-dispatch', kind: 'finding' },
     answers = [{ option: 0 }, { text: 'Use a safer key' }],
     elements = {
-      '#dispatch-start': { disabled: false },
-      '#dispatch-hint': { textContent: '' },
-      '#dispatch-note': { value: 'Confirm rollout' },
-      '#dispatch-model': { value: 'provider/planner' },
-      '#dispatch-thinking': { value: 'high' },
-      '#dispatch-engine': { value: 'omp' },
-      '#dispatch-executor': { value: '@fast' },
-      '#dispatch-executor-effort': { value: 'max' },
-      '#dispatch': { close() {} },
+      '#compose-start': { disabled: false },
+      '#compose-hint': { textContent: '' },
+      '#compose-prompt': { value: 'Confirm rollout' },
+      '#compose-model': { value: 'provider/planner' },
+      '#compose-thinking': { value: 'high' },
+      '#compose-engine': { value: 'omp' },
+      '#compose-executor': { value: '@fast' },
+      '#compose-executor-effort': { value: 'max' },
+      '#compose': { close() {} },
     },
-    draft = { dispatchMode: 'plan-into', dispatchAnswers: answers, dispatchOption: null },
+    draft = { dispatchMode: 'plan-into', dispatchAnswers: answers, dispatchOption: null, note: 'Confirm rollout' },
     requests = [],
     context = vm.createContext({
-      S: { cards: [card], dispatchId: card.id, drafts: new Map([[card.id, draft]]), pending: null, remoteSwapUntil: 0 },
+      S: { cards: [card], sheetCardId: card.id, drafts: new Map([[card.id, draft]]), pending: null, remoteSwapUntil: 0 },
       $: (selector) => elements[selector],
       draft: () => draft,
       noteValue: () => draft.note.trim() || null,
       sheetImageBody: async () => ({ media_type: 'image/png', data: 'encoded' }),
       act: async (...args) => { requests.push(args); return true; },
     });
-  vm.runInContext(`${functionSource('submitDispatch', true)}\nglobalThis.submitDispatch = submitDispatch;`, context);
+  vm.runInContext(
+    `${functionSource('sheetCard')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
+    context,
+  );
 
-  await context.submitDispatch({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests.length, 1);
   assert.equal(requests[0][0], card);
   assert.equal(requests[0][1], 'answer');

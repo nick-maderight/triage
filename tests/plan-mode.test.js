@@ -22,32 +22,41 @@ const tableStart = app.indexOf('  const answerable ='),
 assert.ok(tableStart >= 0 && tableEnd > tableStart, 'app.js defines the action table');
 const tableSources = app.slice(tableStart, tableEnd);
 
-test('i, A, p and P open dispatch with matching modes while v keeps Peek', () => {
+const modes = (list) =>
+  list.map((mode) => ({
+    dataset: { mode },
+    hidden: false,
+    attrs: { 'aria-checked': String(mode === list[0]) },
+    tabIndex: mode === list[0] ? 0 : -1,
+    setAttribute(name, value) {
+      this.attrs[name] = value;
+    },
+    getAttribute(name) {
+      return this.attrs[name];
+    },
+  }));
+
+test('i, A, p, P and g open the session sheet with matching modes while v keeps Peek', () => {
   const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests', source: { pane: '%7' } },
-    buttons = ['investigate', 'act', 'plan', 'plan-into'].map((mode) => ({
-      dataset: { mode },
-      attrs: { 'aria-checked': String(mode === 'investigate') },
-      tabIndex: mode === 'investigate' ? 0 : -1,
-      setAttribute(name, value) {
-        this.attrs[name] = value;
-      },
-      getAttribute(name) {
-        return this.attrs[name];
-      },
-    })),
+    buttons = modes(['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into']),
     dialog = { open: false },
     elements = {
       '#peek': { open: false },
-      '#dispatch-mode': { children: buttons },
-      '#dispatch-mode-help': { textContent: '' },
-      '#dispatch-hint': { textContent: '' },
-      '#dispatch-mode-investigate': { hidden: false },
-      '#dispatch-models': { hidden: true },
-      '#dispatch-note': { value: '', focus() {} },
-      '#dispatch-engine': { value: '' },
-      '#dispatch-executor-effort': { value: 'max' },
-      '#dispatch-start': { disabled: false },
-      '#dispatch': dialog,
+      '#compose-mode': { children: buttons },
+      '#compose-mode-help': { textContent: '' },
+      '#compose-hint': { textContent: '' },
+      '#compose-prompt': { value: '', focus() {} },
+      '#compose-prompt-label': { textContent: '' },
+      '#compose-context': { hidden: true },
+      '#compose-context-title': { textContent: '' },
+      '#compose-context-source': { textContent: '' },
+      '#compose-target': { hidden: false },
+      '#compose-session-pair': { hidden: false },
+      '#compose-models': { hidden: true },
+      '#compose-engine': { value: '' },
+      '#compose-executor-effort': { value: 'max' },
+      '#compose-start': { disabled: false },
+      '#compose': dialog,
     },
     listeners = {},
     actions = [],
@@ -58,18 +67,23 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       remoteSwapUntil: 0,
       laterOpen: false,
       countsExpanded: false,
-      dispatchId: card.id,
+      sheetCardId: null,
+      sheetEngine: '',
       composeMode: 'goal',
       drafts: new Map([[card.id, { dispatchMode: 'investigate', note: 'Review the plan', dispatchAnswers: null }]]),
     },
     context = vm.createContext({
       S: state,
-      PICKERS: { 'dispatch-engine': { fallback: 'omp' }, 'dispatch-model': { options: [] } },
+      PICKERS: { 'compose-engine': { fallback: 'omp' }, 'compose-model': { options: [] } },
       loadModels() {},
+      loadComposeSessions() {},
       clearModels() {},
       setPickerValue: (id, value) => {
         elements[`#${id}`].value = value;
       },
+      titleOf: (current) => current.title,
+      sourceName: () => 'unknown',
+      dshOf: () => null,
       enc: encodeURIComponent,
       Date: { now: () => 1000 },
       document: {
@@ -92,7 +106,7 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
       primary: (current) => actions.push(['primary', current.id]),
     });
   vm.runInContext(
-    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${keydownSource}`,
+    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetModes')}\n${functionSource('setSheetMode')}\n${functionSource('openSheet')}\n${keydownSource}`,
     context,
   );
 
@@ -115,26 +129,35 @@ test('i, A, p and P open dispatch with matching modes while v keeps Peek', () =>
 
   press('i');
   assert.equal(dialog.open, true);
+  assert.equal(state.sheetCardId, card.id);
   assert.equal(selected(), 'investigate');
   dialog.open = false;
   press('A');
   assert.equal(selected(), 'act');
-  assert.equal(elements['#dispatch-models'].hidden, true);
+  assert.equal(elements['#compose-models'].hidden, true);
   dialog.open = false;
   press('p');
   assert.equal(selected(), 'plan');
   assert.equal(state.drafts.get(card.id).dispatchMode, 'plan');
-  assert.match(elements['#dispatch-mode-help'].textContent, /plan/i);
+  assert.match(elements['#compose-mode-help'].textContent, /plan/i);
   dialog.open = false;
   press('P');
   assert.equal(selected(), 'plan-into');
   assert.equal(state.drafts.get(card.id).dispatchMode, 'plan-into');
-  assert.equal(elements['#dispatch-models'].hidden, false);
-  assert.match(elements['#dispatch-mode-help'].textContent, /without review/);
+  assert.equal(elements['#compose-models'].hidden, false);
+  assert.match(elements['#compose-mode-help'].textContent, /without review/);
   dialog.open = false;
   press('A');
   assert.equal(selected(), 'act');
-  assert.equal(elements['#dispatch-models'].hidden, true);
+  assert.equal(elements['#compose-models'].hidden, true);
+  dialog.open = false;
+  // g has no card to dispatch, so it opens a plain session in Goal mode.
+  press('g');
+  assert.equal(dialog.open, true);
+  assert.equal(state.sheetCardId, null);
+  assert.equal(elements['#compose-prompt-label'].textContent, 'What should the session do?');
+  assert.equal(elements['#compose-target'].hidden, false);
+  assert.equal(selected(), 'goal');
   dialog.open = false;
   press('v');
   press('2');
@@ -156,7 +179,7 @@ test('a acknowledges the shown card even when a button holds focus', () => {
       remoteSwapUntil: 0,
       laterOpen: false,
       countsExpanded: false,
-      dispatchId: null,
+      sheetCardId: null,
       composeMode: 'goal',
       drafts: new Map(),
     };
@@ -177,7 +200,7 @@ test('a acknowledges the shown card even when a button holds focus', () => {
       enc: encodeURIComponent,
       noteValue: () => null,
       act: (current, _verb, _body, control) => actions.push([control, current.id]),
-      openDispatch: (current, mode, { newWindow = false } = {}) =>
+      openSheet: (current, mode, { newWindow = false } = {}) =>
         actions.push(['dispatch', current.id, mode, newWindow]),
     });
   vm.runInContext(`${tableSources}\n${keydownSource}`, context);
@@ -216,7 +239,7 @@ test('a acknowledges the shown card even when a button holds focus', () => {
   card = { id: 'ask-card', kind: 'ask', title: 'Pick one', options: [{ label: 'Red' }] };
   press('a', false);
   assert.deepEqual(actions.at(-1), ['ack', 'info-card'], 'a does nothing on an ask card');
-  // The same `p` plans a report's open step in its own session and opens Dispatch with Plan on
+  // The same `p` plans a report's open step in its own session and opens the sheet with Plan on
   // any other card.
   card = { id: 'report-card', kind: 'info', star: { action: 'Fix it' } };
   press('p');
@@ -226,16 +249,17 @@ test('a acknowledges the shown card even when a button holds focus', () => {
   assert.deepEqual(actions.at(-1), ['dispatch', 'plan-card', 'plan', false]);
 });
 
-test('dispatch sheet posts model and thinking for every mode', async () => {
+test('the session sheet posts model and thinking for every card mode', async () => {
   const card = { id: 'launch-card', kind: 'finding', title: 'Launch work' },
+    planInto = { id: 'plan-into-card', kind: 'finding', title: 'Launch work' },
     state = {
-      cards: [card],
-      counts: { finding: 1 },
+      cards: [card, planInto],
+      counts: { finding: 2 },
       drafts: new Map([
         [card.id, { dispatchMode: 'plan', note: '' }],
-        ['plan-into-card', { dispatchMode: 'plan-into', note: '' }],
+        [planInto.id, { dispatchMode: 'plan-into', note: '' }],
       ]),
-      dispatchId: card.id,
+      sheetCardId: card.id,
       pending: null,
       remoteSwapUntil: 0,
       inflight: new Set(),
@@ -249,44 +273,36 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
     hint = { textContent: '' },
     dialog = { close() {} },
     elements = {
-      '#dispatch-start': start,
-      '#dispatch-hint': hint,
-      '#dispatch-note': { value: 'Make a plan' },
-      '#dispatch-model': { value: 'provider/planner' },
-      '#dispatch-engine': { value: 'dsh' },
-      '#dispatch-thinking': { value: 'high' },
-      '#dispatch-executor': { value: '' },
-      '#dispatch-executor-effort': { value: '' },
-      '#dispatch': dialog,
+      '#compose-start': start,
+      '#compose-hint': hint,
+      '#compose-prompt': { value: 'Make a plan' },
+      '#compose-model': { value: 'provider/planner' },
+      '#compose-engine': { value: 'dsh' },
+      '#compose-thinking': { value: 'high' },
+      '#compose-executor': { value: '' },
+      '#compose-executor-effort': { value: '' },
+      '#compose': dialog,
     },
     context = vm.createContext({
       S: state,
-      Date: { now: () => 1000 },
-      window: { matchMedia: () => ({ matches: true }) },
       $: (selector) => elements[selector] || null,
       draft: (current) => state.drafts.get(current.id),
       noteValue: (current) => state.drafts.get(current.id).note.trim() || null,
-      snapshot: () => ({}),
-      render() {},
-      enc: encodeURIComponent,
-      fetch: async (url, init) => {
-        requests.push({ url, init });
-        return { ok: true, json: async () => ({ pane: '%42' }) };
-      },
       sheetImageBody: async () => null,
-      resultMessage: () => 'Planning · Launch work',
-      toast() {},
-      refresh() {},
+      act: async (current, verb, body) => {
+        requests.push({ url: `/v1/cards/${current.id}/${verb}`, body });
+        return true;
+      },
     });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('act', true)}\n${functionSource('settle', true)}\n${functionSource('submitDispatch', true)}\nglobalThis.submitDispatch = submitDispatch;`,
+    `${functionSource('sheetCard')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
 
-  await context.submitDispatch({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, '/v1/cards/launch-card/dispatch');
-  assert.deepEqual(JSON.parse(requests[0].init.body), {
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
     mode: 'plan',
     note: 'Make a plan',
     engine: 'dsh',
@@ -296,13 +312,11 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
   });
 
   requests.length = 0;
-  card.id = 'plan-into-card';
-  state.dispatchId = 'plan-into-card';
-  context.S.cards = [card];
-  elements['#dispatch-executor-effort'].value = 'max';
-  await context.submitDispatch({ preventDefault() {} });
+  state.sheetCardId = planInto.id;
+  elements['#compose-executor-effort'].value = 'max';
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests.length, 1);
-  assert.deepEqual(JSON.parse(requests[0].init.body), {
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
     mode: 'plan-into',
     engine: 'dsh',
     note: 'Make a plan',
@@ -314,40 +328,39 @@ test('dispatch sheet posts model and thinking for every mode', async () => {
   });
 });
 
-test('finding options open the launch sheet and answer with its choices', async () => {
+test('finding options open the session sheet and answer with its choices', async () => {
   const card = {
       id: 'finding-card', kind: 'finding', options: [
         { label: 'Do as recommended', recommended: true },
         { label: 'Investigate first' },
       ],
     },
-    buttons = ['investigate', 'act', 'plan', 'plan-into'].map((mode) => ({
-      dataset: { mode },
-      attrs: { 'aria-checked': String(mode === 'investigate') },
-      tabIndex: mode === 'investigate' ? 0 : -1,
-      setAttribute(name, value) { this.attrs[name] = value; },
-      getAttribute(name) { return this.attrs[name]; },
-    })),
+    buttons = modes(['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into']),
     dialog = { open: false, close() { this.open = false; } },
     start = { disabled: false },
     hint = { textContent: '' },
     elements = {
-      '#dispatch-mode': { children: buttons },
-      '#dispatch-mode-investigate': { hidden: false },
-      '#dispatch-mode-help': { textContent: '' },
-      '#dispatch-models': { hidden: true },
-      '#dispatch-note': { value: '', focus() {} },
-      '#dispatch-model': { value: 'provider/chosen' },
-      '#dispatch-engine': { value: '' },
-      '#dispatch-thinking': { value: 'xhigh' },
-      '#dispatch-executor': { value: 'provider/executor' },
-      '#dispatch-executor-effort': { value: 'max' },
-      '#dispatch-hint': hint,
-      '#dispatch-start': start,
-      '#dispatch': dialog,
+      '#compose-mode': { children: buttons },
+      '#compose-mode-help': { textContent: '' },
+      '#compose-models': { hidden: true },
+      '#compose-prompt': { value: '', focus() {} },
+      '#compose-prompt-label': { textContent: '' },
+      '#compose-context': { hidden: true },
+      '#compose-context-title': { textContent: '' },
+      '#compose-context-source': { textContent: '' },
+      '#compose-target': { hidden: false },
+      '#compose-session-pair': { hidden: false },
+      '#compose-model': { value: 'provider/chosen' },
+      '#compose-engine': { value: '' },
+      '#compose-thinking': { value: 'xhigh' },
+      '#compose-executor': { value: 'provider/executor' },
+      '#compose-executor-effort': { value: 'max' },
+      '#compose-hint': hint,
+      '#compose-start': start,
+      '#compose': dialog,
     },
     state = {
-      cards: [card], counts: { finding: 1 }, drafts: new Map(), dispatchId: null, dispatchEngine: '',
+      cards: [card], counts: { finding: 1 }, drafts: new Map(), sheetCardId: null, sheetEngine: '',
       pending: null, remoteSwapUntil: 0, inflight: new Set(), actionRevision: 0,
       dirty: false, idx: 0, history: { loaded: true, error: null },
     },
@@ -355,8 +368,8 @@ test('finding options open the launch sheet and answer with its choices', async 
     context = vm.createContext({
       S: state,
       PICKERS: {
-        'dispatch-engine': { fallback: 'omp' },
-        'dispatch-model': { options: [{ value: 'provider/chosen' }] },
+        'compose-engine': { fallback: 'omp' },
+        'compose-model': { options: [{ value: 'provider/chosen' }] },
       },
       Date: { now: () => 1000 },
       window: { matchMedia: () => ({ matches: true }) },
@@ -371,6 +384,9 @@ test('finding options open the launch sheet and answer with its choices', async 
       answerable: () => true,
       showDialog: (current) => { current.open = true; },
       loadModels() {},
+      loadComposeSessions() {},
+      titleOf: (current) => current.title,
+      sourceName: () => 'unknown',
       dshOf: () => null,
       setPickerValue() {},
       clearModels() {},
@@ -378,26 +394,26 @@ test('finding options open the launch sheet and answer with its choices', async 
       snapshot: () => ({}),
       render() {},
       enc: encodeURIComponent,
-      fetch: async (url, init) => {
-        requests.push({ url, init });
-        return { ok: true, json: async () => ({ ok: true }) };
-      },
       sheetImageBody: async () => null,
       resultMessage: () => 'Launched Do as recommended · Launch work',
       toast() {},
       refresh() {},
+      act: async (current, verb, body) => {
+        requests.push({ url: `/v1/cards/${current.id}/${verb}`, body });
+        return true;
+      },
     });
   vm.runInContext(
-    `${functionSource('optionMode')}\n${functionSource('selectSegment')}\n${functionSource('setDispatchMode')}\n${functionSource('openDispatch')}\n${functionSource('pick')}\n${functionSource('api', true)}\n${functionSource('act', true)}\n${functionSource('settle', true)}\n${functionSource('submitDispatch', true)}\nglobalThis.pick = pick; globalThis.submitDispatch = submitDispatch;`,
+    `${functionSource('optionMode')}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetModes')}\n${functionSource('setSheetMode')}\n${functionSource('openSheet')}\n${functionSource('pick')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.pick = pick; globalThis.submitSheet = submitSheet;`,
     context,
   );
   context.pick(card, 0);
   assert.equal(dialog.open, true);
   assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'act');
-  assert.equal(elements['#dispatch-note'].value, 'Do the safe thing');
-  await context.submitDispatch({ preventDefault() {} });
+  assert.equal(elements['#compose-prompt'].value, 'Do the safe thing');
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
-  assert.deepEqual(JSON.parse(requests[0].init.body), {
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
     option: 0, text: null, note: 'Do the safe thing', mode: 'act',
     engine: null, model: 'provider/chosen', thinking: 'xhigh',
   });
@@ -407,15 +423,15 @@ test('finding options open the launch sheet and answer with its choices', async 
   state.counts.finding = 1;
   context.pick(card, 1);
   assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'investigate');
-  // Picking another Mode in the sheet changes what Launch sends.
-  context.setDispatchMode('plan');
-  await context.submitDispatch({ preventDefault() {} });
+  // Picking another Mode in the sheet changes what Start sends.
+  context.setSheetMode('plan');
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
-  assert.equal(JSON.parse(requests[0].init.body).mode, 'plan');
-  assert.equal('executor' in JSON.parse(requests[0].init.body), false);
+  assert.equal(requests[0].body.mode, 'plan');
+  assert.equal('executor' in requests[0].body, false);
 });
 
-test('compose posts its mode and the execution model only for Plan into', async () => {
+test('a plain session posts its mode and the execution model only for Plan into', async () => {
   const requests = [],
     prompt = { value: 'Start a session' },
     start = { disabled: false },
@@ -433,7 +449,7 @@ test('compose posts its mode and the execution model only for Plan into', async 
       '#compose': { close() {} },
     },
     context = vm.createContext({
-      S: { composeMode: 'goal' },
+      S: { composeMode: 'goal', sheetCardId: null, cards: [] },
       $: (selector) => elements[selector] || null,
       fetch: async (url, init) => {
         requests.push({ url, init });
@@ -444,18 +460,18 @@ test('compose posts its mode and the execution model only for Plan into', async 
       sheetImageBody: async () => null,
     });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('submitCompose', true)}\nglobalThis.submitCompose = submitCompose;`,
+    `${functionSource('api', true)}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
 
-  await context.submitCompose({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   context.S.composeMode = 'plan';
   prompt.value = 'Start in plan mode';
-  await context.submitCompose({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   context.S.composeMode = 'plan-into';
   prompt.value = 'Start in plan into mode';
   elements['#compose-executor-effort'].value = 'max';
-  await context.submitCompose({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
 
   const bodies = requests.map(({ init }) => JSON.parse(init.body));
   assert.equal(bodies.length, 3);
@@ -479,11 +495,6 @@ test('plan picker loads cycle roles without replacing the general model catalog'
       'compose-thinking': { options: [], fallback: 'Daemon default' },
       'compose-executor': { options: [], fallback: 'omp smol role' },
       'compose-executor-effort': { options: [], fallback: 'Planner effort' },
-      'dispatch-engine': { options: [], fallback: 'Daemon default' },
-      'dispatch-model': { options: [], fallback: 'Daemon default' },
-      'dispatch-thinking': { options: [], fallback: 'Daemon default' },
-      'dispatch-executor': { options: [], fallback: 'omp smol role' },
-      'dispatch-executor-effort': { options: [], fallback: 'Planner effort' },
       'plan-executor': { options: [], fallback: 'current Plan Review role' },
       'plan-executor-effort': { options: [], fallback: 'Planner effort' },
     },
@@ -516,9 +527,9 @@ test('plan picker loads cycle roles without replacing the general model catalog'
   assert.deepEqual(pickers['plan-executor-effort'].options.map((option) => option.value), ['low', 'high']);
 });
 
-test('each sheet lists the models of the engine its Engine field picks', async () => {
+test('the session sheet lists the models of the engine its Engine field picks', async () => {
   const pickers = Object.fromEntries(
-      ['compose', 'dispatch'].flatMap((sheet) =>
+      ['compose'].flatMap((sheet) =>
         ['engine', 'model', 'thinking', 'executor', 'executor-effort'].map((id) => [
           `${sheet}-${id}`,
           { options: [], fallback: '' },
@@ -536,7 +547,7 @@ test('each sheet lists the models of the engine its Engine field picks', async (
     context = vm.createContext({
       PICKERS: pickers,
       modelLoad: 0,
-      $: (selector) => ({ value: selector === '#dispatch-engine' ? 'dsh' : '' }),
+      $: (selector) => ({ value: selector === '#compose-engine' ? 'dsh' : '' }),
       pickerOption: (value, label, hint) => ({ value, label, hint }),
       api: async (path) => {
         requested.push(path);
@@ -552,16 +563,14 @@ test('each sheet lists the models of the engine its Engine field picks', async (
   );
   await context.loadModels();
   assert.deepEqual(requested, ['/v1/models', '/v1/models?engine=dsh']);
-  assert.deepEqual(pickers['compose-model'].options.map((option) => option.value), ['@kimi']);
-  assert.equal(pickers['compose-model'].fallback, '@kimi');
-  assert.deepEqual(pickers['dispatch-model'].options.map((option) => option.value), ['p/m']);
-  assert.equal(pickers['dispatch-model'].fallback, 'dsh default');
-  assert.equal(pickers['dispatch-executor'].fallback, 'planner model');
-  assert.equal(pickers['dispatch-engine'].fallback, 'omp');
-  // The dsh dispatch sheet offers no execution effort until it names an execution model.
+  assert.deepEqual(pickers['compose-model'].options.map((option) => option.value), ['p/m']);
+  assert.equal(pickers['compose-model'].fallback, 'dsh default');
+  assert.equal(pickers['compose-executor'].fallback, 'planner model');
+  assert.equal(pickers['compose-engine'].fallback, 'omp');
+  // The dsh sheet offers no execution effort until it names an execution model.
   const values = (id) => Array.from(pickers[id].options, (option) => option.value);
-  assert.deepEqual(values('dispatch-executor-effort'), []);
-  assert.equal(pickers['dispatch-executor-effort'].fallback, 'needs an execution model');
+  assert.deepEqual(values('compose-executor-effort'), []);
+  assert.equal(pickers['compose-executor-effort'].fallback, 'needs an execution model');
   // The plan card lists the levels of the model it runs on, and names the leftover omp level.
   assert.deepEqual(values('plan-executor-effort'), ['high']);
   assert.equal(pickers['plan-executor-effort'].fallback, 'Role level');
@@ -576,11 +585,6 @@ test('a dsh execution effort waits for its execution model', async () => {
       'compose-thinking': { options: [], fallback: 'Daemon default' },
       'compose-executor': { options: [], fallback: 'omp smol role' },
       'compose-executor-effort': { options: [], fallback: 'Planner effort' },
-      'dispatch-engine': { options: [], fallback: 'Daemon default' },
-      'dispatch-model': { options: [], fallback: 'Daemon default' },
-      'dispatch-thinking': { options: [], fallback: 'Daemon default' },
-      'dispatch-executor': { options: [], fallback: 'omp smol role' },
-      'dispatch-executor-effort': { options: [], fallback: 'Planner effort' },
       'plan-executor': { options: [], fallback: 'current Plan Review role' },
       'plan-executor-effort': { options: [], fallback: 'Planner effort' },
     },
@@ -622,26 +626,24 @@ test('a dsh execution effort waits for its execution model', async () => {
     `${functionSource('planExecutorLabels')}\n${functionSource('loadModels', true)}\n${functionSource('refreshEfforts')}\n${functionSource('effortLevels')}\nglobalThis.loadModels = loadModels;\nglobalThis.refreshEfforts = refreshEfforts;`,
     context,
   );
-  fields['#dispatch-engine'] = { value: 'dsh' };
+  fields['#compose-engine'] = { value: 'dsh' };
   await context.loadModels();
-  // dsh waits for an execution model and says so; omp keeps the default model's list.
-  assert.deepEqual(options('dispatch-executor-effort'), []);
-  assert.equal(pickers['dispatch-executor-effort'].fallback, 'needs an execution model');
-  assert.deepEqual(options('compose-executor-effort'), ['low', 'high', 'max']);
-  assert.equal(pickers['compose-executor-effort'].fallback, 'Selector level');
+  // dsh waits for an execution model and says so.
+  assert.deepEqual(options('compose-executor-effort'), []);
+  assert.equal(pickers['compose-executor-effort'].fallback, 'needs an execution model');
 
   // A named model brings its own levels, and Default in the effort names the planner's level.
-  fields['#dispatch-executor'].value = 'p/fast';
-  context.refreshEfforts('dispatch');
-  assert.deepEqual(options('dispatch-executor-effort'), ['low', 'high']);
-  assert.equal(pickers['dispatch-executor-effort'].fallback, 'Planner effort');
+  fields['#compose-executor'].value = 'p/fast';
+  context.refreshEfforts('compose');
+  assert.deepEqual(options('compose-executor-effort'), ['low', 'high']);
+  assert.equal(pickers['compose-executor-effort'].fallback, 'Planner effort');
 
   // Back to Default drops the level that belonged to the model.
-  fields['#dispatch-executor-effort'].value = 'high';
-  fields['#dispatch-executor'].value = '';
-  context.refreshEfforts('dispatch');
-  assert.deepEqual(options('dispatch-executor-effort'), []);
-  assert.deepEqual(picked.at(-1), ['dispatch-executor-effort', '']);
+  fields['#compose-executor-effort'].value = 'high';
+  fields['#compose-executor'].value = '';
+  context.refreshEfforts('compose');
+  assert.deepEqual(options('compose-executor-effort'), []);
+  assert.deepEqual(picked.at(-1), ['compose-executor-effort', '']);
 
   // A dsh plan card follows the same rule.
   pickers['plan-executor'].data = dsh;
@@ -699,7 +701,7 @@ test('the effort field of a dsh plan card describes that card, whatever catalog 
 
 test('a catalog that answers late never fills the model field of another engine', async () => {
   const pickers = Object.fromEntries(
-      ['compose', 'dispatch'].flatMap((sheet) =>
+      ['compose'].flatMap((sheet) =>
         ['engine', 'model', 'thinking', 'executor', 'executor-effort'].map((id) => [
           `${sheet}-${id}`,
           { options: [], fallback: '' },
@@ -709,7 +711,7 @@ test('a catalog that answers late never fills the model field of another engine'
         ['plan-executor-effort', { options: [], fallback: '' }],
       ]),
     ),
-    fields = { '#compose-engine': { value: '' }, '#dispatch-engine': { value: '' } },
+    fields = { '#compose-engine': { value: '' } },
     omp = {
       engine: 'omp',
       models: [{ selector: '@kimi', name: '@kimi' }],
@@ -764,7 +766,6 @@ test('a catalog that answers late never fills the model field of another engine'
   held.answer();
   await slow;
   assert.deepEqual(values('compose-model'), ['@kimi'], 'a late dsh catalog leaves the omp field alone');
-  assert.deepEqual(values('dispatch-model'), ['@kimi'], 'a late dsh catalog leaves the omp dispatch field alone');
   assert.equal(pickers['compose-model'].fallback, '@kimi');
 
   // A read made for dsh itself still fills the field.

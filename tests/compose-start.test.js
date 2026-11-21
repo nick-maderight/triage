@@ -52,7 +52,7 @@ function harness() {
     answer = { resolve, reject };
   });
   const context = vm.createContext({
-    S: { composeMode: 'goal' },
+    S: { composeMode: 'goal', sheetCardId: null, cards: [] },
     $: (selector) => {
       if (selector === 'dialog[open]') return compose.open ? compose : other.open ? other : null;
       return elements[selector] || null;
@@ -79,7 +79,7 @@ function harness() {
     showDialog: (dialog) => dialog.showModal(),
   });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('submitCompose', true)}\nglobalThis.submitCompose = submitCompose;`,
+    `${functionSource('api', true)}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
   return { context, prompt, start, hint, compose, other, toasts, announcements, requests, answer };
@@ -87,7 +87,7 @@ function harness() {
 
 test('Start closes the sheet while the daemon launches', async () => {
   const h = harness(),
-    submitted = h.context.submitCompose({ preventDefault() {} });
+    submitted = h.context.submitSheet({ preventDefault() {} });
   await settled();
   assert.equal(h.requests.length, 1);
   assert.equal(h.compose.open, false);
@@ -110,7 +110,7 @@ test('Start closes the sheet while the daemon launches', async () => {
 
 test('Start reports a launch the daemon accepted', async () => {
   const h = harness(),
-    submitted = h.context.submitCompose({ preventDefault() {} });
+    submitted = h.context.submitSheet({ preventDefault() {} });
   await settled();
   // The daemon answers before the launch finishes: it keeps working there, and a failure
   // reaches the inbox as a card.
@@ -133,7 +133,7 @@ test('Start reports a launch the daemon accepted', async () => {
 
 test('a failed Start puts its prompt back and reopens the sheet', async () => {
   const h = harness(),
-    submitted = h.context.submitCompose({ preventDefault() {} });
+    submitted = h.context.submitSheet({ preventDefault() {} });
   await settled();
   assert.equal(h.compose.open, false);
   h.answer.resolve({
@@ -157,7 +157,7 @@ test('a failed Start puts its prompt back and reopens the sheet', async () => {
 
 test('a failed Start leaves a newer draft and an open sheet alone', async () => {
   const h = harness(),
-    submitted = h.context.submitCompose({ preventDefault() {} });
+    submitted = h.context.submitSheet({ preventDefault() {} });
   await settled();
   h.other.open = true;
   h.prompt.value = 'A newer question';

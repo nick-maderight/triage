@@ -789,7 +789,6 @@
       await waitFor(() => document.querySelector('.card'), 'a card in the queue');
       const compose = document.querySelector('#compose'),
         picker = document.querySelector('#picker'),
-        dispatch = document.querySelector('#dispatch'),
         nativeFetch = window.fetch;
       let posted = null;
       const fixtureFetch = function (input, init) {
@@ -837,7 +836,7 @@
         };
       const segmentRow = (group) =>
         group.scrollWidth <= group.clientWidth &&
-        [...group.children].every((b) => b.getClientRects().length === 1);
+        [...group.children].filter((b) => !b.hidden).every((b) => b.getClientRects().length === 1);
       try {
         window.fetch = fixtureFetch;
         document.querySelector('#compose-mode-goal').click();
@@ -850,7 +849,7 @@
         document.querySelector('#compose-mode-plan-into').click();
         assert(!compose.querySelector('#compose-models').hidden, 'Plan into shows the execution model field');
         assert(/approv/.test(text('#compose-mode-help')), 'the compose help mentions approval');
-        assert(segmentRow(compose.querySelector('#compose-mode')), 'the three compose segments share one row');
+        assert(segmentRow(compose.querySelector('#compose-mode')), 'the three plain-session segments share one row');
         const executor = document.querySelector('#compose-executor');
         executor.click();
         await waitFor(() => picker.open, 'execution picker open');
@@ -943,44 +942,44 @@
         assert(!('executor' in posted), 'goal posts no executor key');
 
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', bubbles: true }));
-        await waitFor(() => dispatch.open, 'dispatch opens on P');
-        const mode = (name) => document.querySelector(`#dispatch-mode-${name}`);
+        await waitFor(() => compose.open, 'the session sheet opens on P');
+        const mode = (name) => document.querySelector(`#compose-mode-${name}`);
         assert(mode('plan-into').getAttribute('aria-checked') === 'true', 'P preselects Plan into');
-        assert(!dispatch.querySelector('#dispatch-models').hidden, 'Plan into shows the execution model field');
-        assert(visible(document.querySelector('#dispatch-executor-effort')), 'dispatch shows the execution effort field');
-        assert(segmentRow(dispatch.querySelector('#dispatch-mode')), 'the five dispatch segments share one row');
-        assert(text('#dispatch-model').includes('Alpha One'), 'the Model Default names the daemon model');
-        assert(text('#dispatch-thinking').includes('max'), 'the Thinking Default names the daemon level');
-        const dshEngine = document.querySelector('#dispatch-engine').value === 'dsh';
+        assert(document.querySelector('#compose-mode-goal').hidden, 'a card hides Goal');
+        assert(!compose.querySelector('#compose-models').hidden, 'Plan into shows the execution model field');
+        assert(visible(document.querySelector('#compose-executor-effort')), 'the sheet shows the execution effort field');
+        assert(segmentRow(compose.querySelector('#compose-mode')), 'the five card segments share one row');
+        assert(text('#compose-model').includes('Alpha One'), 'the Model Default names the daemon model');
+        assert(text('#compose-thinking').includes('max'), 'the Thinking Default names the daemon level');
+        const dshEngine = document.querySelector('#compose-engine').value === 'dsh';
         assert(
-          text('#dispatch-executor').includes(dshEngine ? 'planner model' : 'omp smol role'),
+          text('#compose-executor').includes(dshEngine ? 'planner model' : 'omp smol role'),
           'the executor Default names the default of the chosen engine',
         );
-        dispatch.querySelector('#dispatch-start').scrollIntoView({ block: 'center' });
-        const dialogRect = dispatch.getBoundingClientRect(),
-          startRect = dispatch.querySelector('#dispatch-start').getBoundingClientRect();
+        compose.querySelector('#compose-start').scrollIntoView({ block: 'center' });
+        const dialogRect = compose.getBoundingClientRect(),
+          startRect = compose.querySelector('#compose-start').getBoundingClientRect();
         assert(
           startRect.bottom <= dialogRect.bottom + 1 && startRect.top >= dialogRect.top - 1,
-          'the Launch button stays inside the dialog',
+          'the Start button stays inside the dialog',
         );
         mode('act').click();
-        assert(dispatch.querySelector('#dispatch-models').hidden, 'Act hides the execution model field');
-        assert(text('#dispatch-model').includes('Alpha One'), 'Act keeps the Model field visible');
-        assert(text('#dispatch-thinking').includes('max'), 'Act keeps the Thinking field visible');
+        assert(compose.querySelector('#compose-models').hidden, 'Act hides the execution model field');
+        assert(text('#compose-model').includes('Alpha One'), 'Act keeps the Model field visible');
+        assert(text('#compose-thinking').includes('max'), 'Act keeps the Thinking field visible');
         return { scenario: 'plan-into', passed: true };
       } finally {
         window.fetch = nativeFetch;
         if (picker.open) picker.close();
-        if (dispatch.open) dispatch.close();
         if (compose.open) compose.close();
       }
     },
-    checkDispatchDraft = async () => {
+    checkSessionDraft = async () => {
       await waitFor(() => document.querySelector('.card'), 'a card to dispatch');
-      const dialog = document.querySelector('#dispatch'),
-        note = document.querySelector('#dispatch-note'),
+      const dialog = document.querySelector('#compose'),
+        note = document.querySelector('#compose-prompt'),
         cardNote = () => document.querySelector('#note'),
-        mode = (name) => document.querySelector(`#dispatch-mode-${name}`),
+        mode = (name) => document.querySelector(`#compose-mode-${name}`),
         press = (key) =>
           document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
         type = (field, value) => {
@@ -989,9 +988,11 @@
         };
       try {
         press('i');
-        await waitFor(() => dialog.open, 'dispatch dialog open');
+        await waitFor(() => dialog.open, 'session sheet open');
         assert(mode('investigate').getAttribute('aria-checked') === 'true', 'Investigate is preselected');
         assert(mode('act').getAttribute('aria-checked') === 'false', 'Act starts unchecked');
+        assert(mode('goal').hidden, 'a card hides Goal');
+        assert(document.querySelector('#compose-target').hidden, 'a card hides the directory and tmux session');
         mode('investigate-fix').click();
         assert(
           mode('investigate-fix').getAttribute('aria-checked') === 'true',
@@ -1003,19 +1004,19 @@
         assert(mode('investigate').getAttribute('aria-checked') === 'false', 'Investigate is cleared');
         type(note, 'fixture instruction\nsecond line');
         dialog.close();
-        assert(!dialog.open, 'the dispatch dialog closes');
+        assert(!dialog.open, 'the session sheet closes');
         assert(cardNote().value === 'fixture instruction second line', 'the card shows the instruction as its note');
         document.querySelector('#dispatch-btn').click();
-        await waitFor(() => dialog.open, 'dispatch dialog reopened from the dock');
+        await waitFor(() => dialog.open, 'session sheet reopened from the dock');
         assert(note.value === 'fixture instruction\nsecond line', 'the instruction persists');
         assert(mode('investigate').getAttribute('aria-checked') === 'true', 'Dispatch preselects Investigate again');
         dialog.close();
         type(cardNote(), 'note from the card');
         press('A');
-        await waitFor(() => dialog.open, 'dispatch dialog open from A');
+        await waitFor(() => dialog.open, 'session sheet open from A');
         assert(mode('act').getAttribute('aria-checked') === 'true', 'A preselects Act');
         assert(note.value === 'note from the card', 'the sheet opens on the card note');
-        return { scenario: 'dispatch', passed: true };
+        return { scenario: 'session', passed: true };
       } finally {
         if (dialog.open) dialog.close();
         if (cardNote()) type(cardNote(), '');
@@ -1403,7 +1404,7 @@
     if (scenario === 'compose-stays') return checkComposeStaysOnQueue();
     if (scenario === 'picker') return checkPicker();
     if (scenario === 'models') return checkModelEngine();
-    if (scenario === 'dispatch') return checkDispatchDraft();
+    if (scenario === 'session') return checkSessionDraft();
     if (scenario === 'history-retry') return checkHistoryRetry();
     if (scenario === 'pwa') return checkPwa();
     if (scenario === 'portrait') return checkPortrait();

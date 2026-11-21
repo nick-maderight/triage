@@ -51,7 +51,7 @@ const calls = [],
     draft: () => ({ step: 0 }),
     noteValue: () => null,
     $: (selector) => (selector === '#note' ? { focus: () => calls.push(['focus note']) } : null),
-    openDispatch: (card, mode, { newWindow = false } = {}) =>
+    openSheet: (card, mode, { newWindow = false } = {}) =>
       calls.push(['dispatch', card.id, mode, newWindow ? 'own session' : 'card session']),
     act: (card, verb) => calls.push([verb, card.id]),
     openContext: (id) => calls.push(['context', id]),

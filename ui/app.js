@@ -34,8 +34,8 @@ const S = {
   historyPromiseDate: null,
   history: { loading: false, loaded: false, dayStart: null, error: null, today: 0, lastAt: null },
   dialogFocus: new WeakMap(),
-  dispatchId: null,
-  dispatchEngine: '',
+  sheetCardId: null,
+  sheetEngine: '',
   composeMode: 'goal',
   peekPane: null,
   peekToken: 0,
@@ -165,7 +165,7 @@ const S = {
     plan: {
       key: 'p',
       label: (c) => hasStep(c) && 'Plan next step',
-      run: (c) => openDispatch(c, 'plan', { newWindow: hasStep(c) }),
+      run: (c) => openSheet(c, 'plan', { newWindow: hasStep(c) }),
     },
     // Dispatch is the sheet's only button and also names the keys that open the sheet in
     // another mode.
@@ -173,16 +173,16 @@ const S = {
       key: 'i',
       label: 'Dispatch',
       also: ['fix', 'act', 'plan', 'planInto'],
-      run: (c) => openDispatch(c, 'investigate'),
+      run: (c) => openSheet(c, 'investigate'),
     },
-    fix: { key: 'F', run: (c) => openDispatch(c, 'investigate-fix') },
-    act: { key: 'A', run: (c) => openDispatch(c, 'act') },
-    planInto: { key: 'P', run: (c) => openDispatch(c, 'plan-into') },
+    fix: { key: 'F', run: (c) => openSheet(c, 'investigate-fix') },
+    act: { key: 'A', run: (c) => openSheet(c, 'act') },
+    planInto: { key: 'P', run: (c) => openSheet(c, 'plan-into') },
     doNext: {
       key: 'd',
       label: 'Do next step',
       offered: hasStep,
-      run: (c) => openDispatch(c, 'act', { newWindow: true }),
+      run: (c) => openSheet(c, 'act', { newWindow: true }),
     },
     close: {
       key: 'x',
@@ -1312,7 +1312,7 @@ const S = {
   function sendAnswers(c) {
     const d = draft(c);
     if (c.questions.some((_, i) => d.answers[i] == null)) return;
-    if (c.kind === 'finding') openDispatch(c, 'act', { answers: d.answers });
+    if (c.kind === 'finding') openSheet(c, 'act', { answers: d.answers });
     else act(c, 'answer', { answers: d.answers, note: noteValue(c) }, 'send');
   }
   function primaryStep(c) {
@@ -1727,7 +1727,7 @@ const S = {
     if (i === options.length && otherAllowed(c)) return toggleOther(c);
     const option = options[i];
     if (!option || !answerable(c) || c.kind === 'info') return;
-    if (c.kind === 'finding') return openDispatch(c, optionMode(option), { option: i });
+    if (c.kind === 'finding') return openSheet(c, optionMode(option), { option: i });
     const needsOther = c.kind === 'plan' && option.label === 'Refine',
       text = needsOther ? draft(c).other.trim() : null;
     if (needsOther && !text) {
@@ -2363,15 +2363,9 @@ const S = {
         : 'Sending unlocks when the pane is waiting for input.');
   }
   function openCompose() {
-    const d = $('#compose');
-    $('#compose-hint').textContent = '';
-    setComposeMode(S.composeMode);
-    showDialog(d);
-    $('#compose-prompt').focus({ preventScroll: true });
-    loadComposeSessions();
-    loadModels();
+    openSheet(null, S.composeMode);
   }
-  // New session, Dispatch and Plan approval fields share the picker.
+  // The session sheet, Plan approval and the settings fields share the picker.
   const PICKERS = {
     'compose-cwd': { title: 'Working directory', placeholder: 'Search or type a path', free: true, fallback: 'Home directory', options: [] },
     'compose-session': { title: 'tmux session', placeholder: 'Search sessions', free: false, fallback: 'Daemon default', options: [] },
@@ -2380,11 +2374,6 @@ const S = {
     'compose-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
     'compose-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
-    'dispatch-engine': { title: 'Engine', placeholder: 'Search engines', free: false, fallback: 'Daemon default', options: [pickerOption('omp'), pickerOption('dsh')] },
-    'dispatch-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
-    'dispatch-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
-    'dispatch-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
-    'dispatch-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
     'plan-executor': { title: 'Execution model', placeholder: 'Search roles', free: false, fallback: 'current Plan Review role', options: [] },
     'plan-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
   };
@@ -2392,9 +2381,6 @@ const S = {
     'compose-model',
     'compose-executor',
     'compose-executor-effort',
-    'dispatch-model',
-    'dispatch-executor',
-    'dispatch-executor-effort',
     'plan-executor',
     'plan-executor-effort',
   ];
@@ -2528,7 +2514,7 @@ const S = {
     if (!row) return;
     const changed = p.id.endsWith('-engine') && $(`#${p.id}`).value !== row.value;
     setPickerValue(p.id, row.value);
-    if (p.id === 'dispatch-engine') S.dispatchEngine = row.value;
+    if (p.id === 'compose-engine') S.sheetEngine = row.value;
     if (p.id === 'plan-executor' && current()?.kind === 'plan') draft(current()).executor = row.value;
     if (p.id === 'plan-executor-effort' && current()?.kind === 'plan') draft(current()).executorThinking = row.value;
     $('#picker').close();
@@ -2590,7 +2576,7 @@ const S = {
   }
   // The sheet a model or executor field belongs to, for the effort list it refits.
   function sheetOf(id) {
-    return ['compose', 'dispatch', 'plan'].find((sheet) => id.startsWith(`${sheet}-`)) || null;
+    return ['compose', 'plan'].find((sheet) => id.startsWith(`${sheet}-`)) || null;
   }
   // Each sheet lists the models of the engine its Engine field picks, or the daemon's when Default.
   // Its model field keeps the catalog data, so an effort list can follow the model picked. A
@@ -2608,26 +2594,24 @@ const S = {
         load = async (engine) => (lists[engine] ??= await api(`/v1/models?engine=${engine}`)),
         options = (list) =>
           (list || []).map(({ selector, name }) => pickerOption(selector, name, name === selector ? null : selector));
-      for (const sheet of ['compose', 'dispatch']) {
-        const engine = $(`#${sheet}-engine`)?.value || daemon,
-          data = await load(engine);
-        if (run !== modelLoad) return;
-        const model = PICKERS[`${sheet}-model`],
-          thinking = PICKERS[`${sheet}-thinking`],
-          executor = PICKERS[`${sheet}-executor`];
-        model.data = data;
-        PICKERS[`${sheet}-engine`].fallback = daemon;
-        model.options = executor.options = options(data.models);
-        model.fallback = data.default
-          ? model.options.find((option) => option.value === data.default)?.label || data.default
-          : `${engine} default`;
-        thinking.fallback = data.default_thinking ?? `${engine} default`;
-        executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
-        if (sheet === 'compose') $('#compose-session-pair').hidden = engine === 'dsh';
-        refreshEfforts(sheet);
-        for (const id of ['engine', 'model', 'thinking', 'executor', 'executor-effort'])
-          refreshPicker(`${sheet}-${id}`);
-      }
+      const engine = $('#compose-engine')?.value || daemon,
+        data = await load(engine);
+      if (run !== modelLoad) return;
+      const model = PICKERS['compose-model'],
+        thinking = PICKERS['compose-thinking'],
+        executor = PICKERS['compose-executor'];
+      model.data = data;
+      PICKERS['compose-engine'].fallback = daemon;
+      model.options = executor.options = options(data.models);
+      model.fallback = data.default
+        ? model.options.find((option) => option.value === data.default)?.label || data.default
+        : `${engine} default`;
+      thinking.fallback = data.default_thinking ?? `${engine} default`;
+      executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
+      $('#compose-session-pair').hidden = engine === 'dsh';
+      refreshEfforts('compose');
+      for (const id of ['engine', 'model', 'thinking', 'executor', 'executor-effort'])
+        refreshPicker(`compose-${id}`);
       // A plan card from the other harness offers that harness's execution models.
       const plan = current(),
         planEngine = plan?.kind === 'plan' ? plan.engine || 'omp' : daemon;
@@ -2688,33 +2672,32 @@ const S = {
         models.find((entry) => entry.selector === data?.default);
     return model && Array.isArray(model.efforts) ? model.efforts : data?.thinking || [];
   }
-  // An image attached in the New session or Dispatch sheet. It is read as base64 and sent
-  // with the prompt; the daemon stores one copy for both engines.
+  // An image attached in the session sheet. It is read as base64 and sent with the prompt or the
+  // dispatch; the daemon stores one copy for both engines.
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
-    IMAGE_LIMIT = 10 * 1024 * 1024,
-    sheetImages = { compose: null, dispatch: null };
+    IMAGE_LIMIT = 10 * 1024 * 1024;
+  let sheetImage = null;
 
-  function showSheetImage(prefix) {
-    const image = sheetImages[prefix],
-      preview = $(`#${prefix}-image-preview`),
-      thumb = $(`#${prefix}-image-thumb`),
-      name = $(`#${prefix}-image-name`);
+  function showSheetImage() {
+    const preview = $('#compose-image-preview'),
+      thumb = $('#compose-image-thumb'),
+      name = $('#compose-image-name');
     if (!preview || !thumb) return;
-    if (image?.url) URL.revokeObjectURL(image.url);
-    if (image) image.url = null;
-    if (!image?.file) {
+    if (sheetImage?.url) URL.revokeObjectURL(sheetImage.url);
+    if (sheetImage) sheetImage.url = null;
+    if (!sheetImage?.file) {
       preview.hidden = true;
       thumb.removeAttribute('src');
       name.textContent = '';
       return;
     }
-    image.url = URL.createObjectURL(image.file);
-    thumb.src = image.url;
-    name.textContent = image.file.name;
+    sheetImage.url = URL.createObjectURL(sheetImage.file);
+    thumb.src = sheetImage.url;
+    name.textContent = sheetImage.file.name;
     preview.hidden = false;
   }
-  function attachSheetImage(prefix, file) {
-    const hint = $(`#${prefix}-hint`);
+  function attachSheetImage(file) {
+    const hint = $('#compose-hint');
     if (!file) return;
     if (!IMAGE_TYPES.has(file.type)) {
       hint.textContent = 'Attach a PNG, JPEG, WebP or GIF image.';
@@ -2724,20 +2707,19 @@ const S = {
       hint.textContent = 'That image is over 10 MB.';
       return;
     }
-    sheetImages[prefix] = { file, url: null };
-    showSheetImage(prefix);
+    sheetImage = { file, url: null };
+    showSheetImage();
     hint.textContent = '';
   }
-  function clearSheetImage(prefix) {
-    const image = sheetImages[prefix];
-    if (image?.url) URL.revokeObjectURL(image.url);
-    sheetImages[prefix] = null;
-    const input = $(`#${prefix}-image`);
+  function clearSheetImage() {
+    if (sheetImage?.url) URL.revokeObjectURL(sheetImage.url);
+    sheetImage = null;
+    const input = $('#compose-image');
     if (input) input.value = '';
-    showSheetImage(prefix);
+    showSheetImage();
   }
-  function sheetImageBody(prefix) {
-    const file = sheetImages[prefix]?.file;
+  function sheetImageBody() {
+    const file = sheetImage?.file;
     if (!file) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -2754,37 +2736,53 @@ const S = {
       reader.readAsDataURL(file);
     });
   }
-  function wireSheetImage(prefix) {
-    const input = $(`#${prefix}-image`),
-      add = $(`#${prefix}-image-add`),
-      remove = $(`#${prefix}-image-remove`);
+  function wireSheetImage() {
+    const input = $('#compose-image'),
+      add = $('#compose-image-add'),
+      remove = $('#compose-image-remove');
     if (!input || !add) return;
     add.addEventListener('click', () => input.click());
-    input.addEventListener('change', () => attachSheetImage(prefix, input.files?.[0]));
-    remove?.addEventListener('click', () => clearSheetImage(prefix));
-    const text = $(prefix === 'compose' ? '#compose-prompt' : '#dispatch-note');
-    text?.addEventListener('paste', (e) => {
+    input.addEventListener('change', () => attachSheetImage(input.files?.[0]));
+    remove?.addEventListener('click', () => clearSheetImage());
+    $('#compose-prompt')?.addEventListener('paste', (e) => {
       const file = [...(e.clipboardData?.files || [])].find((f) => IMAGE_TYPES.has(f.type));
       if (file && !e.clipboardData.getData('text')) {
         e.preventDefault();
-        attachSheetImage(prefix, file);
+        attachSheetImage(file);
       }
     });
   }
 
-  async function submitCompose(e) {
+  // One submit for the one sheet. Without a card it starts a session and closes at once. With a
+  // card it dispatches the brief and keeps the sheet open until the daemon answers.
+  async function submitSheet(e) {
     e.preventDefault();
+    const start = $('#compose-start'),
+      hint = $('#compose-hint'),
+      id = S.sheetCardId,
+      c = sheetCard();
+    if (start.disabled) return;
+    if (id) {
+      if (!c) {
+        hint.textContent = 'This card is no longer in the queue.';
+        return;
+      }
+      return dispatchCard(c, start, hint);
+    }
+    return startSession(start, hint);
+  }
+
+  async function startSession(start, hint) {
     const prompt = $('#compose-prompt').value.trim(),
       cwd = $('#compose-cwd').value.trim(),
-      start = $('#compose-start'),
-      hint = $('#compose-hint');
-    if (!prompt || start.disabled) return;
+      mode = S.composeMode;
+    if (!prompt) return;
     // Disable before reading an attached image: a second submit during that read would
     // otherwise start the same session twice.
     start.disabled = true;
     let image;
     try {
-      image = await sheetImageBody('compose');
+      image = await sheetImageBody();
     } catch (err) {
       hint.textContent = err.message;
       start.disabled = false;
@@ -2797,10 +2795,12 @@ const S = {
       engine: $('#compose-engine').value || null,
       model: $('#compose-model').value.trim() || null,
       thinking: $('#compose-thinking').value.trim() || null,
-      mode: S.composeMode,
+      mode,
     };
+    // A dispatch mode makes the text the context a card dispatch brief would carry.
+    if (['investigate', 'investigate-fix', 'act'].includes(mode)) body.note = '';
     if (image) body.image = image;
-    if (S.composeMode === 'plan-into') {
+    if (mode === 'plan-into') {
       body.executor = $('#compose-executor').value.trim() || null;
       body.executor_thinking = $('#compose-executor-effort').value.trim() || null;
     }
@@ -2836,108 +2836,10 @@ const S = {
     }
   }
 
-  function radioKeydown(e, select) {
-    const bs = [...e.currentTarget.children],
-      i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),
-      step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    const next = bs[(i + step + bs.length) % bs.length];
-    select(next);
-    next.focus();
-  }
-  function selectSegment(group, mode) {
-    for (const b of group.children) {
-      const on = b.dataset.mode === mode;
-      b.setAttribute('aria-checked', String(on));
-      b.tabIndex = on ? 0 : -1;
-    }
-  }
-  function setComposeMode(mode) {
-    S.composeMode = mode;
-    selectSegment($('#compose-mode'), mode);
-    $('#compose-mode-help').textContent = {
-      goal: 'The session works toward the prompt as a goal until it reports done.',
-      plan: 'Read-only planning. The plan arrives here for review before anything runs.',
-      'plan-into':
-        'The Model above drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
-    }[mode];
-    $('#compose-models').hidden = mode !== 'plan-into';
-  }
-  function setDispatchMode(mode) {
-    const d = S.drafts.get(S.dispatchId);
-    // Act and Investigate + fix start on their own direction. An empty Instruction still tells the
-    // session how to decide. Typing replaces the default. Leaving it untouched sends it as the
-    // instruction.
-    const actDefault =
-      'Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.';
-    const fixDefault =
-      "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
-    // A finding question is answered through its own decisions, so it cannot take an investigate mode.
-    if (d?.dispatchAnswers && (mode === 'investigate' || mode === 'investigate-fix')) mode = 'act';
-    // The draft keeps the mode the sheet shows, which is the mode Launch sends.
-    if (d) d.dispatchMode = mode;
-    selectSegment($('#dispatch-mode'), mode);
-    const investigate = $('#dispatch-mode-investigate');
-    if (investigate) investigate.hidden = Boolean(d?.dispatchAnswers);
-    const investigateFix = $('#dispatch-mode-investigate-fix');
-    if (investigateFix) investigateFix.hidden = Boolean(d?.dispatchAnswers);
-    $('#dispatch-mode-help').textContent = {
-      investigate: 'Read-only. The session looks into it and reports back.',
-      'investigate-fix':
-        'Investigates the root cause, fixes it for good, and reports the evidence.',
-      act: 'The session carries out the action end to end.',
-      plan: 'The session prepares a plan for review before acting.',
-      'plan-into':
-        'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
-    }[mode];
-    $('#dispatch-models').hidden = mode !== 'plan-into';
-    const box = $('#dispatch-note');
-    if (box && d) {
-      const fallback = mode === 'act' ? actDefault : mode === 'investigate-fix' ? fixDefault : '';
-      if (fallback && !d.note) {
-        box.value = fallback;
-        d.defaulted = true;
-      } else if (!fallback && d.defaulted) {
-        box.value = '';
-        d.defaulted = false;
-      }
-    }
-  }
-  // Opens the Dispatch sheet for a card. `newWindow` asks for a tmux window of its own instead
-  // of the pane that just reported. The next step then never flips a finished omp session into
-  // another mode. The daemon ignores it for a dsh card, whose brief continues the card's session.
-  function openDispatch(c, mode, { newWindow = false, option = null, answers = null } = {}) {
-    if (!c || S.pending || Date.now() < S.remoteSwapUntil) return;
-    const d = draft(c),
-      field = $('#dispatch-engine'),
-      // A card with a session of its own preselects that session's engine, which lets the brief
-      // continue there. Every other card keeps the engine last picked in the sheet.
-      engine = dshOf(c) ? 'dsh' : c.source?.pane ? 'omp' : S.dispatchEngine,
-      // Default names the daemon's engine. A move between those two keeps the model list.
-      daemon = PICKERS['dispatch-engine'].fallback,
-      same = (field.value || daemon) === (engine || daemon);
-    S.dispatchId = c.id;
-    d.dispatchOption = option;
-    d.dispatchAnswers = answers;
-    d.dispatchWindow = newWindow;
-    if (field.value !== engine) setPickerValue('dispatch-engine', engine);
-    if (!same) clearModels('dispatch');
-    else if (!PICKERS['dispatch-model'].options.length) void loadModels();
-    $('#dispatch-note').value = d.note;
-    setDispatchMode(mode);
-    $('#dispatch-hint').textContent = '';
-    $('#dispatch-start').disabled = false;
-    showDialog($('#dispatch'));
-    $('#dispatch-note').focus({ preventScroll: true });
-  }
-  async function submitDispatch(e) {
-    e.preventDefault();
-    const c = S.cards.find((x) => x.id === S.dispatchId),
-      start = $('#dispatch-start'),
-      hint = $('#dispatch-hint');
-    if (start.disabled) return;
-    if (!c) {
+  // A card dispatch keeps the sheet open until the daemon answers, so a refusal leaves the
+  // instruction in place for a retry.
+  async function dispatchCard(c, start, hint) {
+    if (!S.cards.some((x) => x.id === c.id)) {
       hint.textContent = 'This card is no longer in the queue.';
       return;
     }
@@ -2945,17 +2847,17 @@ const S = {
       mode = d.dispatchMode;
     // The untouched mode default stays out of the card's note. The daemon applies the same
     // direction to a launch that names none. The brief reads the same either way.
-    if (!d.defaulted) d.note = $('#dispatch-note').value;
+    if (!d.defaulted) d.note = $('#compose-prompt').value;
     const launch = {
       mode,
       note: noteValue(c),
-      engine: $('#dispatch-engine').value || null,
-      model: $('#dispatch-model').value.trim() || null,
-      thinking: $('#dispatch-thinking').value.trim() || null,
+      engine: $('#compose-engine').value || null,
+      model: $('#compose-model').value.trim() || null,
+      thinking: $('#compose-thinking').value.trim() || null,
     };
     let image;
     try {
-      image = await sheetImageBody('dispatch');
+      image = await sheetImageBody();
     } catch (err) {
       hint.textContent = err.message;
       return;
@@ -2964,8 +2866,8 @@ const S = {
     hint.textContent = 'Launching…';
     if (image) launch.image = image;
     if (mode === 'plan-into') {
-      launch.executor = $('#dispatch-executor').value.trim() || null;
-      launch.executor_thinking = $('#dispatch-executor-effort').value.trim() || null;
+      launch.executor = $('#compose-executor').value.trim() || null;
+      launch.executor_thinking = $('#compose-executor-effort').value.trim() || null;
     }
     // A finding launches through its answer, which names the option or the answers it chose.
     const ok = d.dispatchAnswers
@@ -2976,9 +2878,142 @@ const S = {
     start.disabled = false;
     if (ok || !S.cards.some((x) => x.id === c.id)) {
       hint.textContent = '';
-      $('#dispatch').close();
+      $('#compose').close();
     } else if (hint.textContent === 'Launching…')
       hint.textContent = 'Could not dispatch.';
+  }
+
+  function selectSegment(group, mode) {
+    for (const b of group.children) {
+      const on = b.dataset.mode === mode;
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
+  }
+  // The card the sheet holds, or null for a plain session.
+  function sheetCard() {
+    return S.sheetCardId ? S.cards.find((x) => x.id === S.sheetCardId) || null : null;
+  }
+  // The modes the one sheet offers. A plain session can start on any of them: Investigate and Act
+  // treat its text as the context to look into, the way a card is dispatched. A finding's answers
+  // can only act on those answers.
+  function sheetModes(c = sheetCard()) {
+    if (!c) return ['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into'];
+    return draft(c).dispatchAnswers
+      ? ['act', 'plan', 'plan-into']
+      : ['investigate', 'investigate-fix', 'act', 'plan', 'plan-into'];
+  }
+  function setSheetMode(mode, c = sheetCard()) {
+    // Act and Investigate + fix start on their own direction. An empty Instruction still tells the
+    // session how to decide. Typing replaces the default. Leaving it untouched sends it as the
+    // instruction.
+    const actDefault =
+      'Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.';
+    const fixDefault =
+      "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
+    const modes = sheetModes(c);
+    // A finding question is answered through its own decisions, so it cannot take an investigate
+    // mode. A mode the context does not offer falls back to its first one.
+    if (!modes.includes(mode)) mode = modes[0];
+    // The draft keeps the mode the sheet shows, which is the mode Start sends.
+    if (c) draft(c).dispatchMode = mode;
+    else S.composeMode = mode;
+    for (const b of $('#compose-mode').children) b.hidden = !modes.includes(b.dataset.mode);
+    selectSegment($('#compose-mode'), mode);
+    $('#compose-mode-help').textContent = {
+      goal: 'The session works toward the prompt as a goal until it reports done.',
+      investigate: 'Read-only. The session looks into it and reports back.',
+      'investigate-fix':
+        'Investigates the root cause, fixes it for good, and reports the evidence.',
+      act: 'The session carries out the action end to end.',
+      plan: 'Read-only planning. The plan arrives here for review before anything runs.',
+      'plan-into':
+        'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
+    }[mode];
+    $('#compose-models').hidden = mode !== 'plan-into';
+    const box = $('#compose-prompt');
+    if (box && c) {
+      const fallback = mode === 'act' ? actDefault : mode === 'investigate-fix' ? fixDefault : '';
+      if (fallback && !draft(c).note) {
+        box.value = fallback;
+        draft(c).defaulted = true;
+      } else if (!fallback && draft(c).defaulted) {
+        box.value = '';
+        draft(c).defaulted = false;
+      }
+    }
+  }
+  // Opens the session sheet. With a card it is that card's dispatch, and the context strip names
+  // the card until Clear drops it. Without one it starts a plain session. `newWindow` asks for a
+  // tmux window of its own instead of the pane that just reported. The next step then never flips
+  // a finished omp session into another mode. The daemon ignores it for a dsh card, whose brief
+  // continues the card's session.
+  function openSheet(c, mode, { newWindow = false, option = null, answers = null } = {}) {
+    if (c && (S.pending || !c.id || Date.now() < S.remoteSwapUntil)) return;
+    const field = $('#compose-engine');
+    S.sheetCardId = c ? c.id : null;
+    if (c) {
+      const d = draft(c),
+        // A card with a session of its own preselects that session's engine, which lets the brief
+        // continue there. Every other card keeps the engine last picked in the sheet.
+        engine = dshOf(c) ? 'dsh' : c.source?.pane ? 'omp' : S.sheetEngine,
+        // Default names the daemon's engine. A move between those two keeps the model list.
+        daemon = PICKERS['compose-engine'].fallback,
+        same = (field.value || daemon) === (engine || daemon);
+      d.dispatchOption = option;
+      d.dispatchAnswers = answers;
+      d.dispatchWindow = newWindow;
+      if (field.value !== engine) setPickerValue('compose-engine', engine);
+      if (!same) clearModels('compose');
+      else if (!PICKERS['compose-model'].options.length) void loadModels();
+      $('#compose-prompt').value = d.note;
+    } else {
+      // A plain session keeps the engine last picked in the sheet, not the engine of the card
+      // whose dispatch came before it.
+      const daemon = PICKERS['compose-engine'].fallback,
+        same = (field.value || daemon) === (S.sheetEngine || daemon);
+      if (field.value !== S.sheetEngine) setPickerValue('compose-engine', S.sheetEngine);
+      if (!same) clearModels('compose');
+      $('#compose-prompt').value = '';
+      void loadComposeSessions();
+    }
+    $('#compose-context').hidden = !c;
+    $('#compose-context-title').textContent = c ? titleOf(c) : '';
+    $('#compose-context-source').textContent = c ? sourceName(c.source || {}) : '';
+    $('#compose-prompt-label').textContent = c ? 'Instruction' : 'What should the session do?';
+    $('#compose-prompt').placeholder = c
+      ? 'Optional direction for the session'
+      : 'Ask a question, give a task, or start a chat';
+    $('#compose-target').hidden = Boolean(c);
+    $('#compose-session-pair').hidden = field.value === 'dsh';
+    setSheetMode(mode, c);
+    $('#compose-hint').textContent = '';
+    $('#compose-start').disabled = false;
+    showDialog($('#compose'));
+    $('#compose-prompt').focus({ preventScroll: true });
+    void loadModels();
+  }
+  // Clear drops the card and leaves a plain new session. The card's draft stays where it was.
+  function clearSheetCard() {
+    const field = $('#compose-engine'),
+      daemon = PICKERS['compose-engine'].fallback,
+      same = (field.value || daemon) === (S.sheetEngine || daemon);
+    S.sheetCardId = null;
+    $('#compose-context').hidden = true;
+    $('#compose-context-title').textContent = '';
+    $('#compose-context-source').textContent = '';
+    $('#compose-prompt-label').textContent = 'What should the session do?';
+    $('#compose-prompt').placeholder = 'Ask a question, give a task, or start a chat';
+    $('#compose-prompt').value = '';
+    $('#compose-target').hidden = false;
+    if (field.value !== S.sheetEngine) setPickerValue('compose-engine', S.sheetEngine);
+    if (!same) clearModels('compose');
+    $('#compose-session-pair').hidden = field.value === 'dsh';
+    setSheetMode(S.composeMode, null);
+    $('#compose-hint').textContent = '';
+    $('#compose-start').disabled = false;
+    void loadComposeSessions();
+    $('#compose-prompt').focus({ preventScroll: true });
   }
   async function sendPeek(e) {
     e.preventDefault();
@@ -3279,6 +3314,7 @@ const S = {
     if (key === '?') return run(() => showDialog($('#keys')));
     if (key === 'h') return run(openHistory);
     if (key === 'c') return run(openCompose);
+    if (key === 'g') return run(() => openSheet(null, 'goal'));
     const c = current();
     if (!c) return;
     if (/^[1-9]$/.test(key)) return run(() => pick(c, Number(key) - 1));
@@ -3409,51 +3445,63 @@ const S = {
   $('#history').addEventListener('close', () => closeDialog($('#history')));
   $('#keys').addEventListener('close', () => closeDialog($('#keys')));
   $('#compose').addEventListener('close', () => {
-    clearSheetImage('compose');
+    S.sheetCardId = null;
+    clearSheetImage();
     closeDialog($('#compose'));
   });
-  $('#dispatch').addEventListener('close', () => {
-    clearSheetImage('dispatch');
-    closeDialog($('#dispatch'));
-  });
-  $('#dispatch-form').addEventListener('submit', submitDispatch);
-  $('#dispatch-note').addEventListener('input', (e) => {
-    const d = S.drafts.get(S.dispatchId);
-    if (!d) return;
+  $('#compose-context-clear').addEventListener('click', clearSheetCard);
+  $('#compose-form').addEventListener('submit', submitSheet);
+  $('#compose-prompt').addEventListener('input', (e) => {
+    const c = sheetCard();
+    if (!c) return;
+    const d = draft(c);
     d.note = e.target.value;
     d.defaulted = false;
     // The card's Note field shows the same note.
-    if (S.shownId === S.dispatchId && $('#note')) $('#note').value = oneLine(d.note);
+    if (S.shownId === c.id && $('#note')) $('#note').value = oneLine(d.note);
   });
-  $('#dispatch').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
-      e.preventDefault();
-      $('#dispatch-form').requestSubmit();
-    }
+  wireSheetImage();
+  const modeGroup = $('#compose-mode');
+  modeGroup.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-mode]');
+    if (b) setSheetMode(b.dataset.mode);
   });
-  for (const [group, set] of [[$('#dispatch-mode'), setDispatchMode], [$('#compose-mode'), setComposeMode]]) {
-    group.addEventListener('click', (e) => {
-      const b = e.target.closest('[data-mode]');
-      if (b) set(b.dataset.mode);
-    });
-    group.addEventListener('keydown', (e) => {
-      const bs = [...group.children],
-        i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),
-        step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-      if (!step) return;
-      e.preventDefault();
-      const next = bs[(i + step + bs.length) % bs.length];
-      set(next.dataset.mode);
-      next.focus();
-    });
-  }
-  $('#compose-form').addEventListener('submit', submitCompose);
-  wireSheetImage('compose');
-  wireSheetImage('dispatch');
+  modeGroup.addEventListener('keydown', (e) => {
+    const bs = [...modeGroup.children].filter((b) => !b.hidden),
+      i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),
+      step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const next = bs[(i + step + bs.length) % bs.length];
+    setSheetMode(next.dataset.mode);
+    next.focus();
+  });
   $('#compose').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+    if (e.isComposing) return;
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       $('#compose-form').requestSubmit();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey || textField(e.target)) return;
+    if (e.target.closest?.('.picker-field')) return;
+    if (e.key === 'Enter') {
+      if (e.target.closest?.('button, a, select')) return;
+      e.preventDefault();
+      $('#compose-form').requestSubmit();
+      return;
+    }
+    const mode = {
+      g: 'goal',
+      i: 'investigate',
+      F: 'investigate-fix',
+      A: 'act',
+      p: 'plan',
+      P: 'plan-into',
+    }[e.key];
+    if (mode) {
+      e.preventDefault();
+      setSheetMode(mode);
     }
   });
   for (const id of Object.keys(PICKERS)) {

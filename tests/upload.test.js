@@ -30,7 +30,7 @@ function compose(requests, image) {
       '#compose': { close },
     },
     context = vm.createContext({
-      S: { composeMode: 'goal' },
+      S: { composeMode: 'goal', sheetCardId: null, cards: [] },
       $: (selector) => elements[selector] || null,
       fetch: async (url, init) => {
         requests.push({ url, init });
@@ -41,7 +41,7 @@ function compose(requests, image) {
       sheetImageBody: image,
     });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('submitCompose', true)}\nglobalThis.submitCompose = submitCompose;`,
+    `${functionSource('api', true)}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
   return { context, hint, start };
@@ -51,7 +51,7 @@ test('an attached image rides the New session request', async () => {
   const requests = [],
     image = { media_type: 'image/png', data: 'iVBORw0KGgo=', name: 'shot.png' },
     { context } = compose(requests, async () => image);
-  await context.submitCompose({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests.length, 1);
   const body = JSON.parse(requests[0].init.body);
   assert.deepEqual(body.image, image);
@@ -61,7 +61,7 @@ test('an attached image rides the New session request', async () => {
 test('a session without an image sends no image field', async () => {
   const requests = [],
     { context } = compose(requests, async () => null);
-  await context.submitCompose({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests.length, 1);
   assert.equal('image' in JSON.parse(requests[0].init.body), false);
 });
@@ -71,7 +71,7 @@ test('an unreadable image stops the request with the reason', async () => {
     { context, hint, start } = compose(requests, async () => {
       throw new Error('Could not read the image.');
     });
-  await context.submitCompose({ preventDefault() {} });
+  await context.submitSheet({ preventDefault() {} });
   assert.equal(requests.length, 0);
   assert.equal(hint.textContent, 'Could not read the image.');
   assert.equal(start.disabled, false);
@@ -84,8 +84,8 @@ test('a second submit while the image is read starts one session', async () => {
     release = () => resolve({ media_type: 'image/png', data: 'iVBORw0KGgo=', name: 'shot.png' });
   });
   const { context } = compose(requests, () => reading);
-  const first = context.submitCompose({ preventDefault() {} }),
-    second = context.submitCompose({ preventDefault() {} });
+  const first = context.submitSheet({ preventDefault() {} }),
+    second = context.submitSheet({ preventDefault() {} });
   release();
   await Promise.all([first, second]);
   assert.equal(requests.length, 1);

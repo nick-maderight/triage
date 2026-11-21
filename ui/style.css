@@ -1350,20 +1350,49 @@ dialog.sheet[open] {
   white-space: nowrap;
 }
 
-/* compose and dispatch */
+/* session sheet */
 .compose {
   display: grid;
   gap: 8px;
   padding: 20px 24px 0;
 }
 .compose label,
-#dispatch-mode-label,
 #compose-mode-label {
   font-size: 13px;
   font-weight: 500;
 }
-.compose > :is(.compose-grid, #compose-mode-label, label[for='dispatch-note'], label[for='dictation-phrases']) {
+.compose > :is(.compose-grid, #compose-mode-label, label[for='dictation-phrases']) {
   margin-top: 12px;
+}
+/* The card the sheet was opened for. Clear drops it and leaves a plain session. */
+.sheet-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+  background: var(--raised);
+  font-size: 13px;
+}
+.sheet-context-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.sheet-context-source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.sheet-context .btn {
+  flex: none;
+  margin-left: auto;
 }
 .compose-grid {
   display: grid;
@@ -1376,8 +1405,7 @@ dialog.sheet[open] {
   gap: 6px;
 }
 
-#compose-start,
-#dispatch-start {
+#compose-start {
   justify-self: end;
   margin: 12px 0 20px;
 }
@@ -1988,8 +2016,7 @@ dialog.picker::backdrop {
     min-height: 52px;
     padding: 8px 40px 8px 12px;
   }
-  #compose-start,
-  #dispatch-start {
+  #compose-start {
     margin-bottom: 12px;
   }
   .send-hint {
@@ -2149,7 +2176,7 @@ dialog.picker::backdrop {
   }
 }
 
-/* An image attached to a prompt in the New session or Dispatch sheet. */
+/* An image attached to a prompt in the session sheet. */
 .attach {
   display: flex;
   flex-wrap: wrap;

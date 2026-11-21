@@ -83,12 +83,17 @@ try {
 </dialog>
 <dialog id="compose" class="modal" aria-labelledby="compose-title" data-od-id="compose-sheet">
 <header class="sheet-head" data-od-id="compose-header">
-<h2 id="compose-title" data-od-id="compose-title">New session</h2>
+<h2 id="compose-title" data-od-id="compose-title">Session</h2>
 <button type="button" class="btn ghost" data-close data-od-id="compose-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
 </header>
 <form class="compose" id="compose-form" data-od-id="compose-form">
-<label for="compose-prompt">What should the session do?</label>
-<textarea class="field" id="compose-prompt" rows="4" required autocomplete="off" placeholder="Ask a question, give a task, or start a chat" data-od-id="compose-prompt"></textarea>
+<div class="sheet-context" id="compose-context" hidden data-od-id="compose-context">
+<span class="sheet-context-title" id="compose-context-title" data-od-id="compose-context-title"></span>
+<span class="sheet-context-source" id="compose-context-source" data-od-id="compose-context-source"></span>
+<button type="button" class="btn ghost" id="compose-context-clear" data-od-id="compose-context-clear">Clear</button>
+</div>
+<label for="compose-prompt" id="compose-prompt-label" data-od-id="compose-prompt-label">What should the session do?</label>
+<textarea class="field" id="compose-prompt" rows="4" autocomplete="off" placeholder="Ask a question, give a task, or start a chat" data-od-id="compose-prompt"></textarea>
 <div class="attach" data-od-id="compose-attach">
 <button type="button" class="btn ghost square mic" data-dictate="compose-prompt" aria-label="Dictate the prompt" aria-pressed="false" data-od-id="compose-dictate"></button>
 <input type="file" class="sr-only" id="compose-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="compose-image">
@@ -100,11 +105,13 @@ try {
 </div>
 </div>
 <div class="phrases" id="compose-phrases" data-for="compose-prompt" role="group" aria-label="Phrases you often say" hidden data-od-id="compose-phrases"></div>
-<div class="compose-grid">
+<div class="compose-grid" id="compose-target" data-od-id="compose-target">
 <div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory</label>
 <button type="button" class="field picker-field" id="compose-cwd" value="" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
 <div class="pair" id="compose-session-pair"><label id="compose-session-label" for="compose-session">tmux session</label>
 <button type="button" class="field picker-field" id="compose-session" value="" aria-labelledby="compose-session-label compose-session" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-session"></button></div>
+</div>
+<div class="compose-grid" id="compose-launch" data-od-id="compose-launch">
 <div class="pair"><label id="compose-engine-label" for="compose-engine">Engine</label>
 <button type="button" class="field picker-field" id="compose-engine" value="" aria-labelledby="compose-engine-label compose-engine" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-engine"></button></div>
 <div class="pair"><label id="compose-model-label" for="compose-model">Model</label>
@@ -114,9 +121,12 @@ try {
 </div>
 <span id="compose-mode-label" data-od-id="compose-mode-label">Mode</span>
 <div class="segmented" id="compose-mode" role="radiogroup" aria-labelledby="compose-mode-label" data-od-id="compose-mode">
-<button type="button" role="radio" class="seg" id="compose-mode-goal" data-mode="goal" aria-checked="true" data-od-id="compose-mode-goal">Goal</button>
-<button type="button" role="radio" class="seg" id="compose-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" data-od-id="compose-mode-plan">Plan</button>
-<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" data-od-id="compose-mode-plan-into">Plan into</button>
+<button type="button" role="radio" class="seg" id="compose-mode-goal" data-mode="goal" aria-checked="true" aria-keyshortcuts="g" data-od-id="compose-mode-goal">Goal</button>
+<button type="button" role="radio" class="seg" id="compose-mode-investigate" data-mode="investigate" aria-checked="false" tabindex="-1" aria-keyshortcuts="i" data-od-id="compose-mode-investigate">Investigate</button>
+<button type="button" role="radio" class="seg" id="compose-mode-investigate-fix" data-mode="investigate-fix" aria-checked="false" tabindex="-1" aria-keyshortcuts="F" data-od-id="compose-mode-investigate-fix">Investigate + fix</button>
+<button type="button" role="radio" class="seg" id="compose-mode-act" data-mode="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="A" data-od-id="compose-mode-act">Act</button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="compose-mode-plan">Plan</button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="compose-mode-plan-into">Plan into</button>
 </div>
 <p class="mode-help" id="compose-mode-help" data-od-id="compose-mode-help"></p>
 <div class="compose-grid" id="compose-models" hidden data-od-id="compose-models">
@@ -140,52 +150,6 @@ try {
 <p class="picker-empty" id="picker-empty" hidden data-od-id="picker-empty">No match</p>
 </div>
 </dialog>
-<dialog id="dispatch" class="modal" aria-labelledby="dispatch-title" data-od-id="dispatch-sheet">
-<header class="sheet-head" data-od-id="dispatch-header">
-<h2 id="dispatch-title" data-od-id="dispatch-title">Dispatch</h2>
-<button type="button" class="btn ghost" data-close data-od-id="dispatch-close">Close <kbd class="hint" aria-hidden="true">Esc</kbd></button>
-</header>
-<form class="compose" id="dispatch-form" data-od-id="dispatch-form">
-<span id="dispatch-mode-label" data-od-id="dispatch-mode-label">Mode</span>
-<div class="segmented" id="dispatch-mode" role="radiogroup" aria-labelledby="dispatch-mode-label" data-od-id="dispatch-mode">
-<button type="button" role="radio" class="seg" id="dispatch-mode-investigate" data-mode="investigate" aria-checked="true" aria-keyshortcuts="i" data-od-id="dispatch-mode-investigate">Investigate</button>
-<button type="button" role="radio" class="seg" id="dispatch-mode-investigate-fix" data-mode="investigate-fix" aria-checked="false" tabindex="-1" aria-keyshortcuts="F" data-od-id="dispatch-mode-investigate-fix">Investigate + fix</button>
-<button type="button" role="radio" class="seg" id="dispatch-mode-act" data-mode="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="A" data-od-id="dispatch-mode-act">Act</button>
-<button type="button" role="radio" class="seg" id="dispatch-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="dispatch-mode-plan">Plan</button>
-<button type="button" role="radio" class="seg" id="dispatch-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="dispatch-mode-plan-into">Plan into</button>
-</div>
-<p class="mode-help" id="dispatch-mode-help" data-od-id="dispatch-mode-help"></p>
-<div class="compose-grid" id="dispatch-launch" data-od-id="dispatch-launch">
-<div class="pair"><label id="dispatch-engine-label" for="dispatch-engine">Engine</label>
-<button type="button" class="field picker-field" id="dispatch-engine" value="" aria-labelledby="dispatch-engine-label dispatch-engine" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-engine"></button></div>
-<div class="pair"><label id="dispatch-model-label" for="dispatch-model">Model</label>
-<button type="button" class="field picker-field" id="dispatch-model" value="" aria-labelledby="dispatch-model-label dispatch-model" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-model"></button></div>
-<div class="pair"><label id="dispatch-thinking-label" for="dispatch-thinking">Thinking</label>
-<button type="button" class="field picker-field" id="dispatch-thinking" value="" aria-labelledby="dispatch-thinking-label dispatch-thinking" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-thinking"></button></div>
-</div>
-<div class="compose-grid" id="dispatch-models" hidden data-od-id="dispatch-models">
-<div class="pair"><label id="dispatch-executor-label" for="dispatch-executor">Execution model</label>
-<button type="button" class="field picker-field" id="dispatch-executor" value="" aria-labelledby="dispatch-executor-label dispatch-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-executor"></button></div>
-<div class="pair" id="dispatch-executor-effort-pair"><label id="dispatch-executor-effort-label" for="dispatch-executor-effort">Execution effort</label>
-<button type="button" class="field picker-field" id="dispatch-executor-effort" value="" aria-labelledby="dispatch-executor-effort-label dispatch-executor-effort" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="dispatch-executor-effort"></button></div>
-</div>
-<label for="dispatch-note">Instruction</label>
-<textarea class="field" id="dispatch-note" rows="4" autocomplete="off" placeholder="Optional direction for the session" data-od-id="dispatch-note"></textarea>
-<div class="attach" data-od-id="dispatch-attach">
-<button type="button" class="btn ghost square mic" data-dictate="dispatch-note" aria-label="Dictate the instruction" aria-pressed="false" data-od-id="dispatch-dictate"></button>
-<input type="file" class="sr-only" id="dispatch-image" accept="image/png,image/jpeg,image/webp,image/gif" tabindex="-1" aria-label="Image file" data-od-id="dispatch-image">
-<button type="button" class="btn ghost attach-add" id="dispatch-image-add" aria-controls="dispatch-image" data-od-id="dispatch-image-add">Attach image</button>
-<div class="attach-preview" id="dispatch-image-preview" hidden data-od-id="dispatch-image-preview">
-<img id="dispatch-image-thumb" alt="" width="56" height="56" data-od-id="dispatch-image-thumb">
-<span id="dispatch-image-name" data-od-id="dispatch-image-name"></span>
-<button type="button" class="btn ghost" id="dispatch-image-remove" aria-label="Remove the attached image">Remove</button>
-</div>
-</div>
-<div class="phrases" id="dispatch-phrases" data-for="dispatch-note" role="group" aria-label="Phrases you often say" hidden data-od-id="dispatch-phrases"></div>
-<button type="submit" class="btn primary" id="dispatch-start" data-od-id="dispatch-start">Launch <kbd class="hint" aria-hidden="true">Ctrl+Enter</kbd></button>
-</form>
-<p class="send-hint" id="dispatch-hint" aria-live="polite" data-od-id="dispatch-hint"></p>
-</dialog>
 <dialog id="settings" class="modal" aria-labelledby="settings-title" data-od-id="settings-sheet">
 <header class="sheet-head" data-od-id="settings-header">
 <h2 id="settings-title" data-od-id="settings-title">Settings</h2>
@@ -199,7 +163,7 @@ try {
 <p class="mode-help" id="dictation-dictionary-help" data-od-id="dictation-dictionary-help">Please put one entry on each line, as what the browser hears = what to write. Matching ignores letter case and takes whole words only.</p>
 <label for="dictation-phrases" data-od-id="dictation-phrases-label">Phrases you often say</label>
 <textarea class="field" id="dictation-phrases" rows="4" autocomplete="off" placeholder="Please report what changed." aria-describedby="dictation-phrases-help" data-od-id="dictation-phrases"></textarea>
-<p class="mode-help" id="dictation-phrases-help" data-od-id="dictation-phrases-help">One per line. New session and Dispatch show each one as a button that adds it to the text.</p>
+<p class="mode-help" id="dictation-phrases-help" data-od-id="dictation-phrases-help">One per line. The session sheet shows each one as a button that adds it to the text.</p>
 <div class="dictation-actions" data-od-id="dictation-actions">
 <button type="submit" class="btn primary" id="dictation-save" data-od-id="dictation-save">Save</button>
 </div>
@@ -216,14 +180,15 @@ try {
 <dt><kbd>Enter</kbd></dt><dd>Run the primary action on this card</dd>
 <dt><kbd>a</kbd></dt><dd>Acknowledge</dd>
 <dt><kbd>x</kbd></dt><dd>Acknowledge and close the card's session, which exits omp and closes its tmux pane or archives its dsh session</dd>
-<dt><kbd>p</kbd></dt><dd>Plan next step, or Dispatch with Plan preselected</dd>
+<dt><kbd>p</kbd></dt><dd>Plan next step, or the session sheet with Plan preselected</dd>
 <dt><kbd>d</kbd></dt><dd>Do next step: run a report's recommended step as goal work</dd>
-<dt><kbd>i</kbd></dt><dd>Dispatch with Investigate preselected</dd>
-<dt><kbd>F</kbd></dt><dd>Dispatch with Investigate + fix preselected</dd>
-<dt><kbd>A</kbd></dt><dd>Dispatch with Act preselected</dd>
-<dt><kbd>P</kbd></dt><dd>Dispatch with Plan into preselected</dd>
+<dt><kbd>i</kbd></dt><dd>The session sheet with Investigate preselected</dd>
+<dt><kbd>F</kbd></dt><dd>The session sheet with Investigate + fix preselected</dd>
+<dt><kbd>A</kbd></dt><dd>The session sheet with Act preselected</dd>
+<dt><kbd>P</kbd></dt><dd>The session sheet with Plan into preselected</dd>
+<dt><kbd>g</kbd></dt><dd>The session sheet for a new goal</dd>
 <dt><kbd>o</kbd></dt><dd>Other answer</dd>
-<dt><kbd>n</kbd></dt><dd>Note for this action, which Dispatch takes as its instruction</dd>
+<dt><kbd>n</kbd></dt><dd>Note for this action, which the session sheet takes as its instruction</dd>
 <dt><kbd>r</kbd></dt><dd>Request the final report from a session whose reply missed it</dd>
 <dt><kbd>R</kbd></dt><dd>Restore a run that ended without its report</dd>
 <dt><kbd>s</kbd></dt><dd>Skip</dd>
@@ -234,7 +199,7 @@ try {
 <dt><kbd>j</kbd> <kbd>k</kbd> <kbd>←</kbd> <kbd>→</kbd></dt><dd>Next / previous without acting</dd>
 <dt><kbd>h</kbd></dt><dd>History</dd>
 <dt><kbd>c</kbd></dt><dd>New session from your own prompt</dd>
-<dt><kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt><dd>Start from the New session sheet, or launch from Dispatch</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>Enter</kbd></dt><dd>Start from the session sheet</dd>
 <dt><kbd>?</kbd></dt><dd>This sheet</dd>
 <dt><kbd>f</kbd></dt><dd>Fit / Readable in Peek</dd>
 <dt><kbd>Esc</kbd></dt><dd>Close a dialog or popover, or cancel inline Other</dd>
