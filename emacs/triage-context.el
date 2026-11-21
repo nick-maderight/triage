@@ -34,23 +34,30 @@
       (user-error "Save the source buffer before delegating"))))
 
 (defun triage-context--org-own-body (subtree-end)
-  "Return the current heading's own body, ending before SUBTREE-END."
-  (let ((level (org-current-level)))
-    (org-end-of-meta-data t)
-    (let* ((start (point))
-           (child (save-excursion
-                    (when (re-search-forward
-                           (concat "^" (make-string (1+ level) ?*) "[ \t]")
-                           subtree-end t)
-                      (line-beginning-position))))
-           (text (string-trim
-                  (buffer-substring-no-properties start (or child subtree-end)))))
-      (unless (string-empty-p text) text))))
+  "Return the current heading's own body, ending before SUBTREE-END.
+Point does not move, so a caller can walk headings after reading a body."
+  (save-excursion
+    (let ((level (org-current-level)))
+      (org-end-of-meta-data t)
+      (let* ((start (point))
+             (child (save-excursion
+                      (when (re-search-forward
+                             (concat "^" (make-string (1+ level) ?*) "[ \t]")
+                             subtree-end t)
+                        (line-beginning-position))))
+             (text (string-trim
+                    (buffer-substring-no-properties start (or child subtree-end)))))
+        (unless (string-empty-p text) text)))))
 
 (defun triage-context--org-ancestors ()
-  "Return the titles and own bodies of the current heading's ancestors."
-  (let (contexts)
-    (while (org-up-heading-safe)
+  "Return the titles and own bodies of the current heading's ancestors.
+Stop when a step no longer climbs, so a heading that fails to move cannot
+spin here forever."
+  (let ((contexts nil)
+        (heading (point)))
+    (while (and (org-up-heading-safe)
+                (not (equal (point) heading)))
+      (setq heading (point))
       (let ((title (org-get-heading t t t t))
             (body (triage-context--org-own-body
                    (save-excursion (org-end-of-subtree t t) (point)))))

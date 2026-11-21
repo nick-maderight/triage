@@ -29,6 +29,30 @@
         (should (string-match-p "Write task files in /tmp\\." (car context)))
         (should (equal (cdr context) "/tmp/"))))))
 
+(ert-deftest triage-context-test-org-ancestors-climb-every-level ()
+  "Ancestor capture climbs through grandparents that hold only child headings.
+A heading with no body of its own used to leave point on its first child,
+so the walk returned to the same ancestor forever."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Year\n** Month\n*** Day\n**** TODO Task\nTask body\n")
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\*\\*\\*")
+    (should (equal (triage-context--org-ancestors)
+                   "Year\n\nMonth\n\nDay"))))
+
+(ert-deftest triage-context-test-own-body-keeps-point ()
+  "Reading an ancestor body leaves point on its heading."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Parent\nParent body\n** Child\nChild body\n")
+    (goto-char (point-min))
+    (org-back-to-heading t)
+    (let ((heading (point))
+          (end (save-excursion (org-end-of-subtree t t) (point))))
+      (should (equal (triage-context--org-own-body end) "Parent body"))
+      (should (= (point) heading)))))
+
 (ert-deftest triage-context-test-mail-selection-limits-the-task ()
   "A selected mail passage stays the task while the thread remains reference."
   (let ((prompt (triage-context--mail-prompt
