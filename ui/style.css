@@ -1410,6 +1410,16 @@ dialog.sheet[open] {
   justify-self: end;
   margin: 12px 0 20px;
 }
+dialog.modal:has(.compose) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.compose {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 .segmented {
   display: grid;
   grid-auto-flow: column;
