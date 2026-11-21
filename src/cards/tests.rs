@@ -104,7 +104,7 @@ list-panes)
     command='omp'
     if [ -f "$HOME/tmux-new-pane" ]; then
         IFS= read -r pane < "$HOME/tmux-new-pane"
-        tty='/dev/pts/42'
+        tty='/dev/pts/9042'
         title='π > session'
     fi
     if [ -f "$HOME/tmux-working" ]; then title='π ⠋ session'; fi
@@ -126,7 +126,7 @@ list-panes)
     if [ -f "$HOME/tmux-second-pane" ]; then
         tag13=''
         if [ -f "$HOME/tmux-tag-%13" ]; then IFS= read -r tag13 < "$HOME/tmux-tag-%13"; fi
-        tty13='/dev/pts/13'
+        tty13='/dev/pts/9013'
         if [ -f "$HOME/tmux-tty-13" ]; then
             IFS= read -r tty13 < "$HOME/tmux-tty-13"
         fi
@@ -2704,7 +2704,7 @@ fn mass_vanish_keeps_info_cards() {
         );
         write_transcript(
             &root,
-            "/dev/pts/13",
+            "/dev/pts/9013",
             &root.join("transcript-13.jsonl"),
             &[assistant_text_line("a2", "Pane thirteen is done.")],
         );
@@ -6758,10 +6758,13 @@ fn reused_pane_id_closes_old_pane_card_as_exited() {
             &[assistant_text_line("a1", "The new pane's own reply.")],
         );
         fs::write(root.join("tmux-second-pane"), b"").unwrap();
+        // The second pane's tty is fake and far above any real pty, so a pty the first pane
+        // gets from the kernel can never share its breadcrumb.
+        fs::write(root.join("tmux-tty-13"), b"/dev/pts/9514\n").unwrap();
         let transcript13 = root.join("transcript-13.jsonl");
         write_transcript(
             &root,
-            "/dev/pts/13",
+            "/dev/pts/9514",
             &transcript13,
             &[assistant_text_line("e1", "Second pane reply.")],
         );
