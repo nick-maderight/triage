@@ -6,6 +6,40 @@ fn db() -> Db {
     Db::open(&path).unwrap()
 }
 
+#[test]
+fn open_drops_the_removed_phrases_column_and_keeps_the_dictionary() {
+    let dir = std::env::temp_dir().join(format!("triage-db-migrate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("triage.sqlite");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dictation (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                dictionary TEXT NOT NULL,
+                phrases TEXT NOT NULL
+            );
+            INSERT INTO dictation (id, dictionary, phrases) VALUES (1, 'forge jo = Forgejo', 'Ship it.');",
+        )
+        .unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.dictation().unwrap(), "forge jo = Forgejo");
+    let columns: Vec<String> = db
+        .conn
+        .lock()
+        .unwrap()
+        .prepare("SELECT name FROM pragma_table_info('dictation')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<String>, _>>()
+        .unwrap();
+    assert_eq!(columns, vec!["id", "dictionary"]);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn open_restricts_existing_database_and_wal_file_permissions() {

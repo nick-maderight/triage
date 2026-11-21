@@ -1334,13 +1334,10 @@
     try {
       document.querySelector('#btn-settings').click();
       await waitFor(
-        () =>
-          settings.open &&
-          document.documentElement.dataset.dictation === 'on' &&
-          document.querySelector('#compose-phrases [data-phrase]'),
-        'the Settings sheet, dictation on and a saved phrase',
+        () => settings.open && document.documentElement.dataset.dictation === 'on',
+        'the Settings sheet and dictation on',
       );
-      for (const id of ['#dictation-dictionary', '#dictation-phrases', '#dictation-save'])
+      for (const id of ['#dictation-dictionary', '#dictation-save'])
         assert(visible(document.querySelector(id)), `${id} is visible`);
       assert(document.documentElement.scrollWidth <= innerWidth, 'the page does not scroll sideways');
       settings.close();
@@ -1353,9 +1350,6 @@
       document.querySelector('#btn-compose').click();
       await waitFor(() => compose.open, 'the New session sheet');
       assert(visible(mic), 'the prompt has a visible microphone');
-      const phrase = document.querySelector('#compose-phrases [data-phrase]');
-      phrase.click();
-      assert(prompt.value === phrase.dataset.phrase, 'a phrase button writes its phrase into the prompt');
       prompt.value = 'Fix the build';
       prompt.setSelectionRange(prompt.value.length, prompt.value.length);
       mic.click();

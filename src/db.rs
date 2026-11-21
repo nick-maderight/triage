@@ -248,12 +248,20 @@ impl Db {
             CREATE INDEX IF NOT EXISTS events_type_ts_ms_idx ON events(type, ts_ms);
             CREATE TABLE IF NOT EXISTS dictation (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                dictionary TEXT NOT NULL,
-                phrases TEXT NOT NULL
+                dictionary TEXT NOT NULL
             );
             DROP TABLE IF EXISTS push_subscriptions;
             DROP TABLE IF EXISTS push_vapid;",
         )?;
+        // Drop only the obsolete column so existing dictionaries survive upgrades.
+        let phrases_column: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('dictation') WHERE name = 'phrases'",
+            [],
+            |row| row.get(0),
+        )?;
+        if phrases_column > 0 {
+            conn.execute("ALTER TABLE dictation DROP COLUMN phrases", [])?;
+        }
         Ok(Db {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
@@ -746,22 +754,22 @@ impl Db {
         conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0))
     }
 
-    /// The saved dictation dictionary and phrases, both empty until the first save.
-    pub fn dictation(&self) -> Result<(String, String)> {
+    /// The saved dictation dictionary, empty until the first save.
+    pub fn dictation(&self) -> Result<String> {
         self.conn
             .lock()
             .unwrap()
-            .query_row("SELECT dictionary, phrases FROM dictation WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row("SELECT dictionary FROM dictation WHERE id = 1", [], |row| row.get(0))
             .optional()
             .map(Option::unwrap_or_default)
     }
 
-    /// Stores the dictionary and phrases exactly as typed. The page checks the dictionary before it saves.
-    pub fn set_dictation(&self, dictionary: &str, phrases: &str) -> Result<()> {
+    /// Stores the dictionary exactly as typed. The page checks each line before it saves.
+    pub fn set_dictation(&self, dictionary: &str) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO dictation (id, dictionary, phrases) VALUES (1, ?1, ?2)
-             ON CONFLICT(id) DO UPDATE SET dictionary = excluded.dictionary, phrases = excluded.phrases",
-            params![dictionary, phrases],
+            "INSERT INTO dictation (id, dictionary) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET dictionary = excluded.dictionary",
+            params![dictionary],
         )?;
         Ok(())
     }

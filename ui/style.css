@@ -1362,7 +1362,7 @@ dialog.sheet[open] {
   font-size: 13px;
   font-weight: 500;
 }
-.compose > :is(.compose-grid, #compose-mode-label, #compose-task-label, label[for='dictation-phrases']) {
+.compose > :is(.compose-grid, #compose-mode-label, #compose-task-label) {
   margin-top: 12px;
 }
 /* The card the sheet was opened for. Clear drops it and leaves a plain session. */
@@ -2240,19 +2240,6 @@ dialog.picker::backdrop {
 .mic[aria-pressed='true'] {
   background: var(--negative-bg);
   color: var(--negative-fg);
-}
-.phrases {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.phrases[hidden] {
-  display: none;
-}
-.phrase {
-  max-width: 100%;
-  white-space: normal;
-  text-align: start;
 }
 .compose > h3 {
   font-weight: 600;

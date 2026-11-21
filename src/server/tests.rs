@@ -1265,10 +1265,10 @@ async fn dictation_settings_start_empty_and_keep_the_latest_save() {
     let (address, server) = start_http_server(state).await;
     let empty = http_request(address, "GET", "/v1/dictation", "").await;
     assert_eq!(empty.status, StatusCode::OK);
-    assert_eq!(empty.body, serde_json::json!({"dictionary": "", "phrases": ""}));
+    assert_eq!(empty.body, serde_json::json!({"dictionary": ""}));
     for saved in [
-        serde_json::json!({"dictionary": "forge jo = Forgejo\n\nred mine = Redmine", "phrases": "Please report what changed."}),
-        serde_json::json!({"dictionary": "", "phrases": "Ship it."}),
+        serde_json::json!({"dictionary": "forge jo = Forgejo\n\nred mine = Redmine"}),
+        serde_json::json!({"dictionary": ""}),
     ] {
         let response = http_request(address, "POST", "/v1/dictation", &saved.to_string()).await;
         assert_eq!(response.status, StatusCode::OK, "{}", response.body);

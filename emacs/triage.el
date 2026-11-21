@@ -14,7 +14,7 @@
 ;;   M-x triage             open the inbox
 ;;   M-x triage-new-session start a session
 ;;   M-x triage-history     browse handled cards
-;;   M-x triage-settings    edit dictation phrases
+;;   M-x triage-settings    edit the dictation dictionary
 ;;   M-x triage-delegate   dispatch the current Org, mail, Dired or region context
 ;;   M-x triage-clock-mode  clock an Org heading while you review cards
 ;;   M-x triage-reload      load changed Triage files, keymaps included

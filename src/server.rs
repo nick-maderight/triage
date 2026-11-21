@@ -318,7 +318,6 @@ struct ModelsQuery {
 #[derive(serde::Deserialize)]
 struct DictationReq {
     dictionary: String,
-    phrases: String,
 }
 
 async fn queue(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -1383,9 +1382,7 @@ async fn context(
 
 async fn dictation_settings(State(state): State<Arc<AppState>>) -> axum::response::Response {
     match tokio::task::spawn_blocking(move || state.db.dictation()).await {
-        Ok(Ok((dictionary, phrases))) => {
-            axum::Json(serde_json::json!({"dictionary": dictionary, "phrases": phrases})).into_response()
-        }
+        Ok(Ok(dictionary)) => axum::Json(serde_json::json!({"dictionary": dictionary})).into_response(),
         Ok(Err(error)) => internal_error(error),
         Err(error) => internal_error(error),
     }
@@ -1395,7 +1392,7 @@ async fn save_dictation(
     State(state): State<Arc<AppState>>,
     axum::Json(request): axum::Json<DictationReq>,
 ) -> axum::response::Response {
-    match tokio::task::spawn_blocking(move || state.db.set_dictation(&request.dictionary, &request.phrases)).await {
+    match tokio::task::spawn_blocking(move || state.db.set_dictation(&request.dictionary)).await {
         Ok(Ok(())) => axum::Json(serde_json::json!({"ok": true})).into_response(),
         Ok(Err(error)) => internal_error(error),
         Err(error) => internal_error(error),

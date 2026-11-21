@@ -55,7 +55,6 @@ const S = {
   contextToken: 0,
   picker: null,
   dictating: null,
-  phrases: [],
   dictionary: [],
 };
 (() => {
@@ -1836,7 +1835,7 @@ const S = {
     if (prior?.isConnected) prior.focus({ preventScroll: true });
     else if (!document.querySelector('dialog[open]')) focusPrimary();
   }
-  // Dictation runs in the browser and the daemon only stores the dictionary and the phrases. A browser that can
+  // Dictation runs in the browser and the daemon only stores the dictionary. A browser that can
   // recognize speech on this device is told to keep the audio there. iPhone and iPad Safari offers only
   // webkitSpeechRecognition, which sends the audio to Apple's speech service, so those microphones still work.
   const DICTATION_STATUS = {
@@ -2158,14 +2157,6 @@ const S = {
       },
     );
   }
-  function renderPhrases() {
-    for (const box of document.querySelectorAll('.phrases')) {
-      box.replaceChildren(
-        ...S.phrases.map((phrase) => h('button', { type: 'button', class: 'btn phrase', 'data-phrase': phrase }, phrase)),
-      );
-      box.hidden = !S.phrases.length;
-    }
-  }
   async function checkSpeech() {
     const engine = speechEngine();
     let status = window.isSecureContext ? 'unavailable' : 'insecure';
@@ -2182,12 +2173,6 @@ const S = {
     try {
       const data = await api('/v1/dictation');
       $('#dictation-dictionary').value = data.dictionary;
-      $('#dictation-phrases').value = data.phrases;
-      S.phrases = data.phrases
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean);
-      renderPhrases();
       S.dictionary = parseDictionary(data.dictionary);
     } catch (e) {
       $('#dictation-hint').textContent = `Could not load dictation settings (${e.message}).`;
@@ -2207,7 +2192,7 @@ const S = {
     save.disabled = true;
     hint.textContent = 'Saving…';
     try {
-      await api('/v1/dictation', { dictionary, phrases: $('#dictation-phrases').value });
+      await api('/v1/dictation', { dictionary });
       hint.textContent = 'Saved.';
       await loadDictation();
     } catch (err) {
@@ -3342,10 +3327,8 @@ const S = {
       return;
     }
     if (S.laterOpen && !e.target.closest?.('.later')) closeLater(false);
-    const mic = e.target.closest?.('[data-dictate]'),
-      phrase = e.target.closest?.('[data-phrase]');
+    const mic = e.target.closest?.('[data-dictate]');
     if (mic) void toggleDictation(mic.dataset.dictate);
-    else if (phrase) insertText($(`#${phrase.parentElement.dataset.for}`), phrase.dataset.phrase);
   });
   document.addEventListener('focusin', (e) => {
     const menu = $('#later-menu');

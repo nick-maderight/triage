@@ -1,9 +1,9 @@
-;;; triage-settings.el --- Dictation dictionary and phrases for triage -*- lexical-binding: t; -*-
+;;; triage-settings.el --- Dictation dictionary for triage -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
-;; One buffer edits the dictation dictionary and the saved phrases.  The
-;; two sections are split by read-only separator lines.
+;; One buffer edits the dictation dictionary below read-only title and
+;; separator lines.
 
 ;;; Code:
 
@@ -33,8 +33,8 @@
      `(read-only t front-sticky (read-only) rear-nonsticky (read-only)
        font-lock-face ,face triage-settings-part ,part))))
 
-(defun triage-settings--insert (dictionary phrases)
-  "Fill the current buffer with DICTIONARY and PHRASES, point in the dictionary."
+(defun triage-settings--insert (dictionary)
+  "Fill the current buffer with DICTIONARY, point in the dictionary."
   (let ((inhibit-read-only t)
         (dictionary-start nil))
     (erase-buffer)
@@ -47,38 +47,29 @@
     (insert dictionary)
     (unless (or (string-empty-p dictionary) (string-suffix-p "\n" dictionary))
       (insert "\n"))
-    (triage-settings--fixed
-     "──── Phrases: one per line, offered by p on the options and C-c p in the text ────"
-     'triage-muted 'phrases)
-    (insert phrases)
     (goto-char dictionary-start)))
 
-(defun triage-settings--sections ()
-  "Return (DICTIONARY . PHRASES), the text after each separator line."
+(defun triage-settings--dictionary ()
+  "Return the dictionary text after the separator line."
   (save-excursion
     (goto-char (point-min))
     (let ((dictionary (text-property-search-forward
                        'triage-settings-part 'dictionary #'eq)))
-      (goto-char (point-min))
-      (let ((phrases (text-property-search-forward
-                      'triage-settings-part 'phrases #'eq)))
-        (unless (and dictionary phrases)
-          (user-error "The dictation separators are missing"))
-        (cons (buffer-substring-no-properties
-               (prop-match-end dictionary) (prop-match-beginning phrases))
-              (buffer-substring-no-properties
-               (prop-match-end phrases) (point-max)))))))
+      (unless dictionary
+        (user-error "The dictation separator is missing"))
+      (buffer-substring-no-properties
+       (prop-match-end dictionary) (point-max)))))
 
 (defun triage-settings-save ()
-  "Validate the dictionary, then save the dictionary and phrases."
+  "Validate the dictionary, then save it."
   (interactive)
-  (pcase-let ((`(,dictionary . ,phrases) (triage-settings--sections)))
+  (let ((dictionary (triage-settings--dictionary)))
     (triage-settings--validate dictionary)
     (condition-case err
         (progn
           (triage-api-request-sync
            'post "/v1/dictation"
-           :body `((dictionary . ,dictionary) (phrases . ,phrases)))
+           :body `((dictionary . ,dictionary)))
           (message "Saved."))
       (triage-api-error
        (message "%s" (propertize (format "Save failed: %s" (nth 2 err))
@@ -99,7 +90,7 @@
 
 ;;;###autoload
 (defun triage-settings ()
-  "Edit the dictation dictionary and the saved phrases."
+  "Edit the dictation dictionary."
   (interactive)
   (let ((data (condition-case err
                   (triage-api-request-sync 'get "/v1/dictation")
@@ -110,8 +101,7 @@
     (with-current-buffer buffer
       (text-mode)
       (triage-settings-mode 1)
-      (triage-settings--insert (or (alist-get 'dictionary data) "")
-                               (or (alist-get 'phrases data) "")))
+      (triage-settings--insert (or (alist-get 'dictionary data) "")))
     (pop-to-buffer buffer)))
 
 (provide 'triage-settings)

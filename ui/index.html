@@ -104,7 +104,6 @@ try {
 <button type="button" class="btn ghost" id="compose-image-remove" aria-label="Remove the attached image">Remove</button>
 </div>
 </div>
-<div class="phrases" id="compose-phrases" data-for="compose-prompt" role="group" aria-label="Phrases you often say" hidden data-od-id="compose-phrases"></div>
 <div class="compose-grid" id="compose-target" data-od-id="compose-target">
 <div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory</label>
 <button type="button" class="field picker-field" id="compose-cwd" value="" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
@@ -167,9 +166,6 @@ try {
 <label for="dictation-dictionary" data-od-id="dictation-dictionary-label">Dictionary</label>
 <textarea class="field" id="dictation-dictionary" rows="5" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="forge jo = Forgejo" aria-describedby="dictation-dictionary-help" data-od-id="dictation-dictionary"></textarea>
 <p class="mode-help" id="dictation-dictionary-help" data-od-id="dictation-dictionary-help">Please put one entry on each line, as what the browser hears = what to write. Matching ignores letter case and takes whole words only.</p>
-<label for="dictation-phrases" data-od-id="dictation-phrases-label">Phrases you often say</label>
-<textarea class="field" id="dictation-phrases" rows="4" autocomplete="off" placeholder="Please report what changed." aria-describedby="dictation-phrases-help" data-od-id="dictation-phrases"></textarea>
-<p class="mode-help" id="dictation-phrases-help" data-od-id="dictation-phrases-help">One per line. The session sheet shows each one as a button that adds it to the text.</p>
 <div class="dictation-actions" data-od-id="dictation-actions">
 <button type="submit" class="btn primary" id="dictation-save" data-od-id="dictation-save">Save</button>
 </div>
