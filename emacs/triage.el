@@ -17,6 +17,7 @@
 ;;   M-x triage-settings    edit dictation phrases
 ;;   M-x triage-delegate   dispatch the current Org, mail, Dired or region context
 ;;   M-x triage-clock-mode  clock an Org heading while you review cards
+;;   M-x triage-reload      load changed Triage files, keymaps included
 ;;
 ;; In the inbox, use RET for the primary action, 1-9 for options, j/k to move,
 ;; d to dispatch, s to skip, l to defer, t for context, v to peek and ? for keys.
@@ -94,6 +95,46 @@
           (delete '(:eval (triage-mode-line--string)) global-mode-string))
     (remove-hook 'triage-queue-update-hook #'force-mode-line-update)
     (triage-queue-unsubscribe 'mode-line)))
+
+;;;###autoload
+(defun triage-reload ()
+  "Load every Triage file again, keymaps included.
+A source file newer than its compiled file wins.  A plain `load' leaves a
+bound variable alone.  A keymap would then keep its old keys until Emacs
+restarted.  This command unbinds each Triage keymap, loads the files and
+copies each new keymap into the old one, which buffers and text already
+hold.  A key added to a Triage keymap at run time is lost."
+  (interactive)
+  (let* ((dir (file-name-directory (symbol-file 'triage-reload 'defun)))
+         (entries (seq-filter (lambda (entry)
+                                (and (stringp (car entry))
+                                     (equal (file-name-directory (car entry)) dir)))
+                              load-history))
+         (files (delete-dups
+                 (mapcar (lambda (entry) (file-name-sans-extension (car entry)))
+                         (reverse entries))))
+         (maps (mapcar (lambda (symbol) (cons symbol (symbol-value symbol)))
+                       (delete-dups
+                        (seq-filter (lambda (item)
+                                      (and (symbolp item) (boundp item)
+                                           (eq (car-safe (symbol-value item)) 'keymap)))
+                                    (apply #'append (mapcar #'cdr entries)))))))
+    (dolist (map maps)
+      (makunbound (car map)))
+    (unwind-protect
+        (let ((load-prefer-newer t))
+          (dolist (file files)
+            (load file nil t)))
+      (pcase-dolist (`(,symbol . ,map) maps)
+        (let ((fresh (and (boundp symbol) (symbol-value symbol))))
+          (when (and (keymapp fresh) (not (eq fresh map)))
+            (setcdr map (cdr fresh))
+            ;; `define-minor-mode' hands the new keymap to this list as it loads.
+            (dolist (entry minor-mode-map-alist)
+              (when (eq (cdr entry) fresh)
+                (setcdr entry map))))
+          (set symbol map))))
+    (message "Reloaded Triage")))
 
 (provide 'triage)
 ;;; triage.el ends here

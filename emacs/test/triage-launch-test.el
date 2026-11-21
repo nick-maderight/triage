@@ -5,7 +5,7 @@
 
 ;;; Code:
 (require 'ert)
-(require 'triage-launch)
+(require 'triage)
 
 (defun triage-launch-test--sheet (kind mode task)
   "Turn the current buffer into a drawn launch sheet of KIND in MODE and TASK."
@@ -322,6 +322,21 @@
       (should-error (triage-start-session "Task" :mode "act") :type 'user-error)
       (should-error (triage-start-session "Task" :task "bogus") :type 'user-error)
       (should-not called))))
+
+(ert-deftest triage-launch-test-reload-gives-a-held-keymap-its-new-keys ()
+  "`triage-reload' brings a key into the keymap object a drawn sheet holds."
+  (with-temp-buffer
+    (triage-launch-test--sheet 'dispatch "goal" "fix")
+    (let ((map triage-launch-options-map))
+      (unwind-protect
+          (progn
+            (keymap-unset map "T" t)
+            (goto-char (point-min))
+            (should-not (eq (key-binding "T") #'triage-launch-set-task))
+            (triage-reload)
+            (should (eq triage-launch-options-map map))
+            (should (eq (key-binding "T") #'triage-launch-set-task)))
+        (keymap-set triage-launch-options-map "T" #'triage-launch-set-task)))))
 
 (provide 'triage-launch-test)
 ;;; triage-launch-test.el ends here

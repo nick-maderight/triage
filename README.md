@@ -192,7 +192,7 @@ Card actions use Magit-style mnemonic keys, and every dock button prints its key
 
 Context capture widens narrowed Org buffers while it reads the task and restores the narrowing before it returns. Region prompts use the saved text and name the exact selected lines. A contextual launch asks before replacing a different unsent draft. Cancel hides a New session or context sheet and keeps its text for the next time it opens. A New session or context launch keeps the sheet open until the daemon answers. A failed launch leaves the text and options ready for another try. Repeated submits cannot start duplicate sessions.
 
-`triage-clock-mode` clocks the Org heading `triage review` while you review cards. Set `triage-clock-heading` to `("~/Documents/orgstuff/master.org" "triage review")`, then turn the mode on. It counts the inbox, card context, peek, card Dispatch sheet and history when the selected window belongs to a focused frame. Checks run every five seconds. A clock interrupted by review resumes when you leave those screens. Five minutes without input stops review at the last key and leaves the earlier clock stopped. Clocks under a minute leave no logbook line. Leaving review opens no clock-out note.
+`triage-clock-mode` clocks the Org heading `triage review` while you review cards. Set `triage-clock-heading` to `("~/Documents/orgstuff/master.org" "triage review")`, then turn the mode on. Review starts on the inbox, card context, peek, card Dispatch sheet or history when the selected window belongs to a focused frame and Emacs has seen input in the last five minutes. Every Triage screen keeps the clock going. A visit elsewhere shorter than a minute also keeps one logbook line; after a minute away, review stops at the last time it was seen and resumes the interrupted clock from there. Five minutes without input on a Triage screen stops review at the last key and leaves the earlier clock stopped. Clocks under a minute leave no logbook line. Leaving review opens no clock-out note.
 
 
 New omp windows set `OMP_MCP_STARTUP_TIMEOUT_MS=0`, so the first turn waits for MCP servers before it uses their tools.
@@ -202,6 +202,8 @@ New omp windows set `OMP_MCP_STARTUP_TIMEOUT_MS=0`, so the first turn waits for 
 Run `cargo test --release`, `node --check ui/app.js && node --check ui/sw.js`, `TRIAGE_BIN="$PWD/target/release/triage" node --test tests/*.test.js`, `cargo build && tests/smoke.sh`, and `cargo clippy --release`. The smoke test uses `target/debug/triage` unless `TRIAGE_BIN` names another binary. The Rust unit tests of `cards`, `server` and `db` live beside their module in `src/<module>/tests.rs`.
 
 The Emacs client lives in `emacs/`. With Emacs 30.1 or newer and dependencies under `ELPACA` listed in `emacs/Makefile` under `DEPS`, run `make -C emacs check`. Run `cargo build` first for daemon-backed ERT tests. Set `TRIAGE_BIN` to the absolute daemon path when needed.
+
+To load changed Emacs files into a running Emacs, run `make -C emacs compile` and then `emacsclient --eval '(triage-reload)'`. A plain `load` keeps each Triage keymap as Emacs first defined it. A new key then stays unbound until Emacs restarts.
 
 ## License
 MIT. See `LICENSE`. The bundled Geist and Geist Mono fonts in `ui/fonts/` are under the SIL Open Font License 1.1, in `ui/fonts/OFL.txt`.
