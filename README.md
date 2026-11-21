@@ -192,6 +192,9 @@ Card actions use Magit-style mnemonic keys, and every dock button prints its key
 
 Context capture widens narrowed Org buffers while it reads the task and restores the narrowing before it returns. Region prompts use the saved text and name the exact selected lines. A contextual launch asks before replacing a different unsent draft. Cancel hides a New session or context sheet and keeps its text for the next time it opens. A New session or context launch keeps the sheet open until the daemon answers. A failed launch leaves the text and options ready for another try. Repeated submits cannot start duplicate sessions.
 
+`triage-clock-mode` clocks the Org heading `triage review` while you review cards. Set `triage-clock-heading` to `("~/Documents/orgstuff/master.org" "triage review")`, then turn the mode on. It counts the inbox, card context, peek, card Dispatch sheet and history when the selected window belongs to a focused frame. Checks run every five seconds. A clock interrupted by review resumes when you leave those screens. Five minutes without input stops review at the last key and leaves the earlier clock stopped. Clocks under a minute leave no logbook line. Leaving review opens no clock-out note.
+
+
 New omp windows set `OMP_MCP_STARTUP_TIMEOUT_MS=0`, so the first turn waits for MCP servers before it uses their tools.
 
 ## Development
