@@ -932,17 +932,29 @@
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', bubbles: true }));
         await waitFor(() => compose.open, 'the session sheet opens on P');
         const mode = (name) => document.querySelector(`#compose-mode-${name}`);
+        // The sheet opens on the focused card's engine. A dsh card hides the omp execution
+        // fields, because its Model and Thinking carry the plan out.
+        const dshEngine = document.querySelector('#compose-engine').value === 'dsh';
         assert(mode('plan-into').getAttribute('aria-checked') === 'true', 'P preselects Plan into');
         assert(!document.querySelector('#compose-mode-goal').hidden, 'a card shows Goal');
-        assert(!compose.querySelector('#compose-models').hidden, 'Plan into shows the execution model field');
-        assert(visible(document.querySelector('#compose-executor-effort')), 'the sheet shows the execution effort field');
+        assert(
+          compose.querySelector('#compose-models').hidden === dshEngine,
+          'Plan into shows the execution fields on omp only',
+        );
+        assert(
+          visible(document.querySelector('#compose-executor-effort')) === !dshEngine,
+          'Plan into shows the execution effort field on omp only',
+        );
         assert(segmentRow(compose.querySelector('#compose-mode')), 'the three mode segments share one row');
         assert(segmentRow(compose.querySelector('#compose-task')), 'the five task segments share one row');
-        assert(text('#compose-model').includes('Alpha One'), 'the Model Default names the daemon model');
-        assert(text('#compose-thinking').includes('max'), 'the Thinking Default names the daemon level');
-        const dshEngine = document.querySelector('#compose-engine').value === 'dsh';
-        assert(
-          text('#compose-executor').includes(dshEngine ? 'planner model' : 'omp smol role'),
+        if (!dshEngine) {
+          assert(text('#compose-model').includes('Alpha One'), 'the Model Default names the daemon model');
+          assert(text('#compose-thinking').includes('max'), 'the Thinking Default names the daemon level');
+        }
+        // The sheet reads the new engine's models when it opens, so the executor default settles
+        // a moment later.
+        await waitFor(
+          () => text('#compose-executor').includes(dshEngine ? 'planner model' : 'omp smol role'),
           'the executor Default names the default of the chosen engine',
         );
         compose.querySelector('#compose-start').scrollIntoView({ block: 'center' });
@@ -954,8 +966,10 @@
         );
         document.querySelector('#compose-mode-goal').click();
         assert(compose.querySelector('#compose-models').hidden, 'Goal hides the execution model field');
-        assert(text('#compose-model').includes('Alpha One'), 'Goal keeps the Model field visible');
-        assert(text('#compose-thinking').includes('max'), 'Goal keeps the Thinking field visible');
+        if (!dshEngine) {
+          assert(text('#compose-model').includes('Alpha One'), 'Goal keeps the Model field visible');
+          assert(text('#compose-thinking').includes('max'), 'Goal keeps the Thinking field visible');
+        }
         return { scenario: 'plan-into', passed: true };
       } finally {
         window.fetch = nativeFetch;
