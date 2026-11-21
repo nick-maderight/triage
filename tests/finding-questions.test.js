@@ -79,7 +79,7 @@ test('finding question review allows per-question Other and opens Act dispatch',
     dispatchButton = findNodes(review, (item) => item.props?.id === 'send-answers')[0];
   assert.equal(dispatchButton.children.includes('Dispatch answers'), true);
   dispatchButton.props.onClick();
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[card, 'act', { answers: [{ option: 0 }] }]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[card, 'goal', 'act', { answers: [{ option: 0 }] }]]);
 });
 test('finding question without Other hides custom text', () => {
   const card = {
@@ -245,7 +245,7 @@ test('finding answer dispatch forwards answers, image, mode and plan-into effort
       '#compose-executor-effort': { value: 'max' },
       '#compose': { close() {} },
     },
-    draft = { dispatchMode: 'plan-into', dispatchAnswers: answers, dispatchOption: null, note: 'Confirm rollout' },
+    draft = { dispatchMode: 'plan-into', dispatchTask: 'act', dispatchAnswers: answers, dispatchOption: null, note: 'Confirm rollout' },
     requests = [],
     context = vm.createContext({
       S: { cards: [card], sheetCardId: card.id, drafts: new Map([[card.id, draft]]), pending: null, remoteSwapUntil: 0 },
@@ -268,6 +268,7 @@ test('finding answer dispatch forwards answers, image, mode and plan-into effort
     answers,
     note: 'Confirm rollout',
     mode: 'plan-into',
+    task: 'act',
     engine: 'omp',
     model: 'provider/planner',
     thinking: 'high',

@@ -480,7 +480,7 @@ a plan Approve adds the execution model."
         (label (alist-get 'label option))
         (draft (triage-queue-draft card)))
     (if (equal kind "finding")
-        (triage-launch-dispatch card (triage-card-option-mode option) :option i)
+        (triage-launch-dispatch card "goal" (triage-card-option-task option) :option i)
       (let* ((refine (and (equal kind "plan") (equal label "Refine")))
              (text (and refine (triage-inbox--refinement draft)))
              (body `((option . ,i)
@@ -520,7 +520,7 @@ A finding opens the dispatch sheet with the answers instead."
     (when (or (null answers) (cl-some #'null answers))
       (user-error "Answer every question first"))
     (if (equal (alist-get 'kind card) "finding")
-        (triage-launch-dispatch card "act" :answers answers)
+        (triage-launch-dispatch card "goal" "act" :answers answers)
       (triage-inbox--act card "answer"
                          `((answers . ,answers)
                            (note . ,(triage-inbox--note-value draft)))))))
@@ -574,36 +574,36 @@ A finding opens the dispatch sheet with the answers instead."
     (triage-inbox--primary (triage-inbox--card))))
 
 (defun triage-inbox-plan ()
-  "Open the plan sheet for the shown card."
+  "Open the plan sheet, with the Act task, for the shown card."
   (interactive)
   (let ((card (triage-inbox--card 'plan)))
-    (triage-launch-dispatch card "plan" :new-window (triage-card-has-step-p card))))
+    (triage-launch-dispatch card "plan" "act" :new-window (triage-card-has-step-p card))))
 
 (defun triage-inbox-dispatch ()
-  "Open the dispatch sheet in investigate mode for the shown card."
+  "Open the Goal sheet with Investigate for the shown card."
   (interactive)
-  (triage-launch-dispatch (triage-inbox--card 'dispatch) "investigate"))
+  (triage-launch-dispatch (triage-inbox--card 'dispatch) "goal" "investigate"))
 
 (defun triage-inbox-fix ()
-  "Open the dispatch sheet in investigate and fix mode for the shown card."
+  "Open the Goal sheet with Fix for the shown card."
   (interactive)
-  (triage-launch-dispatch (triage-inbox--card 'fix) "investigate-fix"))
+  (triage-launch-dispatch (triage-inbox--card 'fix) "goal" "fix"))
 
 (defun triage-inbox-act ()
-  "Open the dispatch sheet in act mode for the shown card."
+  "Open the Goal sheet with Act for the shown card."
   (interactive)
-  (triage-launch-dispatch (triage-inbox--card 'act) "act"))
+  (triage-launch-dispatch (triage-inbox--card 'act) "goal" "act"))
 
 (defun triage-inbox-plan-into ()
-  "Open the dispatch sheet in plan-into mode for the shown card."
+  "Open the Plan into sheet with Act for the shown card."
   (interactive)
-  (triage-launch-dispatch (triage-inbox--card 'plan-into) "plan-into"))
+  (triage-launch-dispatch (triage-inbox--card 'plan-into) "plan-into" "act"))
 
 (defun triage-inbox-do-next ()
-  "Open the dispatch sheet to carry out the next step of the shown card.
-The session opens in a window of its own."
+  "Open the Goal sheet with Act to carry out the next step.
+The session opens in its own window."
   (interactive)
-  (triage-launch-dispatch (triage-inbox--card 'do-next) "act" :new-window t))
+  (triage-launch-dispatch (triage-inbox--card 'do-next) "goal" "act" :new-window t))
 
 (defun triage-inbox-close ()
   "Acknowledge the shown card and close its pane session."
@@ -789,7 +789,7 @@ Signal a `user-error' until an execution model is chosen."
    ["Launch"
     ("d" "Dispatch" triage-inbox-dispatch
      :inapt-if-not (lambda () (triage-inbox--offers-p 'dispatch)))
-    ("f" "Investigate + fix" triage-inbox-fix
+    ("f" "Fix" triage-inbox-fix
      :inapt-if-not (lambda () (triage-inbox--offers-p 'fix)))
     ("A" "Act" triage-inbox-act
      :inapt-if-not (lambda () (triage-inbox--offers-p 'act)))

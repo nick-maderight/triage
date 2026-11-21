@@ -271,7 +271,7 @@
     (let* ((card (car triage-queue-cards))
            (id (alist-get 'id card)))
       (triage-queue-act card "dispatch"
-                        '((mode . "act") (note . :null) (new_window . :false)))
+                        '((mode . "goal") (task . "act") (note . :null) (new_window . :false)))
       (triage-test--wait
        (lambda ()
          (and (triage-queue-find id)
@@ -318,7 +318,8 @@
       (triage-launch-mode)
       (setq triage-launch--kind 'context
             triage-launch--context "Org: Ping\n\n### Task\n\n* TODO Ping\n"
-            triage-launch--mode "act"
+            triage-launch--mode "goal"
+            triage-launch--task "act"
             triage-launch--engine "omp")
       (insert "Reply pong.")
       (let ((request (symbol-function 'triage-api-request))

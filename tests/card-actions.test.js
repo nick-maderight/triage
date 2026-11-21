@@ -51,8 +51,8 @@ const calls = [],
     draft: () => ({ step: 0 }),
     noteValue: () => null,
     $: (selector) => (selector === '#note' ? { focus: () => calls.push(['focus note']) } : null),
-    openSheet: (card, mode, { newWindow = false } = {}) =>
-      calls.push(['dispatch', card.id, mode, newWindow ? 'own session' : 'card session']),
+    openSheet: (card, mode, task, { newWindow = false } = {}) =>
+      calls.push(['dispatch', card.id, mode, task, newWindow ? 'own session' : 'card session']),
     act: (card, verb) => calls.push([verb, card.id]),
     openContext: (id) => calls.push(['context', id]),
     toggleLater: () => calls.push(['later']),
@@ -247,11 +247,12 @@ test('each key keeps one meaning on every card', () => {
   assert.deepEqual(press(ask, 'J'), ['jump ask']);
   assert.deepEqual(press(SHAPES['dsh ask'], 'J'), ['open dsh'], 'J opens dsh for a dsh card');
   // Dispatch opens in the card's session. A report's open step starts a session of its own.
-  for (const [key, mode] of Object.entries({ i: 'investigate', F: 'investigate-fix', A: 'act', p: 'plan', P: 'plan-into' }))
-    assert.deepEqual(press(finding, key), [`dispatch finding ${mode} card session`]);
-  assert.deepEqual(press(report, 'p'), ['dispatch done:%6:entry plan own session']);
-  assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry act own session']);
-  assert.deepEqual(press(report, 'i'), ['dispatch done:%6:entry investigate card session']);
+  const launches = { i: ['goal', 'investigate'], F: ['goal', 'fix'], A: ['goal', 'act'], p: ['plan', 'act'], P: ['plan-into', 'act'] };
+  for (const [key, [mode, task]] of Object.entries(launches))
+    assert.deepEqual(press(finding, key), [`dispatch finding ${mode} ${task} card session`]);
+  assert.deepEqual(press(report, 'p'), ['dispatch done:%6:entry plan act own session']);
+  assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry goal act own session']);
+  assert.deepEqual(press(report, 'i'), ['dispatch done:%6:entry goal investigate card session']);
 });
 
 test('Dispatch advertises the mode keys that have no button of their own', () => {
@@ -267,9 +268,11 @@ test('an action announces the same result on every kind of card', () => {
     assert.equal(said('skip'), 'Skipped · Title', kind);
     assert.equal(said('later', { minutes: 60 }, { label: '1 hour' }), 'Later 1 hour · Title', kind);
     assert.equal(said('close'), 'Closed · Title', kind);
-    assert.equal(said('dispatch', { mode: 'investigate' }), 'Investigating · Title', kind);
-    assert.equal(said('dispatch', { mode: 'act' }), 'Acting · Title', kind);
-    assert.equal(said('dispatch', { mode: 'investigate-fix' }), 'Investigating and fixing · Title', kind);
-    assert.equal(said('dispatch', { mode: 'plan-into' }), 'Planning · Title', kind);
+    assert.equal(said('dispatch', { mode: 'goal', task: 'investigate' }), 'Investigating · Title', kind);
+    assert.equal(said('dispatch', { mode: 'goal', task: 'fix' }), 'Fixing · Title', kind);
+    assert.equal(said('dispatch', { mode: 'goal', task: 'act' }), 'Acting · Title', kind);
+    assert.equal(said('dispatch', { mode: 'goal', task: 'verify' }), 'Verifying · Title', kind);
+    assert.equal(said('dispatch', { mode: 'plan-into', task: 'act' }), 'Planning · Title', kind);
+    assert.equal(said('dispatch', { mode: 'plan', task: 'act' }), 'Planning · Title', kind);
   }
 });

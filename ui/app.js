@@ -37,6 +37,7 @@ const S = {
   sheetCardId: null,
   sheetEngine: '',
   composeMode: 'goal',
+  composeTask: 'fix',
   peekPane: null,
   peekToken: 0,
   peekTimer: 0,
@@ -155,6 +156,22 @@ const S = {
     restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id),
     // The step a report left open, named by its `Recommended action:` line.
     hasStep = (c) => c.kind === 'info' && Boolean(c.star?.action);
+  // The three ways a session starts, each with the help line the sheet shows under Mode.
+  const MODES = {
+    goal: 'The session works on it until it reports done.',
+    plan: 'Read-only planning. The plan arrives here for review before anything runs.',
+    'plan-into':
+      'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
+  };
+  // What a session is asked to do. The daemon keeps each task's direction text. The sheet
+  // shows its help line, and the result message names the launch by its verb.
+  const TASKS = {
+    investigate: { help: 'Read-only. The session checks the facts and reports back.', doing: 'Investigating' },
+    fix: { help: 'Finds the root cause, fixes it for good, and checks nothing else broke.', doing: 'Fixing' },
+    act: { help: 'Carries out the work with the smallest change that fully solves it.', doing: 'Acting' },
+    verify: { help: 'Checks the work is done and right, runs the full test gate, and fixes any gap.', doing: 'Verifying' },
+    simplify: { help: 'Makes it smaller and plainer without changing what it does.', doing: 'Simplifying' },
+  };
   // Every card action in dock order. Each entry holds its key, its button label, the cards that
   // offer it and what it does. An action without a label has no button. The dock, Enter and the
   // key handler all read this table. A card that offers an action shows one button for it under
@@ -165,24 +182,24 @@ const S = {
     plan: {
       key: 'p',
       label: (c) => hasStep(c) && 'Plan next step',
-      run: (c) => openSheet(c, 'plan', { newWindow: hasStep(c) }),
+      run: (c) => openSheet(c, 'plan', 'act', { newWindow: hasStep(c) }),
     },
-    // Dispatch is the sheet's only button and also names the keys that open the sheet in
-    // another mode.
+    // Dispatch is the sheet's only button and also names the keys that open the sheet with another
+    // mode or task.
     dispatch: {
       key: 'i',
       label: 'Dispatch',
       also: ['fix', 'act', 'plan', 'planInto'],
-      run: (c) => openSheet(c, 'investigate'),
+      run: (c) => openSheet(c, 'goal', 'investigate'),
     },
-    fix: { key: 'F', run: (c) => openSheet(c, 'investigate-fix') },
-    act: { key: 'A', run: (c) => openSheet(c, 'act') },
-    planInto: { key: 'P', run: (c) => openSheet(c, 'plan-into') },
+    fix: { key: 'F', run: (c) => openSheet(c, 'goal', 'fix') },
+    act: { key: 'A', run: (c) => openSheet(c, 'goal', 'act') },
+    planInto: { key: 'P', run: (c) => openSheet(c, 'plan-into', 'act') },
     doNext: {
       key: 'd',
       label: 'Do next step',
       offered: hasStep,
-      run: (c) => openSheet(c, 'act', { newWindow: true }),
+      run: (c) => openSheet(c, 'goal', 'act', { newWindow: true }),
     },
     close: {
       key: 'x',
@@ -244,10 +261,10 @@ const S = {
     const i = (c.options || []).findIndex((o) => o.recommended);
     return i < 0 ? 0 : i;
   };
-  function optionMode(option) {
+  function optionTask(option) {
     const label = option.label.trimStart().toLowerCase();
     if (!label.startsWith('investigate')) return 'act';
-    return label.includes('fix') ? 'investigate-fix' : 'investigate';
+    return label.includes('fix') ? 'fix' : 'investigate';
   }
   const byPriority = (a, b) =>
     Number(a.priority || 5) - Number(b.priority || 5) ||
@@ -276,8 +293,8 @@ const S = {
         note: '',
         other: '',
         open: false,
-        dispatchMode: 'investigate',
-        defaulted: false,
+        dispatchMode: 'goal',
+        dispatchTask: 'investigate',
         dispatchOption: null,
         dispatchAnswers: null,
         step: 0,
@@ -1312,7 +1329,7 @@ const S = {
   function sendAnswers(c) {
     const d = draft(c);
     if (c.questions.some((_, i) => d.answers[i] == null)) return;
-    if (c.kind === 'finding') openSheet(c, 'act', { answers: d.answers });
+    if (c.kind === 'finding') openSheet(c, 'goal', 'act', { answers: d.answers });
     else act(c, 'answer', { answers: d.answers, note: noteValue(c) }, 'send');
   }
   function primaryStep(c) {
@@ -1654,13 +1671,7 @@ const S = {
     if (verb === 'later') return `Later ${choice.label} · ${c.title}`;
     if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
       return `${
-        body.mode === 'act'
-          ? 'Acting'
-          : body.mode === 'investigate-fix'
-            ? 'Investigating and fixing'
-            : body.mode === 'plan' || body.mode === 'plan-into'
-              ? 'Planning'
-              : 'Investigating'
+        body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : TASKS[body.task]?.doing ?? 'Launching'
       } · ${c.title}`;
     if (verb === 'close') return `Closed · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
@@ -1727,7 +1738,7 @@ const S = {
     if (i === options.length && otherAllowed(c)) return toggleOther(c);
     const option = options[i];
     if (!option || !answerable(c) || c.kind === 'info') return;
-    if (c.kind === 'finding') return openSheet(c, optionMode(option), { option: i });
+    if (c.kind === 'finding') return openSheet(c, 'goal', optionTask(option), { option: i });
     const needsOther = c.kind === 'plan' && option.label === 'Refine',
       text = needsOther ? draft(c).other.trim() : null;
     if (needsOther && !text) {
@@ -2363,7 +2374,7 @@ const S = {
         : 'Sending unlocks when the pane is waiting for input.');
   }
   function openCompose() {
-    openSheet(null, S.composeMode);
+    openSheet(null, S.composeMode, S.composeTask);
   }
   // The session sheet, Plan approval and the settings fields share the picker.
   const PICKERS = {
@@ -2796,9 +2807,8 @@ const S = {
       model: $('#compose-model').value.trim() || null,
       thinking: $('#compose-thinking').value.trim() || null,
       mode,
+      task: S.composeTask,
     };
-    // A dispatch mode makes the text the context a card dispatch brief would carry.
-    if (['investigate', 'investigate-fix', 'act'].includes(mode)) body.note = '';
     if (image) body.image = image;
     if (mode === 'plan-into') {
       body.executor = $('#compose-executor').value.trim() || null;
@@ -2845,11 +2855,10 @@ const S = {
     }
     const d = draft(c),
       mode = d.dispatchMode;
-    // The untouched mode default stays out of the card's note. The daemon applies the same
-    // direction to a launch that names none. The brief reads the same either way.
-    if (!d.defaulted) d.note = $('#compose-prompt').value;
+    d.note = $('#compose-prompt').value;
     const launch = {
       mode,
+      task: d.dispatchTask,
       note: noteValue(c),
       engine: $('#compose-engine').value || null,
       model: $('#compose-model').value.trim() || null,
@@ -2883,9 +2892,9 @@ const S = {
       hint.textContent = 'Could not dispatch.';
   }
 
-  function selectSegment(group, mode) {
+  function selectSegment(group, value) {
     for (const b of group.children) {
-      const on = b.dataset.mode === mode;
+      const on = b.dataset.value === value;
       b.setAttribute('aria-checked', String(on));
       b.tabIndex = on ? 0 : -1;
     }
@@ -2894,61 +2903,37 @@ const S = {
   function sheetCard() {
     return S.sheetCardId ? S.cards.find((x) => x.id === S.sheetCardId) || null : null;
   }
-  // The modes the one sheet offers. A plain session can start on any of them: Investigate and Act
-  // treat its text as the context to look into, the way a card is dispatched. A finding's answers
-  // can only act on those answers.
-  function sheetModes(c = sheetCard()) {
-    if (!c) return ['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into'];
-    return draft(c).dispatchAnswers
-      ? ['act', 'plan', 'plan-into']
-      : ['investigate', 'investigate-fix', 'act', 'plan', 'plan-into'];
+  // The tasks the sheet offers. A finding's answers already decide, question by question, what to
+  // investigate, so its sheet drops Investigate.
+  function sheetTasks(c = sheetCard()) {
+    const tasks = Object.keys(TASKS);
+    return c && draft(c).dispatchAnswers ? tasks.filter((task) => task !== 'investigate') : tasks;
   }
+  // Mode says how the session starts. Start sends the mode the sheet shows.
   function setSheetMode(mode, c = sheetCard()) {
-    // Act and Investigate + fix start on their own direction. An empty Instruction still tells the
-    // session how to decide. Typing replaces the default. Leaving it untouched sends it as the
-    // instruction.
-    const actDefault =
-      'Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.';
-    const fixDefault =
-      "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
-    const modes = sheetModes(c);
-    // A finding question is answered through its own decisions, so it cannot take an investigate
-    // mode. A mode the context does not offer falls back to its first one.
-    if (!modes.includes(mode)) mode = modes[0];
-    // The draft keeps the mode the sheet shows, which is the mode Start sends.
+    if (!Object.hasOwn(MODES, mode)) mode = 'goal';
     if (c) draft(c).dispatchMode = mode;
     else S.composeMode = mode;
-    for (const b of $('#compose-mode').children) b.hidden = !modes.includes(b.dataset.mode);
     selectSegment($('#compose-mode'), mode);
-    $('#compose-mode-help').textContent = {
-      goal: 'The session works toward the prompt as a goal until it reports done.',
-      investigate: 'Read-only. The session looks into it and reports back.',
-      'investigate-fix':
-        'Investigates the root cause, fixes it for good, and reports the evidence.',
-      act: 'The session carries out the action end to end.',
-      plan: 'Read-only planning. The plan arrives here for review before anything runs.',
-      'plan-into':
-        'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
-    }[mode];
+    $('#compose-mode-help').textContent = MODES[mode];
     $('#compose-models').hidden = mode !== 'plan-into';
-    const box = $('#compose-prompt');
-    if (box && c) {
-      const fallback = mode === 'act' ? actDefault : mode === 'investigate-fix' ? fixDefault : '';
-      if (fallback && !draft(c).note) {
-        box.value = fallback;
-        draft(c).defaulted = true;
-      } else if (!fallback && draft(c).defaulted) {
-        box.value = '';
-        draft(c).defaulted = false;
-      }
-    }
+  }
+  // Task says what the session is asked to do. A task the context does not offer falls back to Act.
+  function setSheetTask(task, c = sheetCard()) {
+    const tasks = sheetTasks(c);
+    if (!tasks.includes(task)) task = 'act';
+    if (c) draft(c).dispatchTask = task;
+    else S.composeTask = task;
+    for (const b of $('#compose-task').children) b.hidden = !tasks.includes(b.dataset.value);
+    selectSegment($('#compose-task'), task);
+    $('#compose-task-help').textContent = TASKS[task].help;
   }
   // Opens the session sheet. With a card it is that card's dispatch, and the context strip names
   // the card until Clear drops it. Without one it starts a plain session. `newWindow` asks for a
   // tmux window of its own instead of the pane that just reported. The next step then never flips
   // a finished omp session into another mode. The daemon ignores it for a dsh card, whose brief
   // continues the card's session.
-  function openSheet(c, mode, { newWindow = false, option = null, answers = null } = {}) {
+  function openSheet(c, mode, task, { newWindow = false, option = null, answers = null } = {}) {
     if (c && (S.pending || !c.id || Date.now() < S.remoteSwapUntil)) return;
     const field = $('#compose-engine');
     S.sheetCardId = c ? c.id : null;
@@ -2987,6 +2972,7 @@ const S = {
     $('#compose-target').hidden = Boolean(c);
     $('#compose-session-pair').hidden = field.value === 'dsh';
     setSheetMode(mode, c);
+    setSheetTask(task, c);
     $('#compose-hint').textContent = '';
     $('#compose-start').disabled = false;
     showDialog($('#compose'));
@@ -3010,6 +2996,7 @@ const S = {
     if (!same) clearModels('compose');
     $('#compose-session-pair').hidden = field.value === 'dsh';
     setSheetMode(S.composeMode, null);
+    setSheetTask(S.composeTask, null);
     $('#compose-hint').textContent = '';
     $('#compose-start').disabled = false;
     void loadComposeSessions();
@@ -3314,7 +3301,7 @@ const S = {
     if (key === '?') return run(() => showDialog($('#keys')));
     if (key === 'h') return run(openHistory);
     if (key === 'c') return run(openCompose);
-    if (key === 'g') return run(() => openSheet(null, 'goal'));
+    if (key === 'g') return run(() => openSheet(null, 'goal', S.composeTask));
     const c = current();
     if (!c) return;
     if (/^[1-9]$/.test(key)) return run(() => pick(c, Number(key) - 1));
@@ -3456,26 +3443,30 @@ const S = {
     if (!c) return;
     const d = draft(c);
     d.note = e.target.value;
-    d.defaulted = false;
     // The card's Note field shows the same note.
     if (S.shownId === c.id && $('#note')) $('#note').value = oneLine(d.note);
   });
   wireSheetImage();
-  const modeGroup = $('#compose-mode');
-  modeGroup.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-mode]');
-    if (b) setSheetMode(b.dataset.mode);
-  });
-  modeGroup.addEventListener('keydown', (e) => {
-    const bs = [...modeGroup.children].filter((b) => !b.hidden),
-      i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),
-      step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    const next = bs[(i + step + bs.length) % bs.length];
-    setSheetMode(next.dataset.mode);
-    next.focus();
-  });
+  // Mode and Task are radio groups. A click or an arrow key picks a button.
+  for (const [group, pick] of [
+    [$('#compose-mode'), (value) => setSheetMode(value)],
+    [$('#compose-task'), (value) => setSheetTask(value)],
+  ]) {
+    group.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-value]');
+      if (b) pick(b.dataset.value);
+    });
+    group.addEventListener('keydown', (e) => {
+      const bs = [...group.children].filter((b) => !b.hidden),
+        i = bs.findIndex((b) => b.getAttribute('aria-checked') === 'true'),
+        step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const next = bs[(i + step + bs.length) % bs.length];
+      pick(next.dataset.value);
+      next.focus();
+    });
+  }
   $('#compose').addEventListener('keydown', (e) => {
     if (e.isComposing) return;
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -3491,17 +3482,12 @@ const S = {
       $('#compose-form').requestSubmit();
       return;
     }
-    const mode = {
-      g: 'goal',
-      i: 'investigate',
-      F: 'investigate-fix',
-      A: 'act',
-      p: 'plan',
-      P: 'plan-into',
-    }[e.key];
-    if (mode) {
+    const mode = { g: 'goal', p: 'plan', P: 'plan-into' }[e.key],
+      task = { i: 'investigate', F: 'fix', A: 'act', V: 'verify', S: 'simplify' }[e.key];
+    if (mode || task) {
       e.preventDefault();
-      setSheetMode(mode);
+      if (mode) setSheetMode(mode);
+      if (task) setSheetTask(task);
     }
   });
   for (const id of Object.keys(PICKERS)) {

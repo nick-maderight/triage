@@ -414,8 +414,11 @@ async fn answer(
     axum::Json(request): axum::Json<AnswerRequest>,
 ) -> axum::response::Response {
     let answer = request.answer;
-    if answer.mode.as_deref().is_some_and(|mode| crate::cards::DispatchMode::parse(mode).is_none()) {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown mode");
+    if let Err(error) = crate::cards::Start::parse(answer.mode.as_deref(), None, None) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
+    if answer.task.as_deref().is_some_and(|task| crate::cards::Task::parse(task).is_none()) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown task");
     }
     let mut launch = state.launch.clone();
     if let Err(error) = apply_launch_choices(
@@ -538,6 +541,9 @@ struct AnswerRequest {
 struct DispatchRequest {
     #[serde(default)]
     mode: Option<String>,
+    /// The task preset, `investigate` when unset.
+    #[serde(default)]
+    task: Option<String>,
     #[serde(default)]
     note: Option<String>,
     #[serde(default)]
@@ -565,23 +571,21 @@ async fn dispatch(
     request: Option<axum::Json<DispatchRequest>>,
 ) -> axum::response::Response {
     let request = request.map(|request| request.0).unwrap_or_default();
-    let mode = match request.mode.as_deref() {
-        None => crate::cards::DispatchMode::Investigate,
-        Some(mode) => match crate::cards::DispatchMode::parse(mode) {
-            Some(mode) => mode,
-            None => return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown mode"),
+    if let Err(error) = crate::cards::Start::parse(
+        request.mode.as_deref(),
+        request.executor.as_deref(),
+        request.executor_thinking.as_deref(),
+    ) {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
+    }
+    let task = match request.task.as_deref() {
+        None => crate::cards::Task::Investigate,
+        Some(task) => match crate::cards::Task::parse(task) {
+            Some(task) => task,
+            None => return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown task"),
         },
     };
-    let plan_into = mode == crate::cards::DispatchMode::PlanInto;
-    if !plan_into && request.executor.is_some() {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, "executor needs mode plan-into");
-    }
-    if !plan_into && request.executor_thinking.is_some() {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            "executor thinking needs mode plan-into",
-        );
-    }
+    let plan_into = request.mode.as_deref() == Some("plan-into");
     let mut launch = state.launch.clone();
     if let Err(error) = apply_launch_choices(
         &mut launch,
@@ -602,6 +606,7 @@ async fn dispatch(
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
     let new_window = request.new_window;
+    let mode = request.mode;
     let executor = request.executor;
     let executor_thinking = request.executor_thinking;
     let image = match store_image(state.db.path(), request.image).await {
@@ -609,14 +614,19 @@ async fn dispatch(
         Err(response) => return response,
     };
     card_action(state, id, move |db, card| {
+        // `Start` borrows its fields, so the closure parses the owned values again.
+        let start = crate::cards::Start::parse(
+            mode.as_deref(),
+            executor.as_deref(),
+            executor_thinking.as_deref(),
+        )?;
         crate::cards::dispatch(
             db,
             &card,
-            mode,
+            start,
+            task,
             note.as_deref(),
             &launch,
-            executor.as_deref(),
-            executor_thinking.as_deref(),
             image.as_ref(),
             new_window,
         )
@@ -728,8 +738,11 @@ struct SessionRequest {
     thinking: Option<String>,
     #[serde(default)]
     mode: Option<String>,
-    /// The direction from the user. A request that names one dispatches its prompt as context
-    /// in a Dispatch mode.
+    /// The task preset, `fix` for a plain session and `investigate` for a context launch when
+    /// unset.
+    #[serde(default)]
+    task: Option<String>,
+    /// The direction from the user. A request that names one dispatches its prompt as context.
     #[serde(default)]
     note: Option<String>,
     #[serde(default)]
@@ -1065,15 +1078,23 @@ async fn start_session(
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
-    // Reject a bad mode now; the worker parses it again, because `Start` borrows the request.
-    if let Err(error) = crate::cards::Subject::parse(
+    // Reject a bad mode or task now; the worker parses the mode again, because `Start` borrows
+    // the request.
+    if let Err(error) = crate::cards::Start::parse(
         request.mode.as_deref(),
-        request.note.as_deref(),
         request.executor.as_deref(),
         request.executor_thinking.as_deref(),
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
+    let task = match request.task.as_deref() {
+        None if request.note.is_some() => crate::cards::Task::Investigate,
+        None => crate::cards::Task::Fix,
+        Some(task) => match crate::cards::Task::parse(task) {
+            Some(task) => task,
+            None => return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown task"),
+        },
+    };
     // The launch outlives the answer: a slow dsh host takes tens of seconds, and the inbox
     // must not wait on it. A worker sends its outcome once; the handler waits LAUNCH_GRACE
     // for it, and a watcher turns a later failure into a card.
@@ -1082,9 +1103,8 @@ async fn start_session(
     let prompt = request.prompt.clone();
     tokio::task::spawn_blocking(move || {
         let outcome = (|| {
-            let (subject, start) = crate::cards::Subject::parse(
+            let start = crate::cards::Start::parse(
                 request.mode.as_deref(),
-                request.note.as_deref(),
                 request.executor.as_deref(),
                 request.executor_thinking.as_deref(),
             )?;
@@ -1097,19 +1117,20 @@ async fn start_session(
                 )?),
                 None => None,
             };
-            match subject {
-                crate::cards::Subject::Task => crate::cards::start_session(
+            match request.note.as_deref() {
+                None => crate::cards::start_session(
                     &action_state.db,
                     &request.prompt,
                     &cwd,
                     &launch,
                     start,
+                    task,
                     image.as_ref(),
                 ),
-                crate::cards::Subject::Context(mode, note) => crate::cards::dispatch_context(
+                Some(note) => crate::cards::dispatch_context(
                     &action_state.db,
                     &request.prompt,
-                    mode,
+                    task,
                     note,
                     &cwd,
                     &launch,

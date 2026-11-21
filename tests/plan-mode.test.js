@@ -23,27 +23,31 @@ assert.ok(tableStart >= 0 && tableEnd > tableStart, 'app.js defines the action t
 const tableSources = app.slice(tableStart, tableEnd);
 
 const modes = (list) =>
-  list.map((mode) => ({
-    dataset: { mode },
+  list.map((value) => ({
+    dataset: { value },
     hidden: false,
-    attrs: { 'aria-checked': String(mode === list[0]) },
-    tabIndex: mode === list[0] ? 0 : -1,
-    setAttribute(name, value) {
-      this.attrs[name] = value;
+    attrs: { 'aria-checked': String(value === list[0]) },
+    tabIndex: value === list[0] ? 0 : -1,
+    setAttribute(name, next) {
+      this.attrs[name] = next;
     },
     getAttribute(name) {
       return this.attrs[name];
     },
   }));
+const checked = (group) => group.find((button) => button.getAttribute('aria-checked') === 'true').dataset.value;
 
-test('i, A, p, P and g open the session sheet with matching modes while v keeps Peek', () => {
+test('i, A, p, P and g open the session sheet with matching modes and tasks while v keeps Peek', () => {
   const card = { id: 'card-1', kind: 'plan', title: 'Plan ready: Update tests', source: { pane: '%7' } },
-    buttons = modes(['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into']),
+    modeButtons = modes(['goal', 'plan', 'plan-into']),
+    taskButtons = modes(['investigate', 'fix', 'act', 'verify', 'simplify']),
     dialog = { open: false },
     elements = {
       '#peek': { open: false },
-      '#compose-mode': { children: buttons },
+      '#compose-mode': { children: modeButtons },
       '#compose-mode-help': { textContent: '' },
+      '#compose-task': { children: taskButtons },
+      '#compose-task-help': { textContent: '' },
       '#compose-hint': { textContent: '' },
       '#compose-prompt': { value: '', focus() {} },
       '#compose-prompt-label': { textContent: '' },
@@ -70,7 +74,8 @@ test('i, A, p, P and g open the session sheet with matching modes while v keeps 
       sheetCardId: null,
       sheetEngine: '',
       composeMode: 'goal',
-      drafts: new Map([[card.id, { dispatchMode: 'investigate', note: 'Review the plan', dispatchAnswers: null }]]),
+      composeTask: 'fix',
+      drafts: new Map([[card.id, { dispatchMode: 'goal', dispatchTask: 'investigate', note: 'Review the plan', dispatchAnswers: null }]]),
     },
     context = vm.createContext({
       S: state,
@@ -106,7 +111,7 @@ test('i, A, p, P and g open the session sheet with matching modes while v keeps 
       primary: (current) => actions.push(['primary', current.id]),
     });
   vm.runInContext(
-    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetModes')}\n${functionSource('setSheetMode')}\n${functionSource('openSheet')}\n${keydownSource}`,
+    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${keydownSource}`,
     context,
   );
 
@@ -125,39 +130,47 @@ test('i, A, p, P and g open the session sheet with matching modes while v keeps 
     listeners.keydown(event);
     return event;
   };
-  const selected = () => buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode;
+  const selected = () => checked(modeButtons);
+  const task = () => checked(taskButtons);
 
   press('i');
   assert.equal(dialog.open, true);
   assert.equal(state.sheetCardId, card.id);
-  assert.equal(selected(), 'investigate');
+  assert.equal(selected(), 'goal');
+  assert.equal(task(), 'investigate');
   dialog.open = false;
   press('A');
-  assert.equal(selected(), 'act');
+  assert.equal(selected(), 'goal');
+  assert.equal(task(), 'act');
   assert.equal(elements['#compose-models'].hidden, true);
   dialog.open = false;
   press('p');
   assert.equal(selected(), 'plan');
+  assert.equal(task(), 'act', 'Plan opens on Act');
   assert.equal(state.drafts.get(card.id).dispatchMode, 'plan');
+  assert.equal(state.drafts.get(card.id).dispatchTask, 'act');
   assert.match(elements['#compose-mode-help'].textContent, /plan/i);
   dialog.open = false;
   press('P');
   assert.equal(selected(), 'plan-into');
+  assert.equal(task(), 'act', 'Plan into opens on Act');
   assert.equal(state.drafts.get(card.id).dispatchMode, 'plan-into');
   assert.equal(elements['#compose-models'].hidden, false);
   assert.match(elements['#compose-mode-help'].textContent, /without review/);
   dialog.open = false;
   press('A');
-  assert.equal(selected(), 'act');
+  assert.equal(selected(), 'goal');
+  assert.equal(task(), 'act');
   assert.equal(elements['#compose-models'].hidden, true);
   dialog.open = false;
-  // g has no card to dispatch, so it opens a plain session in Goal mode.
+  // g has no card to dispatch, so it opens a plain session on Goal with the remembered task.
   press('g');
   assert.equal(dialog.open, true);
   assert.equal(state.sheetCardId, null);
   assert.equal(elements['#compose-prompt-label'].textContent, 'What should the session do?');
   assert.equal(elements['#compose-target'].hidden, false);
   assert.equal(selected(), 'goal');
+  assert.equal(task(), 'fix');
   dialog.open = false;
   press('v');
   press('2');
@@ -200,8 +213,8 @@ test('a acknowledges the shown card even when a button holds focus', () => {
       enc: encodeURIComponent,
       noteValue: () => null,
       act: (current, _verb, _body, control) => actions.push([control, current.id]),
-      openSheet: (current, mode, { newWindow = false } = {}) =>
-        actions.push(['dispatch', current.id, mode, newWindow]),
+      openSheet: (current, mode, task, { newWindow = false } = {}) =>
+        actions.push(['dispatch', current.id, mode, task, newWindow]),
     });
   vm.runInContext(`${tableSources}\n${keydownSource}`, context);
 
@@ -243,10 +256,10 @@ test('a acknowledges the shown card even when a button holds focus', () => {
   // any other card.
   card = { id: 'report-card', kind: 'info', star: { action: 'Fix it' } };
   press('p');
-  assert.deepEqual(actions.at(-1), ['dispatch', 'report-card', 'plan', true]);
+  assert.deepEqual(actions.at(-1), ['dispatch', 'report-card', 'plan', 'act', true]);
   card = { id: 'plan-card', kind: 'plan', title: 'Plan' };
   press('p');
-  assert.deepEqual(actions.at(-1), ['dispatch', 'plan-card', 'plan', false]);
+  assert.deepEqual(actions.at(-1), ['dispatch', 'plan-card', 'plan', 'act', false]);
 });
 
 test('the session sheet posts model and thinking for every card mode', async () => {
@@ -256,8 +269,8 @@ test('the session sheet posts model and thinking for every card mode', async () 
       cards: [card, planInto],
       counts: { finding: 2 },
       drafts: new Map([
-        [card.id, { dispatchMode: 'plan', note: '' }],
-        [planInto.id, { dispatchMode: 'plan-into', note: '' }],
+        [card.id, { dispatchMode: 'plan', dispatchTask: 'act', note: '' }],
+        [planInto.id, { dispatchMode: 'plan-into', dispatchTask: 'act', note: '' }],
       ]),
       sheetCardId: card.id,
       pending: null,
@@ -304,6 +317,7 @@ test('the session sheet posts model and thinking for every card mode', async () 
   assert.equal(requests[0].url, '/v1/cards/launch-card/dispatch');
   assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
     mode: 'plan',
+    task: 'act',
     note: 'Make a plan',
     engine: 'dsh',
     model: 'provider/planner',
@@ -318,6 +332,7 @@ test('the session sheet posts model and thinking for every card mode', async () 
   assert.equal(requests.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
     mode: 'plan-into',
+    task: 'act',
     engine: 'dsh',
     note: 'Make a plan',
     model: 'provider/planner',
@@ -335,13 +350,16 @@ test('finding options open the session sheet and answer with its choices', async
         { label: 'Investigate first' },
       ],
     },
-    buttons = modes(['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into']),
+    modeButtons = modes(['goal', 'plan', 'plan-into']),
+    taskButtons = modes(['investigate', 'fix', 'act', 'verify', 'simplify']),
     dialog = { open: false, close() { this.open = false; } },
     start = { disabled: false },
     hint = { textContent: '' },
     elements = {
-      '#compose-mode': { children: buttons },
+      '#compose-mode': { children: modeButtons },
       '#compose-mode-help': { textContent: '' },
+      '#compose-task': { children: taskButtons },
+      '#compose-task-help': { textContent: '' },
       '#compose-models': { hidden: true },
       '#compose-prompt': { value: '', focus() {} },
       '#compose-prompt-label': { textContent: '' },
@@ -366,6 +384,14 @@ test('finding options open the session sheet and answer with its choices', async
     },
     requests = [],
     context = vm.createContext({
+      MODES: { goal: 'goal help', plan: 'plan help', 'plan-into': 'plan into help' },
+      TASKS: {
+        investigate: { help: 'Investigate help', doing: 'Investigating' },
+        fix: { help: 'Fix help', doing: 'Fixing' },
+        act: { help: 'Act help', doing: 'Acting' },
+        verify: { help: 'Verify help', doing: 'Verifying' },
+        simplify: { help: 'Simplify help', doing: 'Simplifying' },
+      },
       S: state,
       PICKERS: {
         'compose-engine': { fallback: 'omp' },
@@ -377,7 +403,7 @@ test('finding options open the session sheet and answer with its choices', async
       $: (selector) => elements[selector] || null,
       draft: (current) => {
         if (!state.drafts.has(current.id)) state.drafts.set(current.id, {
-          note: 'Do the safe thing', dispatchMode: 'investigate', dispatchOption: null, dispatchAnswers: null,
+          note: 'Do the safe thing', dispatchMode: 'goal', dispatchTask: 'investigate', dispatchOption: null, dispatchAnswers: null,
         });
         return state.drafts.get(current.id);
       },
@@ -404,17 +430,18 @@ test('finding options open the session sheet and answer with its choices', async
       },
     });
   vm.runInContext(
-    `${functionSource('optionMode')}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetModes')}\n${functionSource('setSheetMode')}\n${functionSource('openSheet')}\n${functionSource('pick')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.pick = pick; globalThis.submitSheet = submitSheet;`,
+    `${functionSource('optionTask')}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${functionSource('pick')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.pick = pick; globalThis.submitSheet = submitSheet;`,
     context,
   );
   context.pick(card, 0);
   assert.equal(dialog.open, true);
-  assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'act');
+  assert.equal(checked(modeButtons), 'goal');
+  assert.equal(checked(taskButtons), 'act');
   assert.equal(elements['#compose-prompt'].value, 'Do the safe thing');
   await context.submitSheet({ preventDefault() {} });
   assert.equal(requests[0].url, '/v1/cards/finding-card/answer');
   assert.deepEqual(JSON.parse(JSON.stringify(requests[0].body)), {
-    option: 0, text: null, note: 'Do the safe thing', mode: 'act',
+    option: 0, text: null, note: 'Do the safe thing', mode: 'goal', task: 'act',
     engine: null, model: 'provider/chosen', thinking: 'xhigh',
   });
 
@@ -422,7 +449,7 @@ test('finding options open the session sheet and answer with its choices', async
   state.cards = [card];
   state.counts.finding = 1;
   context.pick(card, 1);
-  assert.equal(buttons.find((button) => button.getAttribute('aria-checked') === 'true').dataset.mode, 'investigate');
+  assert.equal(checked(taskButtons), 'investigate');
   // Picking another Mode in the sheet changes what Start sends.
   context.setSheetMode('plan');
   await context.submitSheet({ preventDefault() {} });
@@ -449,7 +476,7 @@ test('a plain session posts its mode and the execution model only for Plan into'
       '#compose': { close() {} },
     },
     context = vm.createContext({
-      S: { composeMode: 'goal', sheetCardId: null, cards: [] },
+      S: { composeMode: 'goal', composeTask: 'fix', sheetCardId: null, cards: [] },
       $: (selector) => elements[selector] || null,
       fetch: async (url, init) => {
         requests.push({ url, init });
@@ -482,6 +509,7 @@ test('a plain session posts its mode and the execution model only for Plan into'
   assert.equal(bodies[0].mode, 'goal');
   assert.equal(bodies[1].mode, 'plan');
   assert.equal(bodies[2].mode, 'plan-into');
+  assert.ok(bodies.every((body) => body.task === 'fix'));
   assert.equal(bodies[2].executor, 'provider/executor');
   assert.equal(bodies[2].executor_thinking, 'max');
   assert.ok(!('executor' in bodies[0]) && !('executor' in bodies[1]));

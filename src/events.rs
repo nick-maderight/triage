@@ -203,6 +203,10 @@ pub struct AnswerReq {
     pub option: Option<usize>,
     pub text: Option<String>,
     pub note: Option<String>,
+    /// The task preset whose direction a finding answer's brief carries. Unset, an option answer
+    /// takes the task its label implies and question answers take act.
+    #[serde(default)]
+    pub task: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default)]

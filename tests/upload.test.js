@@ -30,7 +30,7 @@ function compose(requests, image) {
       '#compose': { close },
     },
     context = vm.createContext({
-      S: { composeMode: 'goal', sheetCardId: null, cards: [] },
+      S: { composeMode: 'goal', composeTask: 'fix', sheetCardId: null, cards: [] },
       $: (selector) => elements[selector] || null,
       fetch: async (url, init) => {
         requests.push({ url, init });

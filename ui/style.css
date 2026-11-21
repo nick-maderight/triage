@@ -1357,11 +1357,12 @@ dialog.sheet[open] {
   padding: 20px 24px 0;
 }
 .compose label,
-#compose-mode-label {
+#compose-mode-label,
+#compose-task-label {
   font-size: 13px;
   font-weight: 500;
 }
-.compose > :is(.compose-grid, #compose-mode-label, label[for='dictation-phrases']) {
+.compose > :is(.compose-grid, #compose-mode-label, #compose-task-label, label[for='dictation-phrases']) {
   margin-top: 12px;
 }
 /* The card the sheet was opened for. Clear drops it and leaves a plain session. */

@@ -121,14 +121,20 @@ try {
 </div>
 <span id="compose-mode-label" data-od-id="compose-mode-label">Mode</span>
 <div class="segmented" id="compose-mode" role="radiogroup" aria-labelledby="compose-mode-label" data-od-id="compose-mode">
-<button type="button" role="radio" class="seg" id="compose-mode-goal" data-mode="goal" aria-checked="true" aria-keyshortcuts="g" data-od-id="compose-mode-goal">Goal</button>
-<button type="button" role="radio" class="seg" id="compose-mode-investigate" data-mode="investigate" aria-checked="false" tabindex="-1" aria-keyshortcuts="i" data-od-id="compose-mode-investigate">Investigate</button>
-<button type="button" role="radio" class="seg" id="compose-mode-investigate-fix" data-mode="investigate-fix" aria-checked="false" tabindex="-1" aria-keyshortcuts="F" data-od-id="compose-mode-investigate-fix">Investigate + fix</button>
-<button type="button" role="radio" class="seg" id="compose-mode-act" data-mode="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="A" data-od-id="compose-mode-act">Act</button>
-<button type="button" role="radio" class="seg" id="compose-mode-plan" data-mode="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="compose-mode-plan">Plan</button>
-<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-mode="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="compose-mode-plan-into">Plan into</button>
+<button type="button" role="radio" class="seg" id="compose-mode-goal" data-value="goal" aria-checked="true" aria-keyshortcuts="g" data-od-id="compose-mode-goal">Goal</button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan" data-value="plan" aria-checked="false" tabindex="-1" aria-keyshortcuts="p" data-od-id="compose-mode-plan">Plan</button>
+<button type="button" role="radio" class="seg" id="compose-mode-plan-into" data-value="plan-into" aria-checked="false" tabindex="-1" aria-keyshortcuts="P" data-od-id="compose-mode-plan-into">Plan into</button>
 </div>
 <p class="mode-help" id="compose-mode-help" data-od-id="compose-mode-help"></p>
+<span id="compose-task-label" data-od-id="compose-task-label">Task</span>
+<div class="segmented" id="compose-task" role="radiogroup" aria-labelledby="compose-task-label" data-od-id="compose-task">
+<button type="button" role="radio" class="seg" id="compose-task-investigate" data-value="investigate" aria-checked="false" tabindex="-1" aria-keyshortcuts="i" data-od-id="compose-task-investigate">Investigate</button>
+<button type="button" role="radio" class="seg" id="compose-task-fix" data-value="fix" aria-checked="true" aria-keyshortcuts="F" data-od-id="compose-task-fix">Fix</button>
+<button type="button" role="radio" class="seg" id="compose-task-act" data-value="act" aria-checked="false" tabindex="-1" aria-keyshortcuts="A" data-od-id="compose-task-act">Act</button>
+<button type="button" role="radio" class="seg" id="compose-task-verify" data-value="verify" aria-checked="false" tabindex="-1" aria-keyshortcuts="V" data-od-id="compose-task-verify">Verify</button>
+<button type="button" role="radio" class="seg" id="compose-task-simplify" data-value="simplify" aria-checked="false" tabindex="-1" aria-keyshortcuts="S" data-od-id="compose-task-simplify">Simplify</button>
+</div>
+<p class="mode-help" id="compose-task-help" data-od-id="compose-task-help"></p>
 <div class="compose-grid" id="compose-models" hidden data-od-id="compose-models">
 <div class="pair"><label id="compose-executor-label" for="compose-executor">Execution model</label>
 <button type="button" class="field picker-field" id="compose-executor" value="" aria-labelledby="compose-executor-label compose-executor" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor"></button></div>
@@ -181,12 +187,13 @@ try {
 <dt><kbd>a</kbd></dt><dd>Acknowledge</dd>
 <dt><kbd>x</kbd></dt><dd>Acknowledge and close the card's session, which exits omp and closes its tmux pane or archives its dsh session</dd>
 <dt><kbd>p</kbd></dt><dd>Plan next step, or the session sheet with Plan preselected</dd>
-<dt><kbd>d</kbd></dt><dd>Do next step: run a report's recommended step as goal work</dd>
+<dt><kbd>d</kbd></dt><dd>Do next step, the session sheet with Goal and Act preselected in a window of its own</dd>
 <dt><kbd>i</kbd></dt><dd>The session sheet with Investigate preselected</dd>
-<dt><kbd>F</kbd></dt><dd>The session sheet with Investigate + fix preselected</dd>
+<dt><kbd>F</kbd></dt><dd>The session sheet with Fix preselected</dd>
 <dt><kbd>A</kbd></dt><dd>The session sheet with Act preselected</dd>
 <dt><kbd>P</kbd></dt><dd>The session sheet with Plan into preselected</dd>
 <dt><kbd>g</kbd></dt><dd>The session sheet for a new goal</dd>
+<dt><kbd>g</kbd> <kbd>p</kbd> <kbd>P</kbd> <kbd>i</kbd> <kbd>F</kbd> <kbd>A</kbd> <kbd>V</kbd> <kbd>S</kbd></dt><dd>Inside the session sheet, pick the Mode, then the Task</dd>
 <dt><kbd>o</kbd></dt><dd>Other answer</dd>
 <dt><kbd>n</kbd></dt><dd>Note for this action, which the session sheet takes as its instruction</dd>
 <dt><kbd>r</kbd></dt><dd>Request the final report from a session whose reply missed it</dd>

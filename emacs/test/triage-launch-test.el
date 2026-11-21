@@ -7,26 +7,28 @@
 (require 'ert)
 (require 'triage-launch)
 
-(defun triage-launch-test--sheet (kind mode)
-  "Turn the current buffer into a drawn launch sheet of KIND in MODE."
+(defun triage-launch-test--sheet (kind mode task)
+  "Turn the current buffer into a drawn launch sheet of KIND in MODE and TASK."
   (triage-launch-mode)
   (setq triage-launch--kind kind
         triage-launch--context (and (eq kind 'context) "Org: Child\n")
         triage-launch--catalogs nil)
   (triage-launch--set-mode mode)
+  (triage-launch--set-task task)
   (triage-launch--draw))
 
 ;; Options stay live the way Magit's menus do, so one key changes, launches or cancels.
 (ert-deftest triage-launch-test-option-rows-take-one-key ()
   "One key on the option rows acts at once, while the body still takes text."
   (with-temp-buffer
-    (triage-launch-test--sheet 'dispatch "investigate")
+    (triage-launch-test--sheet 'dispatch "goal" "investigate")
     (triage-launch-edit)
     (insert "typed")
     (dolist (position (list (point-min) (1- triage-launch--body-start)))
       (goto-char position)
       (should (eq (key-binding "e") #'triage-launch-set-engine))
       (should (eq (key-binding "m") #'triage-launch-set-mode))
+      (should (eq (key-binding "T") #'triage-launch-set-task))
       (should (eq (key-binding (kbd "RET")) #'triage-launch-submit))
       (should (eq (key-binding "q") #'triage-launch-cancel))
       (should (eq (key-binding (kbd "TAB")) #'triage-launch-edit))
@@ -46,7 +48,7 @@
 (ert-deftest triage-launch-test-a-redraw-keeps-point-in-its-zone ()
   "A redraw, such as a model catalog arriving, leaves point in the text or on its row."
   (with-temp-buffer
-    (triage-launch-test--sheet 'compose "goal")
+    (triage-launch-test--sheet 'compose "goal" "fix")
     (triage-launch-edit)
     (triage-launch--draw)
     (should (= (point) triage-launch--body-start))
@@ -62,21 +64,36 @@
       (should (= (point) row)))))
 
 (ert-deftest triage-launch-test-a-mode-change-keeps-point-on-the-options ()
-  "Filling a mode's default instruction leaves point where the next key acts."
+  "Picking a mode leaves the body and the point on the option rows."
   (with-temp-buffer
-    (triage-launch-test--sheet 'context "investigate")
+    (triage-launch-test--sheet 'context "goal" "investigate")
+    (triage-launch--set-body "Keep this")
     (goto-char (point-min))
     (cl-letf (((symbol-function 'read-multiple-choice)
                (lambda (_prompt choices)
-                 (seq-find (lambda (choice) (equal (nth 1 choice) "Act")) choices))))
+                 (seq-find (lambda (choice) (equal (nth 1 choice) "Plan")) choices))))
       (triage-launch-set-mode))
-    (should (equal triage-launch--mode "act"))
-    (should (equal (triage-launch--body) triage-card-act-default))
+    (should (equal triage-launch--mode "plan"))
+    (should (equal (triage-launch--body) "Keep this"))
     (should (< (point) triage-launch--body-start))
     (should (string-match-p "Dispatch · Org: Child" (buffer-string)))
     (should (string-match-p "^d  Directory" (buffer-string)))
     (should-not (string-match-p "^x  Exec model" (buffer-string)))
     (should-error (triage-launch-set-executor) :type 'user-error)))
+
+(ert-deftest triage-launch-test-a-task-change-keeps-the-body ()
+  "Picking a task leaves the body as it was, with point on the option rows."
+  (with-temp-buffer
+    (triage-launch-test--sheet 'context "goal" "investigate")
+    (triage-launch--set-body "Keep this")
+    (goto-char (point-min))
+    (cl-letf (((symbol-function 'read-multiple-choice)
+               (lambda (_prompt choices)
+                 (seq-find (lambda (choice) (equal (nth 1 choice) "Act")) choices))))
+      (triage-launch-set-task))
+    (should (equal triage-launch--task "act"))
+    (should (equal (triage-launch--body) "Keep this"))
+    (should (< (point) triage-launch--body-start))))
 
 (ert-deftest triage-launch-test-engine-takes-one-key ()
   "The fixed Engine choices accept one mnemonic key instead of a completion prompt."
@@ -146,7 +163,7 @@
         (should prompt-called)))))
 
 (ert-deftest triage-launch-test-context-opens-a-dispatch-sheet ()
-  "A context launch opens a Dispatch sheet on its options with the fix default."
+  "A context launch opens a Dispatch sheet on Goal and Fix with an empty body."
   (let ((buffer (get-buffer-create triage-launch--context-buffer))
         catalog-engine)
     (with-current-buffer buffer
@@ -161,8 +178,9 @@
           (triage-launch-context "Org: Child\n\nChild body\n" "/tmp/" "dsh")
           (with-current-buffer buffer
             (should (eq triage-launch--kind 'context))
-            (should (equal triage-launch--mode "investigate-fix"))
-            (should (equal (triage-launch--body) triage-card-fix-default))
+            (should (equal triage-launch--mode "goal"))
+            (should (equal triage-launch--task "fix"))
+            (should (equal (triage-launch--body) ""))
             (should (equal triage-launch--cwd "/tmp/"))
             (should (equal triage-launch--engine "dsh"))
             (should-not triage-launch--executor)
@@ -195,14 +213,14 @@
             (triage-launch-context "Org: Second\n" "/tmp/"))
           (with-current-buffer buffer
             (should (equal triage-launch--context "Org: Second\n"))
-            (should (equal (triage-launch--body) triage-card-fix-default))))
+            (should (equal (triage-launch--body) ""))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest triage-launch-test-context-submit-sends-note-and-dispatch-mode ()
   "A context Dispatch posts the context as the prompt and the body as its note."
   (with-temp-buffer
-    (triage-launch-test--sheet 'context "act")
+    (triage-launch-test--sheet 'context "goal" "act")
     (triage-launch--set-body "  ")
     (let (body)
       (cl-letf (((symbol-function 'triage-api-request)
@@ -211,7 +229,8 @@
                    'process)))
         (triage-launch-submit))
       (should (equal (alist-get 'prompt body) "Org: Child\n"))
-      (should (equal (alist-get 'mode body) "act"))
+      (should (equal (alist-get 'mode body) "goal"))
+      (should (equal (alist-get 'task body) "act"))
       (should (equal (alist-get 'note body) "")))))
 
 (ert-deftest triage-launch-test-cancel-keeps-a-new-session-prompt ()
@@ -220,7 +239,7 @@
     (unwind-protect
         (progn
           (with-current-buffer buffer
-            (triage-launch-test--sheet 'compose "goal")
+            (triage-launch-test--sheet 'compose "goal" "fix")
             (triage-launch-edit)
             (insert "Unsent prompt"))
           (switch-to-buffer buffer)
@@ -271,6 +290,7 @@
         (triage-launch--submit-session)
         (should (= calls 1))
         (should (equal (plist-get (cdr args) :mode) "goal"))
+        (should (equal (plist-get (cdr args) :task) "fix"))
         (should-not (plist-get (cdr args) :note))
         (should triage-launch--starting)
         (should-error (triage-launch-cancel) :type 'user-error)
@@ -292,7 +312,7 @@
         (should (= calls 3))))))
 
 (ert-deftest triage-launch-test-start-session-rejects-structured-mode ()
-  "The session API rejects a structured mode, or a Dispatch mode without a note."
+  "The session API rejects a structured or retired mode and an unknown task."
   (let (called)
     (cl-letf (((symbol-function 'triage-api-request)
                (lambda (&rest _) (setq called t))))
@@ -300,6 +320,7 @@
        (triage-start-session "Task" :mode '((mode . "goal")))
        :type 'user-error)
       (should-error (triage-start-session "Task" :mode "act") :type 'user-error)
+      (should-error (triage-start-session "Task" :task "bogus") :type 'user-error)
       (should-not called))))
 
 (provide 'triage-launch-test)

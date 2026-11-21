@@ -234,7 +234,7 @@ test('plan cards from the queue render and answer through the answer route', asy
       enc: encodeURIComponent,
       draft(item) {
         if (!state.drafts.has(item.id))
-          state.drafts.set(item.id, { note: '', other: '', open: false, dispatchMode: 'investigate' });
+          state.drafts.set(item.id, { note: '', other: '', open: false, dispatchMode: 'goal', dispatchTask: 'investigate' });
         return state.drafts.get(item.id);
       },
       recIndex: (item) => Math.max(0, item.options.findIndex((option) => option.recommended)),

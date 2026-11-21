@@ -877,6 +877,8 @@
         compose.querySelector('#compose-form').requestSubmit();
         await waitFor(() => posted, 'plan-into session body posted');
         assert(posted.mode === 'plan-into', 'posted mode is plan-into');
+        assert(posted.task === 'fix', 'posted task is the chosen Fix');
+        assert(!('note' in posted), 'a plain session sends no note');
         assert(posted.executor === 'fixture/beta-2', 'posted executor is the chosen selector');
         assert(posted.executor_thinking === 'high', 'posted execution effort is the chosen level');
 
@@ -945,10 +947,11 @@
         await waitFor(() => compose.open, 'the session sheet opens on P');
         const mode = (name) => document.querySelector(`#compose-mode-${name}`);
         assert(mode('plan-into').getAttribute('aria-checked') === 'true', 'P preselects Plan into');
-        assert(document.querySelector('#compose-mode-goal').hidden, 'a card hides Goal');
+        assert(!document.querySelector('#compose-mode-goal').hidden, 'a card shows Goal');
         assert(!compose.querySelector('#compose-models').hidden, 'Plan into shows the execution model field');
         assert(visible(document.querySelector('#compose-executor-effort')), 'the sheet shows the execution effort field');
-        assert(segmentRow(compose.querySelector('#compose-mode')), 'the five card segments share one row');
+        assert(segmentRow(compose.querySelector('#compose-mode')), 'the three mode segments share one row');
+        assert(segmentRow(compose.querySelector('#compose-task')), 'the five task segments share one row');
         assert(text('#compose-model').includes('Alpha One'), 'the Model Default names the daemon model');
         assert(text('#compose-thinking').includes('max'), 'the Thinking Default names the daemon level');
         const dshEngine = document.querySelector('#compose-engine').value === 'dsh';
@@ -963,10 +966,10 @@
           startRect.bottom <= dialogRect.bottom + 1 && startRect.top >= dialogRect.top - 1,
           'the Start button stays inside the dialog',
         );
-        mode('act').click();
-        assert(compose.querySelector('#compose-models').hidden, 'Act hides the execution model field');
-        assert(text('#compose-model').includes('Alpha One'), 'Act keeps the Model field visible');
-        assert(text('#compose-thinking').includes('max'), 'Act keeps the Thinking field visible');
+        document.querySelector('#compose-mode-goal').click();
+        assert(compose.querySelector('#compose-models').hidden, 'Goal hides the execution model field');
+        assert(text('#compose-model').includes('Alpha One'), 'Goal keeps the Model field visible');
+        assert(text('#compose-thinking').includes('max'), 'Goal keeps the Thinking field visible');
         return { scenario: 'plan-into', passed: true };
       } finally {
         window.fetch = nativeFetch;
@@ -980,8 +983,10 @@
         note = document.querySelector('#compose-prompt'),
         cardNote = () => document.querySelector('#note'),
         mode = (name) => document.querySelector(`#compose-mode-${name}`),
+        task = (name) => document.querySelector(`#compose-task-${name}`),
         press = (key) =>
           document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
+        pressIn = (key) => dialog.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })),
         type = (field, value) => {
           field.value = value;
           field.dispatchEvent(new Event('input', { bubbles: true }));
@@ -989,19 +994,20 @@
       try {
         press('i');
         await waitFor(() => dialog.open, 'session sheet open');
-        assert(mode('investigate').getAttribute('aria-checked') === 'true', 'Investigate is preselected');
-        assert(mode('act').getAttribute('aria-checked') === 'false', 'Act starts unchecked');
-        assert(mode('goal').hidden, 'a card hides Goal');
+        assert(mode('goal').getAttribute('aria-checked') === 'true', 'i selects Goal');
+        assert(!mode('goal').hidden, 'a card shows Goal');
+        assert(task('investigate').getAttribute('aria-checked') === 'true', 'i selects Investigate');
+        assert(task('act').getAttribute('aria-checked') === 'false', 'Act starts unchecked');
         assert(document.querySelector('#compose-target').hidden, 'a card hides the directory and tmux session');
-        mode('investigate-fix').click();
-        assert(
-          mode('investigate-fix').getAttribute('aria-checked') === 'true',
-          'Investigate + fix is selected after click',
-        );
-        assert(note.value.includes('root cause'), 'Investigate + fix opens on its default direction');
-        mode('act').click();
-        assert(mode('act').getAttribute('aria-checked') === 'true', 'Act is selected after click');
-        assert(mode('investigate').getAttribute('aria-checked') === 'false', 'Investigate is cleared');
+        task('fix').click();
+        assert(task('fix').getAttribute('aria-checked') === 'true', 'Fix is selected after click');
+        assert(note.value === '', 'a task never writes into the Instruction');
+        task('act').click();
+        assert(task('act').getAttribute('aria-checked') === 'true', 'Act is selected after click');
+        assert(task('investigate').getAttribute('aria-checked') === 'false', 'Act replaces Investigate');
+        pressIn('V');
+        assert(task('verify').getAttribute('aria-checked') === 'true', 'V selects Verify');
+        task('act').click();
         type(note, 'fixture instruction\nsecond line');
         dialog.close();
         assert(!dialog.open, 'the session sheet closes');
@@ -1009,12 +1015,13 @@
         document.querySelector('#dispatch-btn').click();
         await waitFor(() => dialog.open, 'session sheet reopened from the dock');
         assert(note.value === 'fixture instruction\nsecond line', 'the instruction persists');
-        assert(mode('investigate').getAttribute('aria-checked') === 'true', 'Dispatch preselects Investigate again');
+        assert(task('investigate').getAttribute('aria-checked') === 'true', 'Dispatch reopens on Investigate');
         dialog.close();
         type(cardNote(), 'note from the card');
         press('A');
         await waitFor(() => dialog.open, 'session sheet open from A');
-        assert(mode('act').getAttribute('aria-checked') === 'true', 'A preselects Act');
+        assert(task('act').getAttribute('aria-checked') === 'true', 'A selects Act');
+        assert(mode('goal').getAttribute('aria-checked') === 'true', 'A keeps Goal');
         assert(note.value === 'note from the card', 'the sheet opens on the card note');
         return { scenario: 'session', passed: true };
       } finally {

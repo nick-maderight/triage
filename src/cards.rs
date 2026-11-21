@@ -870,7 +870,7 @@ pub enum Start<'a> {
 }
 
 impl<'a> Start<'a> {
-    /// Read a `/v1/sessions` mode. Only `plan-into` takes an execution model and its effort.
+    /// Read the `mode` of every launch route. Only `plan-into` takes an execution model and its effort.
     pub fn parse(
         mode: Option<&str>,
         executor: Option<&'a str>,
@@ -892,72 +892,83 @@ impl<'a> Start<'a> {
     }
 }
 
-/// What a `/v1/sessions` prompt is. Without a note it is the task of a New session. With one
-/// it is context, such as an Org heading or a mail thread sent from Emacs, dispatched the way
-/// a card is. The note is then the direction from the user.
+/// What a launch asks the session to do. A task changes only the direction text its brief
+/// carries. The mode, a `Start`, decides how the session starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Subject<'a> {
-    Task,
-    Context(DispatchMode, &'a str),
-}
-
-impl<'a> Subject<'a> {
-    /// Read a `/v1/sessions` mode for a prompt with or without a note. Context takes a Dispatch
-    /// mode, Investigate by default. It starts the way a card dispatch in that mode starts.
-    pub fn parse(
-        mode: Option<&str>,
-        note: Option<&'a str>,
-        executor: Option<&'a str>,
-        executor_thinking: Option<&'a str>,
-    ) -> Result<(Self, Start<'a>), String> {
-        let Some(note) = note else {
-            return Ok((Self::Task, Start::parse(mode, executor, executor_thinking)?));
-        };
-        let mode = DispatchMode::parse(mode.unwrap_or("investigate"))
-            .ok_or_else(|| "unknown mode".to_owned())?;
-        let start = match mode {
-            DispatchMode::Plan => "plan",
-            DispatchMode::PlanInto => "plan-into",
-            DispatchMode::Investigate | DispatchMode::InvestigateFix | DispatchMode::Act => "goal",
-        };
-        Ok((Self::Context(mode, note), Start::parse(Some(start), executor, executor_thinking)?))
-    }
-}
-
-/// A dispatch can investigate read-only, investigate and fix, act on the card, plan for review,
-/// or plan into an execution model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchMode {
+pub enum Task {
     Investigate,
-    /// Act, starting from a direction that fixes the root cause instead of this one symptom.
-    InvestigateFix,
-    Plan,
+    Fix,
     Act,
-    PlanInto,
+    Verify,
+    Simplify,
 }
 
-impl DispatchMode {
+impl Task {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "investigate" => Some(Self::Investigate),
-            "investigate-fix" => Some(Self::InvestigateFix),
+            "fix" => Some(Self::Fix),
             "act" => Some(Self::Act),
-            "plan" => Some(Self::Plan),
-            "plan-into" => Some(Self::PlanInto),
+            "verify" => Some(Self::Verify),
+            "simplify" => Some(Self::Simplify),
             _ => None,
         }
     }
 
-    /// Swipe text and brief title word.
-    pub fn swipe_text(&self) -> &'static str {
+    /// The name the sheet shows. It titles the brief and fills the reply card's Task field.
+    pub fn label(self) -> &'static str {
         match self {
             Self::Investigate => "Investigate",
-            Self::InvestigateFix => "Investigate + fix",
+            Self::Fix => "Fix",
             Self::Act => "Act",
-            Self::Plan => "Plan",
-            Self::PlanInto => "Plan into",
+            Self::Verify => "Verify",
+            Self::Simplify => "Simplify",
         }
     }
+
+    fn direction(self) -> &'static str {
+        match self {
+            Self::Investigate => INVESTIGATE_DIRECTION,
+            Self::Fix => FIX_DIRECTION,
+            Self::Act => ACT_DIRECTION,
+            Self::Verify => VERIFY_DIRECTION,
+            Self::Simplify => SIMPLIFY_DIRECTION,
+        }
+    }
+}
+
+/// The swipe text, brief title word and finding-pane identity of a launch. A plan names its
+/// mode first. It stays ASCII so the tmux pane tag reads back the same under any locale.
+fn launch_label(start: Start, task: Task) -> String {
+    match start {
+        Start::Goal => task.label().to_owned(),
+        Start::Plan => format!("Plan + {}", task.label()),
+        Start::PlanInto(..) => format!("Plan into + {}", task.label()),
+    }
+}
+
+/// The task a finding option's label implies. A label that opens with "Investigate" asks for
+/// an answer, and one that also names a fix fixes it. Every other option carries out the action.
+fn option_task(label: &str) -> Task {
+    let label = label.trim_start().to_lowercase();
+    if !label.starts_with("investigate") {
+        Task::Act
+    } else if label.contains("fix") {
+        Task::Fix
+    } else {
+        Task::Investigate
+    }
+}
+
+/// The start a finding answer names. The same body approves a plan card with an executor, so
+/// only plan-into reads the executor fields.
+fn answer_start(req: &AnswerReq) -> Result<Start<'_>, String> {
+    Ok(match Start::parse(req.mode.as_deref(), None, None)? {
+        Start::PlanInto(..) => {
+            Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
+        }
+        start => start,
+    })
 }
 
 /// Launch an omp session for any card and resolve the card.
@@ -965,20 +976,19 @@ impl DispatchMode {
 /// An ask or a plan stays queued for an hour with reason `investigating %N`, `planning %N`, or
 /// `acting %N`, because its dialog or review is still open and waiting for its answer. Findings
 /// and info cards finish with reason `launched %N`.
-/// The session's final report comes back as an info card through the tracker. `executor` is the
-/// execution model a plan-into dispatch hands its approved plan to, omp's `smol` role when
-/// unset, and `executor_thinking` is the effort it takes; the server refuses both with any
-/// other mode. `new_window` opens an omp window for the brief instead of typing it into the
-/// card's waiting pane. A dsh card keeps its own session whatever the flag says.
+/// The session's final report comes back as an info card through the tracker. `start` says how
+/// the session starts, and a plan-into start names the execution model its approved plan goes
+/// to. `task` picks the direction the brief carries. `new_window` opens an omp window for the
+/// brief instead of typing it into the card's waiting pane. A dsh card keeps its own session
+/// whatever the flag says.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     db: &Db,
     card: &Card,
-    mode: DispatchMode,
+    start: Start,
+    task: Task,
     note: Option<&str>,
     launch: &Launch,
-    executor: Option<&str>,
-    executor_thinking: Option<&str>,
     image: Option<&Upload>,
     new_window: bool,
 ) -> Result<(), String> {
@@ -993,25 +1003,24 @@ pub fn dispatch(
     if !queued_for_answer(swipe.as_ref()) {
         return Err("card is not queued".to_owned());
     }
-    let path = write_brief(db, dispatch_brief(card, mode, note, workspace_workdir(launch, &card_workdir(card))))?;
-    let start = match mode {
-        DispatchMode::Plan => Start::Plan,
-        DispatchMode::PlanInto => Start::PlanInto(executor, executor_thinking),
-        DispatchMode::Investigate | DispatchMode::InvestigateFix | DispatchMode::Act => Start::Goal,
-    };
+    let path = write_brief(
+        db,
+        dispatch_brief(card, start, task, note, workspace_workdir(launch, &card_workdir(card))),
+    )?;
     let pane = launch_brief(card, launch, &path, start, image, new_window)?;
+    let label = launch_label(start, task);
     let recorded = if matches!(card.kind, Kind::Ask | Kind::Plan) {
-        let doing = match mode {
-            DispatchMode::Investigate => "investigating",
-            DispatchMode::Plan | DispatchMode::PlanInto => "planning",
+        let doing = match start {
+            Start::Plan | Start::PlanInto(..) => "planning",
+            Start::Goal if task == Task::Investigate => "investigating",
             // A fix launch ships work, so it reads like Act in the deferred card's reason.
-            DispatchMode::Act | DispatchMode::InvestigateFix => "acting",
+            Start::Goal => "acting",
         };
         db.swipe(&Swipe {
             card: card.id.clone(),
             action: "later".to_owned(),
             option: None,
-            text: Some(mode.swipe_text().to_owned()),
+            text: Some(label),
             note: note.map(str::to_owned),
             until_ms: Some(events::now_ms() + 60 * 60 * 1000),
             reason: Some(format!("{doing} {pane}")),
@@ -1024,7 +1033,7 @@ pub fn dispatch(
             &card.id,
             "done",
             None,
-            Some(mode.swipe_text().to_owned()),
+            Some(label),
             note.map(str::to_owned),
             Some(format!("launched {pane}")),
         )
@@ -1226,28 +1235,29 @@ fn session_id(path: &str) -> Option<String> {
 /// The session's asks and final report reach the inbox through the tracker like any other pane.
 /// A plan launch starts in read-only plan mode and a plan-into launch hands its plan to the
 /// execution model without review. Every other session starts in goal mode with an objective
-/// that names the brief.
+/// that names the brief. `task` picks the direction the brief carries.
 pub fn start_session(
     db: &Db,
     prompt: &str,
     cwd: &str,
     launch: &Launch,
     start: Start,
+    task: Task,
     image: Option<&Upload>,
 ) -> Result<String, String> {
     launch_text(db, prompt, cwd, launch, start, image, |workdir| {
-        session_brief(prompt, plans_for_review(start), workdir)
+        session_brief(prompt, start, task, workdir)
     })
 }
 
 /// Launch a session that dispatches free text the way a card is dispatched. The brief is about
-/// `context`, `note` is the direction from the user and `mode` picks the instructions and the
-/// report. `start` must be the start `mode` takes, as `Subject::parse` returns it.
+/// `context`, `note` is the direction from the user, and `start` and `task` shape the brief the
+/// way a card's dispatch does. `start` must be the start the mode parses to.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_context(
     db: &Db,
     context: &str,
-    mode: DispatchMode,
+    task: Task,
     note: &str,
     cwd: &str,
     launch: &Launch,
@@ -1255,7 +1265,7 @@ pub fn dispatch_context(
     image: Option<&Upload>,
 ) -> Result<String, String> {
     launch_text(db, context, cwd, launch, start, image, |workdir| {
-        context_brief(context, mode, note, workdir)
+        context_brief(context, start, task, note, workdir)
     })
 }
 
@@ -2028,10 +2038,8 @@ fn trail(db: &Db, key: &str, since: i64) -> (Star, bool) {
     // A read-only launch asked the session for an answer, so its report's recommended
     // step is the one thing still waiting on the user. Any other launch sent the
     // session to carry the work out, so its report owes nothing.
-    let investigation = choice
-        .as_deref()
-        .is_some_and(|label| option_mode(&CardOption { label: label.to_owned(), ..CardOption::default() })
-            == DispatchMode::Investigate);
+    let investigation =
+        choice.as_deref().is_some_and(|label| option_task(label) == Task::Investigate);
     let note = swipe
         .note
         .as_deref()
@@ -3121,24 +3129,30 @@ fn answer_finding(
         .options
         .get(index)
         .ok_or_else(|| "finding option is out of range".to_owned())?;
-    let chosen = req.mode.as_deref().and_then(DispatchMode::parse);
-    let mode = chosen.unwrap_or_else(|| option_mode(option));
+    let start = answer_start(req)?;
+    let task = match req.task.as_deref() {
+        None => option_task(&option.label),
+        Some(value) => Task::parse(value).ok_or_else(|| "unknown task".to_owned())?,
+    };
+    let label = launch_label(start, task);
     let pane = finding_pane_for_answer(
         db,
         card,
         launch,
         image,
         swipe.as_ref(),
-        req,
-        (index, req.note.as_deref(), mode),
-        || finding_brief(card, option, req.note.as_deref(), mode),
+        start,
+        (index, req.note.as_deref(), &label),
+        || finding_brief(card, option, req.note.as_deref(), start, task),
     )?;
+    // A request that names no mode or task keeps the option label as the reply card's Task.
+    let named = req.mode.is_some() || req.task.is_some();
     if record_swipe(
         db,
         &card.id,
         "done",
         Some(index),
-        chosen.map(|mode| mode.swipe_text().to_owned()),
+        named.then(|| label.clone()),
         req.note.clone(),
         Some(format!("launched {pane}")),
     ) {
@@ -3158,8 +3172,8 @@ fn finding_pane_for_answer(
     launch: &Launch,
     image: Option<&Upload>,
     swipe: Option<&Swipe>,
-    req: &AnswerReq,
-    (option, note, mode): (usize, Option<&str>, DispatchMode),
+    start: Start,
+    (option, note, label): (usize, Option<&str>, &str),
     brief: impl FnOnce() -> String,
 ) -> Result<String, String> {
     // dsh sessions have no tmux pane to find or tag.
@@ -3167,19 +3181,12 @@ fn finding_pane_for_answer(
     let tagged_pane = if is_dsh {
         None
     } else {
-        tmux::finding_pane(&card.id, option, note, mode).map_err(|error| error.to_string())?
+        tmux::finding_pane(&card.id, option, note, label).map_err(|error| error.to_string())?
     };
     let pending_pane = if tagged_pane.is_none() {
-        recover_pending_finding_pane(launch, swipe, option, note, mode)?
+        recover_pending_finding_pane(launch, swipe, option, note, label)?
     } else {
         None
-    };
-    let start = match mode {
-        DispatchMode::Plan => Start::Plan,
-        DispatchMode::PlanInto => {
-            Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
-        }
-        DispatchMode::Investigate | DispatchMode::InvestigateFix | DispatchMode::Act => Start::Goal,
     };
     let (pane, needs_tag) = if let Some(pane) = tagged_pane {
         (pane, false)
@@ -3188,16 +3195,16 @@ fn finding_pane_for_answer(
     } else {
         let path = write_brief(db, brief())?;
         let pane = launch_brief(card, launch, &path, start, image, false)?;
-        let pending = record_pending_finding_pane(db, &card.id, option, note, &pane, mode);
+        let pending = record_pending_finding_pane(db, &card.id, option, note, &pane, label);
         if !is_dsh {
-            tmux::tag_finding_pane(&pane, &card.id, option, note, mode)
+            tmux::tag_finding_pane(&pane, &card.id, option, note, label)
                 .map_err(|error| error.to_string())?;
         }
         pending?;
         (pane, false)
     };
     if needs_tag && !is_dsh {
-        tmux::tag_finding_pane(&pane, &card.id, option, note, mode)
+        tmux::tag_finding_pane(&pane, &card.id, option, note, label)
             .map_err(|error| error.to_string())?;
     }
     Ok(pane)
@@ -3219,14 +3226,14 @@ fn answer_finding_questions(
     if req.answers.len() != card.questions.len() {
         return Err("finding answer needs one answer per question".to_owned());
     }
-    let mode = match req.mode.as_deref() {
-        None => DispatchMode::Act,
-        Some(value) => match DispatchMode::parse(value) {
-            Some(DispatchMode::Investigate | DispatchMode::InvestigateFix) | None => {
-                return Err("finding questions run act, plan, or plan-into".to_owned());
-            }
-            Some(mode) => mode,
-        },
+    let start = answer_start(req)?;
+    let task = match req.task.as_deref().map(Task::parse) {
+        None => Task::Act,
+        Some(None) => return Err("unknown task".to_owned()),
+        Some(Some(Task::Investigate)) => {
+            return Err("finding questions take every task except investigate".to_owned());
+        }
+        Some(Some(task)) => task,
     };
     let decisions = card
         .questions
@@ -3257,6 +3264,7 @@ fn answer_finding_questions(
     } else {
         // The identity names every answer and the note, so a retry must repeat both exactly.
         let identity = format!("{summary}\n{}", req.note.as_deref().unwrap_or_default());
+        let label = launch_label(start, task);
         // One past the last option, so no real option matches the tag.
         let pane = finding_pane_for_answer(
             db,
@@ -3264,16 +3272,16 @@ fn answer_finding_questions(
             launch,
             image,
             swipe,
-            req,
-            (card.options.len(), Some(identity.as_str()), mode),
-            || finding_answers_brief(card, &decisions, req.note.as_deref(), mode),
+            start,
+            (card.options.len(), Some(identity.as_str()), &label),
+            || finding_answers_brief(card, &decisions, req.note.as_deref(), start, task),
         )?;
         record_swipe(
             db,
             &card.id,
             "done",
             None,
-            Some(format!("{}: {summary}", mode.swipe_text())),
+            Some(format!("{label}: {summary}")),
             req.note.clone(),
             Some(format!("launched {pane}")),
         )
@@ -3329,19 +3337,19 @@ fn finding_decision<'a>(
 const FINDING_ANSWER_RULES: &str = "Honor every decision independently. Do as recommended executes that finding's action. Other is Nick's direction for that finding. Investigate first is read-only for that finding: confirm its claims and report evidence, changing nothing for it. Skip and Keep take no action. Do not ask these questions again. Finish investigations before accepted changes, then report the outcome and evidence for every finding.";
 
 /// The brief for a finding answered question by question: each question's full text with its
-/// decision, then the rules for all of them, then the mode's usual sections.
+/// decision, then the rules for all of them, then the usual sections.
 fn finding_answers_brief(
     card: &Card,
     decisions: &[(&CardQuestion, FindingDecision<'_>)],
     note: Option<&str>,
-    mode: DispatchMode,
+    start: Start,
+    task: Task,
 ) -> String {
     let mut brief = format!(
-        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Finding decisions\n",
+        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## Action\n{}\n\n## Result\n{}\n\n## Finding decisions\n",
         card.title,
         card.star.situation,
         card.star.task,
-        action_heading(mode),
         card.star.action,
         card.star.result,
     );
@@ -3359,15 +3367,11 @@ fn finding_answers_brief(
     }
     brief.push_str(&format!(
         "\n## Direction from the user (overrides the action and any skill)\n{}\n\n## References\n",
-        direction_of(note, mode)
+        direction_of(note, task)
     ));
     push_refs(&mut brief, card);
     brief.push_str(&format!("\n## Rules for these decisions\n{FINDING_ANSWER_RULES}\n"));
-    push_instructions(&mut brief, mode, INVESTIGATE_INSTRUCTION);
-    brief.push_str(REPORT_STEP);
-    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
-        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
-    }
+    push_instructions(&mut brief, start);
     brief
 }
 
@@ -3376,7 +3380,7 @@ fn recover_pending_finding_pane(
     swipe: Option<&Swipe>,
     option: usize,
     note: Option<&str>,
-    mode: DispatchMode,
+    label: &str,
 ) -> Result<Option<String>, String> {
     let Some(swipe) = swipe.filter(|swipe| swipe.action == "later") else {
         return Ok(None);
@@ -3403,7 +3407,7 @@ fn recover_pending_finding_pane(
     }
     if swipe.option != Some(option)
         || swipe.note.as_deref() != note
-        || swipe.text.as_deref() != Some(mode.swipe_text())
+        || swipe.text.as_deref() != Some(label)
     {
         return Err("finding pane was launched with a different answer".to_owned());
     }
@@ -3416,14 +3420,14 @@ fn record_pending_finding_pane(
     option: usize,
     note: Option<&str>,
     pane: &str,
-    mode: DispatchMode,
+    label: &str,
 ) -> Result<(), String> {
     let now = events::now_ms();
     db.swipe(&Swipe {
         card: card.to_owned(),
         action: "later".to_owned(),
         option: Some(option),
-        text: Some(mode.swipe_text().to_owned()),
+        text: Some(label.to_owned()),
         note: note.map(|note| note.to_owned()),
         until_ms: Some(now),
         reason: Some(format!("launching {pane}")),
@@ -3487,30 +3491,6 @@ fn brief_heading(brief: &Path, limit: usize) -> Result<String, String> {
     Ok(truncate_chars(heading.to_owned(), limit))
 }
 
-/// A finding option whose label opens with "Investigate" asks for an answer. One that also names
-/// a fix carries that fix out. Every other option carries out the card's action.
-fn option_mode(option: &CardOption) -> DispatchMode {
-    let label = option.label.trim_start().to_lowercase();
-    if !label.starts_with("investigate") {
-        DispatchMode::Act
-    } else if label.contains("fix") {
-        DispatchMode::InvestigateFix
-    } else {
-        DispatchMode::Investigate
-    }
-}
-
-/// An investigation reads the producer's action as a proposal, so the heading says so.
-fn action_heading(mode: DispatchMode) -> &'static str {
-    match mode {
-        DispatchMode::Investigate => "Proposed action, not approved",
-        DispatchMode::Act
-        | DispatchMode::InvestigateFix
-        | DispatchMode::Plan
-        | DispatchMode::PlanInto => "Action",
-    }
-}
-
 fn push_refs(brief: &mut String, card: &Card) {
     if card.refs.is_empty() {
         brief.push_str("- None\n");
@@ -3523,43 +3503,43 @@ fn push_refs(brief: &mut String, card: &Card) {
     }
 }
 
-fn push_instructions(brief: &mut String, mode: DispatchMode, investigate: &str) {
+/// The closing sections of a card or context brief: the mode's instruction, the status
+/// contract and the report shape, plus the plan handoff for a plan.
+fn push_instructions(brief: &mut String, start: Start) {
     brief.push_str("\n## Instructions\n");
-    brief.push_str(match mode {
-        DispatchMode::Investigate => investigate,
-        DispatchMode::Act | DispatchMode::InvestigateFix => ACT_INSTRUCTION,
-        DispatchMode::Plan => PLAN_INSTRUCTION,
-        DispatchMode::PlanInto => PLAN_INTO_INSTRUCTION,
+    brief.push_str(match start {
+        Start::Goal => GOAL_INSTRUCTION,
+        Start::Plan => PLAN_INSTRUCTION,
+        Start::PlanInto(..) => PLAN_INTO_INSTRUCTION,
     });
     brief.push_str("\n\n");
-    brief.push_str(match mode {
-        DispatchMode::Investigate => INVESTIGATE_STATUS_CONTRACT,
-        DispatchMode::Act
-        | DispatchMode::InvestigateFix
-        | DispatchMode::Plan
-        | DispatchMode::PlanInto => ENVOY_STATUS_CONTRACT,
-    });
+    brief.push_str(ENVOY_STATUS_CONTRACT);
+    brief.push_str(REPORT_STEP);
+    if plans_for_review(start) {
+        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
+    }
 }
 
-fn finding_brief(card: &Card, option: &CardOption, note: Option<&str>, mode: DispatchMode) -> String {
+fn finding_brief(
+    card: &Card,
+    option: &CardOption,
+    note: Option<&str>,
+    start: Start,
+    task: Task,
+) -> String {
     let mut brief = format!(
-        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Chosen option\n{}\n\n## Direction\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n\n## References\n",
+        "# {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## Action\n{}\n\n## Result\n{}\n\n## Chosen option\n{}\n\n## Direction\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n\n## References\n",
         card.title,
         card.star.situation,
         card.star.task,
-        action_heading(mode),
         card.star.action,
         card.star.result,
         option.label,
         option.direction.as_deref().unwrap_or_default(),
-        direction_of(note, mode),
+        direction_of(note, task),
     );
     push_refs(&mut brief, card);
-    push_instructions(&mut brief, mode, INVESTIGATE_INSTRUCTION);
-    brief.push_str(REPORT_STEP);
-    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
-        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
-    }
+    push_instructions(&mut brief, start);
     brief
 }
 /// The shape of the report, which follows a status contract in every brief. It is laid out
@@ -3597,8 +3577,7 @@ Never ask for, suggest or invite a send anywhere in the report, and never tell t
 
 A later question in this session gets a plain answer with no report. Later work ends with a report in the same shape.
 "#;
-/// Opens the report section of a brief that carries work out. It ends on a blank line, which
-/// makes `REPORT_STEP` the next paragraph.
+/// Opens the report section of every brief.
 const ENVOY_STATUS_CONTRACT: &str = r#"## Final report
 
 Keep working until every part of the brief is finished or blocked. A part is blocked only when something outside this session stops it, such as an approval Nick owns, access the session lacks or an event that has not happened yet. A command that timed out or failed is unfinished work. Run it again and fix what it finds. When finished, end with a final reply whose first line is `ENVOY_STATUS: complete`, `ENVOY_STATUS: agent-done` or `ENVOY_STATUS: incomplete`.
@@ -3609,40 +3588,22 @@ Keep working until every part of the brief is finished or blocked. A part is blo
 - `incomplete` means the run could not use the method its brief named.
 
 "#;
-/// Opens the report section of a read-only investigation, which ends on an answer.
-const INVESTIGATE_STATUS_CONTRACT: &str = r#"## Final report
+/// The Investigate task. It keeps the run read-only and tells the session how an answer
+/// reports under the Final report section, which every brief carries.
+const INVESTIGATE_DIRECTION: &str = "Investigate and answer. This run is an investigation: test its premise first, confirm each claim against the transcripts, files, mail, live systems and logs it names, and say plainly where the evidence contradicts it. Any action above is a proposal nobody approved, so do not carry it out. Change nothing unless the user asks for a change here, and then make only that change. A run that changed nothing has no test gate, commit, push or deploy: `complete` means the answer is reported with its evidence, and `incomplete` means the question could not be answered and the reply names what blocked it.";
+/// The Act task, in Nick's words.
+const ACT_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.";
+/// The Fix task: the Act direction, then Nick's root-cause rule.
+const FIX_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
+const VERIFY_DIRECTION: &str = "Verify that the work this describes is done and right. Confirm each claim against the live systems, files, commits and logs it names, run the project's full test gate on the final tree, and fix every gap or failure you find at its root cause. Report what held, what you fixed and the evidence for both.";
+const SIMPLIFY_DIRECTION: &str = "Think ponytail: make what this describes smaller and plainer without changing what it does. Delete dead code, merge duplicates and drop abstraction nobody needs. Then prove the behavior held with the project's full test gate.";
+const GOAL_INSTRUCTION: &str = "Take the whole action this brief calls for, end to end in this run. Complete every part and every environment the request covers. Do not stop at the first working slice. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. When an in-scope edit may need harness approval, make the normal call and let the harness answer. Do not predict a denial. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
 
-When finished, end with a final reply whose first line is `ENVOY_STATUS: complete` or `ENVOY_STATUS: incomplete`.
-
-- `complete` means the answer is reported with its evidence and nothing changed beyond what the direction from the user asked for.
-- `incomplete` means the question could not be answered, and the reply names what blocked it.
-
-"#;
-const INVESTIGATE_INSTRUCTION: &str = "Investigate what this card reports and answer it. Test its premise first. Confirm each claim against the transcripts, live systems, files and logs it names, and say plainly where the evidence contradicts the card. The proposed action is the producer's suggestion and the user has not approved it, so do not carry it out. Change nothing unless the direction from the user asks for a change, and then make only that change.";
-/// The Investigate instruction for free text, which has no producer or proposed action.
-const CONTEXT_INVESTIGATE_INSTRUCTION: &str = "Investigate what the context above describes and answer the direction from the user, or report what you find when it gives none. Confirm each claim against the files, mail, live systems and logs it names and say plainly where the evidence contradicts it. Change nothing unless the direction from the user asks for a change, and then make only that change.";
-const ACT_INSTRUCTION: &str = "Take the whole action this brief calls for, end to end in this run. Complete every part and every environment the request covers. Do not stop at the first working slice. Investigate first when the right change is not obvious, then carry it out in the live systems, files and logs it names: make the fix, run the checks, and ship it through the project's normal pipeline. When an in-scope edit may need harness approval, make the normal call and let the harness answer. Do not predict a denial. The direction above narrows or overrides this. Report what you changed and the evidence it works.";
-/// The direction an Act launch carries when the user typed none. It asks for the work to be
-/// thought through and for no more to be spent than it requires. The inbox prefills its Instruction
-/// with it. A finding answer or API dispatch that names no note gets the same text. Every Act
-/// session then starts from it. The same words sit in `ui/app.js`. A test keeps the two equal.
-const DEFAULT_ACT_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.";
-
-/// The direction an Investigate + fix launch carries when the user typed none. It starts from the
-/// Act direction and adds the root-cause rule. The inbox prefills its Instruction with it. A finding
-/// answer or API dispatch that names no note gets the same text. The same words sit in `ui/app.js`.
-/// A test keeps the two equal.
-const DEFAULT_INVESTIGATE_FIX_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.";
-
-/// The direction a brief carries. An Act or Investigate + fix launch with no direction from the
-/// user gets that mode's default. Leaving the Instruction empty then still tells the session how
-/// to decide.
-fn direction_of(note: Option<&str>, mode: DispatchMode) -> &str {
+/// The direction a brief carries: the task's text, then the user's note when there is one.
+fn direction_of(note: Option<&str>, task: Task) -> String {
     match note.map(str::trim).filter(|note| !note.is_empty()) {
-        Some(note) => note,
-        None if mode == DispatchMode::Act => DEFAULT_ACT_DIRECTION,
-        None if mode == DispatchMode::InvestigateFix => DEFAULT_INVESTIGATE_FIX_DIRECTION,
-        None => "",
+        Some(note) => format!("{}\n\n{note}", task.direction()),
+        None => task.direction().to_owned(),
     }
 }
 const PLAN_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draft a decision-complete plan, and propose it. The plan arrives in the triage inbox for approval. After approval, carry out the work end to end.";
@@ -3679,25 +3640,32 @@ fn workdir_section(cwd: &str) -> String {
     )
 }
 
-fn session_brief(prompt: &str, plan: bool, workdir: Option<String>) -> String {
+fn session_brief(prompt: &str, start: Start, task: Task, workdir: Option<String>) -> String {
     let mut brief = String::new();
     if let Some(cwd) = workdir.as_deref() {
         brief.push_str(&workdir_note(cwd));
     }
     brief.push_str(&format!(
-        "{}\n\n{DEFAULT_INVESTIGATE_FIX_DIRECTION}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}",
-        prompt.trim()
+        "{}\n\n{}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}",
+        prompt.trim(),
+        task.direction(),
     ));
-    if plan {
+    if plans_for_review(start) {
         brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
     }
     brief
 }
 
-fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>, workdir: Option<String>) -> String {
+fn dispatch_brief(
+    card: &Card,
+    start: Start,
+    task: Task,
+    note: Option<&str>,
+    workdir: Option<String>,
+) -> String {
     let mut brief = format!(
-        "# {}: {}\n\n## Card\n- Kind: {}\n- Source: {} ({})\n- Priority: {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## {}\n{}\n\n## Result\n{}\n\n## Body\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n\n{}\n## References\n",
-        mode.swipe_text(),
+        "# {}: {}\n\n## Card\n- Kind: {}\n- Source: {} ({})\n- Priority: {}\n\n## Situation\n{}\n\n## Task\n{}\n\n## Action\n{}\n\n## Result\n{}\n\n## Body\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n\n{}\n## References\n",
+        launch_label(start, task),
         card.title,
         card.card_event_type(),
         card.source.label,
@@ -3705,43 +3673,40 @@ fn dispatch_brief(card: &Card, mode: DispatchMode, note: Option<&str>, workdir: 
         card.priority,
         card.star.situation,
         card.star.task,
-        action_heading(mode),
         card.star.action,
         card.star.result,
         card.body.as_deref().unwrap_or_default(),
-        direction_of(note, mode),
+        direction_of(note, task),
         workdir.as_deref().map(workdir_section).unwrap_or_default(),
     );
     push_refs(&mut brief, card);
-    push_instructions(&mut brief, mode, INVESTIGATE_INSTRUCTION);
-    brief.push_str(REPORT_STEP);
-    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
-        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
-    }
+    push_instructions(&mut brief, start);
     brief
 }
 
 /// The brief of a context dispatch, laid out like a card's Dispatch brief with the context in
 /// place of the card.
-fn context_brief(context: &str, mode: DispatchMode, note: &str, workdir: Option<String>) -> String {
+fn context_brief(
+    context: &str,
+    start: Start,
+    task: Task,
+    note: &str,
+    workdir: Option<String>,
+) -> String {
     let context = context.trim();
     let mut brief = format!(
         "# {}: {}\n\n## Context\n{}\n\n## Direction from the user (overrides the action and any skill)\n{}\n",
-        mode.swipe_text(),
+        launch_label(start, task),
         context.lines().next().unwrap_or_default().trim(),
         context,
-        direction_of(Some(note), mode),
+        direction_of(Some(note), task),
     );
     if let Some(cwd) = workdir.as_deref() {
         brief.push('\n');
         brief.push_str(workdir_section(cwd).trim_end());
         brief.push('\n');
     }
-    push_instructions(&mut brief, mode, CONTEXT_INVESTIGATE_INSTRUCTION);
-    brief.push_str(REPORT_STEP);
-    if matches!(mode, DispatchMode::Plan | DispatchMode::PlanInto) {
-        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
-    }
+    push_instructions(&mut brief, start);
     brief
 }
 

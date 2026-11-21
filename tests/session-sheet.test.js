@@ -1,5 +1,5 @@
 // The session sheet is the one sheet for a new session and for a card's dispatch. These tests
-// hold what it opens with, which modes it offers and what Start sends for either context.
+// hold what it opens with, which choices it offers and what Start sends for either context.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -19,10 +19,7 @@ const slice = (from, to) => {
   assert.ok(start >= 0 && end > start, `app.js holds ${from.trim()}`);
   return app.slice(start, end);
 };
-// The Act direction the sheet starts on, read from the sheet's own function.
-const actDefault = app.match(/const actDefault =\s*'([^']+)';/)?.[1];
 const plain = (value) => JSON.parse(JSON.stringify(value));
-assert.ok(actDefault, 'app.js defines the Act default direction');
 
 // Loads the real sheet code: its opener, context strip, mode buttons, note field and Start.
 // `daemon` is the engine the daemon launches by default.
@@ -30,14 +27,16 @@ function sheet(cards, daemon = 'omp') {
   const requests = [],
     cleared = [],
     listeners = {},
-    modes = ['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into'].map((mode) => ({
-      dataset: { mode },
+    button = (value) => ({
+      dataset: { value },
       hidden: false,
       attrs: {},
-      setAttribute(name, value) {
-        this.attrs[name] = value;
+      setAttribute(name, next) {
+        this.attrs[name] = next;
       },
-    })),
+    }),
+    modes = ['goal', 'plan', 'plan-into'].map(button),
+    tasks = ['investigate', 'fix', 'act', 'verify', 'simplify'].map(button),
     elements = {
       '#note': { value: '' },
       '#compose-prompt': { value: '', focus() {}, addEventListener: (type, listener) => (listeners[type] = listener) },
@@ -58,6 +57,8 @@ function sheet(cards, daemon = 'omp') {
       '#compose-session': { value: '' },
       '#compose-mode': { children: modes },
       '#compose-mode-help': { textContent: '' },
+      '#compose-task': { children: tasks },
+      '#compose-task-help': { textContent: '' },
       '#compose-models': { hidden: true },
       '#compose': {
         open: false,
@@ -74,6 +75,7 @@ function sheet(cards, daemon = 'omp') {
       sheetCardId: null,
       sheetEngine: '',
       composeMode: 'goal',
+      composeTask: 'fix',
       pending: null,
       remoteSwapUntil: 0,
       inflight: new Set(),
@@ -127,10 +129,10 @@ function sheet(cards, daemon = 'omp') {
   vm.runInContext(
     `${slice('  const answerable =', '  const current =')}\n${functionSource('draft')}\n${functionSource('oneLine')}\n` +
       `${slice('  const noteValue =', '  function pick')}\n` +
-      `${['selectSegment', 'sheetCard', 'sheetModes', 'setSheetMode', 'openSheet', 'clearSheetCard'].map((name) => functionSource(name)).join('\n')}\n` +
+      `${['selectSegment', 'sheetCard', 'sheetTasks', 'setSheetMode', 'setSheetTask', 'openSheet', 'clearSheetCard'].map((name) => functionSource(name)).join('\n')}\n` +
       `${['api', 'startSession', 'dispatchCard', 'submitSheet'].map((name) => functionSource(name, true)).join('\n')}\n` +
       `${slice("  $('#compose-prompt').addEventListener('input'", '  wireSheetImage();')}\n` +
-      'Object.assign(globalThis, { draft, openSheet, clearSheetCard, setSheetMode, sheetModes, submitSheet });',
+      'Object.assign(globalThis, { draft, openSheet, clearSheetCard, setSheetMode, setSheetTask, sheetTasks, submitSheet });',
     context,
   );
   return {
@@ -141,8 +143,10 @@ function sheet(cards, daemon = 'omp') {
     cleared,
     image,
     engine: () => elements['#compose-engine'].value,
-    mode: () => modes.find((button) => button.attrs['aria-checked'] === 'true')?.dataset.mode,
-    shownModes: () => modes.filter((button) => !button.hidden).map((button) => button.dataset.mode),
+    mode: () => modes.find((button) => button.attrs['aria-checked'] === 'true')?.dataset.value,
+    task: () => tasks.find((button) => button.attrs['aria-checked'] === 'true')?.dataset.value,
+    shownModes: () => modes.filter((button) => !button.hidden).map((button) => button.dataset.value),
+    shownTasks: () => tasks.filter((button) => !button.hidden).map((button) => button.dataset.value),
     // Types into the sheet's field the way the browser does.
     type(text) {
       elements['#compose-prompt'].value = text;
@@ -166,110 +170,99 @@ const report = { id: 'report', kind: 'info', title: 'Report', source: { pane: '%
 // session of its own and sends no working directory or tmux session, because the card has both.
 test('a card opens the sheet with its context and dispatches in a new window', async () => {
   const ui = sheet([report]);
-  ui.context.openSheet(report, 'act', { newWindow: true });
+  ui.context.openSheet(report, 'goal', 'act', { newWindow: true });
   assert.equal(ui.state.sheetCardId, report.id);
   assert.equal(ui.elements['#compose-context'].hidden, false, 'the context strip shows the card');
   assert.equal(ui.elements['#compose-context-title'].textContent, 'Report');
   assert.equal(ui.elements['#compose-context-source'].textContent, 'unknown');
   assert.equal(ui.elements['#compose-prompt-label'].textContent, 'Instruction');
   assert.equal(ui.elements['#compose-target'].hidden, true, 'a card supplies its own directory and session');
-  assert.equal(ui.elements['#compose-prompt'].value, actDefault, 'Act opens on the default instruction');
-  assert.equal(ui.mode(), 'act');
+  assert.equal(ui.elements['#compose-prompt'].value, '', 'a task never fills the Instruction');
+  assert.equal(ui.mode(), 'goal');
+  assert.equal(ui.task(), 'act');
   const sent = await ui.launch();
   assert.equal(sent.url, '/v1/cards/report/dispatch');
-  assert.deepEqual(plain(sent.body), { mode: 'act', note: null, engine: 'omp', model: null, thinking: null, new_window: true });
-  assert.equal(ui.context.draft(report).note, '', 'the default is not recorded as the card note');
+  assert.deepEqual(plain(sent.body), { mode: 'goal', task: 'act', note: null, engine: 'omp', model: null, thinking: null, new_window: true });
+  assert.equal(ui.context.draft(report).note, '', 'an empty Instruction is no card note');
 
   // Dispatch from the same card keeps its own behavior and asks for no new window.
   ui.state.cards.push(report);
-  ui.context.openSheet(report, 'investigate');
+  ui.context.openSheet(report, 'goal', 'investigate');
   assert.equal((await ui.launch()).body.new_window, false);
 });
 
-// An untouched mode default must not become the card's note, or a later Acknowledge or
-// Investigate would send boilerplate the user never wrote.
-test('the Act default clears for another mode and a typed instruction replaces it', () => {
-  const ui = sheet([report, finding]);
-  ui.context.openSheet(report, 'act');
-  const field = ui.elements['#compose-prompt'];
-  assert.equal(field.value, actDefault, 'Act opens on the default direction');
-  ui.context.setSheetMode('plan');
-  assert.equal(field.value, '', 'leaving Act clears an untouched default');
-  assert.equal(ui.context.draft(report).note, '', 'the default never becomes the card note');
-  ui.context.setSheetMode('act');
-  assert.equal(field.value, actDefault, 'Act restores the default');
-
-  ui.context.openSheet(finding, 'act');
-  ui.type('Only the staging rule');
-  assert.equal(ui.context.draft(finding).defaulted, false, 'typing takes over the instruction');
-  ui.context.setSheetMode('investigate');
-  assert.equal(field.value, 'Only the staging rule', 'a typed instruction stays across modes');
-});
-
-// Investigate + fix starts on the longer direction, and each default belongs to its mode.
-test('the Investigate + fix default follows its mode and clears like the Act one', () => {
+// A task only says what the session is asked to do. It never fills the Instruction, so an empty
+// Instruction stays empty for every task.
+test('a task never writes into the Instruction', async () => {
   const ui = sheet([report]);
-  ui.context.openSheet(report, 'investigate-fix');
+  ui.context.openSheet(report, 'goal', 'investigate');
   const field = ui.elements['#compose-prompt'];
-  assert.equal(
-    field.value,
-    `${actDefault}\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.`,
-    'Investigate + fix opens on its own direction',
-  );
-  assert.equal(ui.context.draft(report).note, '', 'the default never becomes the card note');
-  ui.context.setSheetMode('act');
-  assert.equal(field.value, actDefault, 'Act puts back its shorter default');
-  ui.context.setSheetMode('investigate-fix');
-  assert.ok(field.value.includes('root cause'), 'Investigate + fix puts back its own default');
-  ui.context.setSheetMode('plan');
-  assert.equal(field.value, '', 'another mode clears the untouched default');
-  ui.type('Only the config');
-  ui.context.setSheetMode('investigate-fix');
-  assert.equal(field.value, 'Only the config', 'a typed instruction survives the switch');
+  ui.context.setSheetTask('fix');
+  assert.equal(ui.task(), 'fix');
+  assert.equal(field.value, '', 'Fix leaves the Instruction empty');
+  ui.context.setSheetTask('act');
+  assert.equal(field.value, '', 'Act leaves the Instruction empty');
+  assert.equal(ui.context.draft(report).note, '');
+  const sent = await ui.launch();
+  assert.equal(sent.body.mode, 'goal');
+  assert.equal(sent.body.task, 'act');
+  assert.equal(sent.body.note, null, 'an empty Instruction sends no note');
 });
 
-// The one sheet hides the modes its context cannot use. A plain session offers every mode. A
-// card drops Goal, and a finding's answers can only act on those answers.
-test('the sheet offers only the modes its context can use', () => {
+test('a typed instruction survives a mode or task switch', () => {
   const ui = sheet([report, finding]);
-  ui.context.openSheet(null, 'goal');
-  assert.deepEqual(ui.shownModes(), ['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into']);
-  assert.equal(ui.mode(), 'goal');
-  ui.context.setSheetMode('investigate');
-  assert.equal(ui.mode(), 'investigate', 'a plain session takes a dispatch mode');
+  ui.context.openSheet(finding, 'goal', 'act');
+  ui.type('Only the staging rule');
+  ui.context.setSheetMode('plan');
+  ui.context.setSheetTask('verify');
+  assert.equal(ui.elements['#compose-prompt'].value, 'Only the staging rule');
+  assert.equal(ui.context.draft(finding).note, 'Only the staging rule');
+});
 
-  ui.context.openSheet(report, 'investigate');
-  assert.deepEqual(ui.shownModes(), ['investigate', 'investigate-fix', 'act', 'plan', 'plan-into']);
-  assert.equal(ui.mode(), 'investigate');
+// Mode and Task are separate rows. A plain session offers every choice. A card offers every task
+// too. A finding's answers take every task but Investigate, which their own decisions settle.
+test('the sheet offers every mode, and every task but Investigate for a finding answer', () => {
+  const ui = sheet([report, finding]);
+  ui.context.openSheet(null, 'goal', 'fix');
+  assert.deepEqual(ui.shownModes(), ['goal', 'plan', 'plan-into']);
+  assert.deepEqual(ui.shownTasks(), ['investigate', 'fix', 'act', 'verify', 'simplify']);
+  ui.context.setSheetMode('plan-into');
+  assert.equal(ui.elements['#compose-models'].hidden, false, 'plan into shows the execution fields');
+  ui.context.setSheetMode('goal');
+  assert.equal(ui.elements['#compose-models'].hidden, true);
 
-  ui.context.openSheet(finding, 'act', { answers: [{ option: 0 }] });
-  assert.deepEqual(ui.shownModes(), ['act', 'plan', 'plan-into']);
-  ui.context.setSheetMode('investigate');
-  assert.equal(ui.mode(), 'act', 'an answered finding falls back to Act');
+  ui.context.openSheet(report, 'goal', 'investigate');
+  assert.deepEqual(ui.shownTasks(), ['investigate', 'fix', 'act', 'verify', 'simplify']);
+
+  ui.context.openSheet(finding, 'goal', 'act', { answers: [{ option: 0 }] });
+  assert.deepEqual(ui.shownModes(), ['goal', 'plan', 'plan-into']);
+  assert.deepEqual(ui.shownTasks(), ['fix', 'act', 'verify', 'simplify']);
+  ui.context.setSheetTask('investigate');
+  assert.equal(ui.task(), 'act', 'an answered finding falls back to Act');
 });
 
 test('the sheet opens on the engine of the card session, and on the last pick for a card without one', () => {
   const ui = sheet([dshReport, report, finding]);
-  ui.context.openSheet(dshReport, 'investigate');
+  ui.context.openSheet(dshReport, 'goal', 'investigate');
   assert.equal(ui.engine(), 'dsh', 'a dsh card continues in dsh');
-  ui.context.openSheet(report, 'investigate');
+  ui.context.openSheet(report, 'goal', 'investigate');
   assert.equal(ui.engine(), 'omp', 'a tmux card after a dsh card is back on omp');
-  ui.context.openSheet(finding, 'investigate');
+  ui.context.openSheet(finding, 'goal', 'investigate');
   assert.equal(ui.engine(), '', 'a card without a session keeps Default, the last pick');
   assert.deepEqual(ui.cleared, ['dsh', 'omp'], 'the model list resets only when the engine in effect changes');
 
   // The picker stores the engine the user picks. Only cards without a session follow it.
   ui.state.sheetEngine = 'dsh';
-  ui.context.openSheet(finding, 'investigate');
+  ui.context.openSheet(finding, 'goal', 'investigate');
   assert.equal(ui.engine(), 'dsh');
-  ui.context.openSheet(report, 'investigate');
+  ui.context.openSheet(report, 'goal', 'investigate');
   assert.equal(ui.engine(), 'omp');
 });
 
 test('the card and the sheet share one note', async () => {
   const ui = sheet([report, finding]);
   ui.context.draft(report).note = 'Check the logs first';
-  ui.context.openSheet(report, 'investigate');
+  ui.context.openSheet(report, 'goal', 'investigate');
   assert.equal(ui.elements['#compose-prompt'].value, 'Check the logs first', 'the sheet opens on the card note');
   ui.type('Check the logs.\nThen the cache.');
   assert.equal(ui.context.draft(report).note, 'Check the logs.\nThen the cache.');
@@ -279,27 +272,30 @@ test('the card and the sheet share one note', async () => {
   // A finding option launches through its answer with the same note.
   ui.state.shownId = finding.id;
   ui.context.draft(finding).note = 'Only the staging rule';
-  ui.context.openSheet(finding, 'act', { option: 0 });
+  ui.context.openSheet(finding, 'goal', 'act', { option: 0 });
   const sent = await ui.launch();
   assert.equal(sent.url, '/v1/cards/finding/answer');
-  assert.deepEqual(plain(sent.body), { option: 0, text: null, mode: 'act', note: 'Only the staging rule', engine: null, model: null, thinking: null });
+  assert.deepEqual(plain(sent.body), { option: 0, text: null, mode: 'goal', task: 'act', note: 'Only the staging rule', engine: null, model: null, thinking: null });
 });
 
-test('Start sends the mode picked in the sheet', async () => {
+test('Start sends the mode and the task picked in the sheet', async () => {
   const plan = sheet([finding]);
-  plan.context.openSheet(finding, 'investigate');
+  plan.context.openSheet(finding, 'goal', 'investigate');
   plan.context.setSheetMode('plan');
   assert.equal((await plan.launch()).body.mode, 'plan');
 
   const fix = sheet([finding]);
-  fix.context.openSheet(finding, 'investigate-fix');
-  assert.equal((await fix.launch()).body.mode, 'investigate-fix');
+  fix.context.openSheet(finding, 'goal', 'investigate');
+  fix.context.setSheetTask('fix');
+  const sent = await fix.launch();
+  assert.equal(sent.body.mode, 'goal');
+  assert.equal(sent.body.task, 'fix');
 });
 
 // Clear drops the card and leaves the same sheet as a plain session, with the card's note gone.
 test('Clear turns the card sheet back into a plain new session', async () => {
   const ui = sheet([report]);
-  ui.context.openSheet(report, 'act', { newWindow: true });
+  ui.context.openSheet(report, 'goal', 'act', { newWindow: true });
   ui.type('Change the cache');
   ui.context.clearSheetCard();
   assert.equal(ui.state.sheetCardId, null);
@@ -307,8 +303,10 @@ test('Clear turns the card sheet back into a plain new session', async () => {
   assert.equal(ui.elements['#compose-prompt-label'].textContent, 'What should the session do?');
   assert.equal(ui.elements['#compose-target'].hidden, false, 'a plain session picks its own directory and session');
   assert.equal(ui.elements['#compose-prompt'].value, '');
-  assert.deepEqual(ui.shownModes(), ['goal', 'investigate', 'investigate-fix', 'act', 'plan', 'plan-into']);
+  assert.deepEqual(ui.shownModes(), ['goal', 'plan', 'plan-into']);
+  assert.deepEqual(ui.shownTasks(), ['investigate', 'fix', 'act', 'verify', 'simplify']);
   assert.equal(ui.mode(), 'goal');
+  assert.equal(ui.task(), 'fix', 'Clear restores the last plain-session task');
   assert.equal(ui.elements['#compose-models'].hidden, true);
 
   ui.elements['#compose-prompt'].value = 'Start something new';
@@ -322,22 +320,25 @@ test('Clear turns the card sheet back into a plain new session', async () => {
     model: null,
     thinking: null,
     mode: 'goal',
+    task: 'fix',
   });
 });
 
-// A plain session on a dispatch mode treats its text as the context, the way a card dispatch does.
-test('a plain session sends its mode as a context dispatch', async () => {
+// A plain session sends its mode and its task, and no note. The task is the only part of the
+// brief that a task changes.
+test('a plain session sends its mode and task with no note', async () => {
   const ui = sheet([report]);
-  ui.context.openSheet(null, 'goal');
+  ui.context.openSheet(null, 'goal', 'investigate');
   ui.type('Explore the cache layer');
-  ui.context.setSheetMode('investigate');
+  ui.context.setSheetMode('plan');
   const sent = await ui.launch();
   assert.equal(sent.url, '/v1/sessions');
-  assert.equal(sent.body.mode, 'investigate', 'the sheet keeps the mode it shows');
-  assert.equal(sent.body.note, '', 'a dispatch mode sends an empty note so the text is context');
+  assert.equal(sent.body.mode, 'plan', 'the sheet keeps the mode it shows');
+  assert.equal(sent.body.task, 'investigate');
+  assert.equal('note' in sent.body, false, 'a plain session never sends a note');
 
   const act = sheet([report]);
-  act.context.openSheet(null, 'act');
+  act.context.openSheet(null, 'goal', 'act');
   act.type('Wire the retry');
   assert.deepEqual(plain((await act.launch()).body), {
     prompt: 'Wire the retry',
@@ -346,8 +347,8 @@ test('a plain session sends its mode as a context dispatch', async () => {
     engine: null,
     model: null,
     thinking: null,
-    mode: 'act',
-    note: '',
+    mode: 'goal',
+    task: 'act',
   });
 });
 
@@ -355,10 +356,11 @@ test('an attached image rides a card dispatch', async () => {
   const ui = sheet([report]),
     image = { media_type: 'image/png', data: 'iVBORw0KGgo=', name: 'shot.png' };
   ui.image.value = image;
-  ui.context.openSheet(report, 'investigate');
+  ui.context.openSheet(report, 'goal', 'investigate');
   const sent = await ui.launch();
   assert.deepEqual(plain(sent.body), {
-    mode: 'investigate',
+    mode: 'goal',
+    task: 'investigate',
     note: null,
     engine: 'omp',
     model: null,

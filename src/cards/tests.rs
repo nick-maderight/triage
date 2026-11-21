@@ -575,13 +575,13 @@ fn finding_brief_includes_agent_done_status_contract() {
         label: "Do as recommended".to_owned(),
         ..CardOption::default()
     };
-    let brief = finding_brief(&card, &option, None, DispatchMode::Act);
+    let brief = finding_brief(&card, &option, None, Start::Goal, Task::Act);
     assert!(
         brief.contains("ENVOY_STATUS: complete")
             && brief.contains("ENVOY_STATUS: agent-done")
             && brief.contains("and names that step")
             && brief.contains("## Action\n")
-            && brief.contains(ACT_INSTRUCTION)
+            && brief.contains(GOAL_INSTRUCTION)
     );
     assert!(brief.contains(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}")));
 }
@@ -611,10 +611,10 @@ fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
     assert!(REPORT_STEP.contains("Never ask for, suggest or invite a send"), "{REPORT_STEP}");
     assert!(REPORT_STEP.contains("overrides the action above and any skill"), "{REPORT_STEP}");
     let card = finding_card(Path::new("/tmp"));
-    let brief = dispatch_brief(&card, DispatchMode::Act, Some("just draft and stop"), None);
+    let brief = dispatch_brief(&card, Start::Goal, Task::Act, Some("just draft and stop"), None);
     assert!(brief.contains(REPORT_STEP), "{brief}");
     assert!(
-        brief.contains("## Direction from the user (overrides the action and any skill)\njust draft and stop\n"),
+        brief.contains(&format!("## Direction from the user (overrides the action and any skill)\n{ACT_DIRECTION}\n\njust draft and stop\n")),
         "{brief}"
     );
     assert_eq!(headline_of("S: Rishav waits on a reply\nT: draft it\nA: one draft\nR: Draft verified in Drafts, nothing sent\n"), "Draft verified in Drafts, nothing sent");
@@ -624,9 +624,9 @@ fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
 #[test]
 fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     let card = finding_card(Path::new("/tmp"));
-    let act = dispatch_brief(&card, DispatchMode::Act, None, None);
-    let investigation = dispatch_brief(&card, DispatchMode::Investigate, None, None);
-    let session = session_brief("Build every requested part.", false, None);
+    let act = dispatch_brief(&card, Start::Goal, Task::Act, None, None);
+    let investigation = dispatch_brief(&card, Start::Goal, Task::Investigate, None, None);
+    let session = session_brief("Build every requested part.", Start::Goal, Task::Fix, None);
     let recommendation_rules = [
         "A non-investigation `complete` report writes `Recommended action: none`.",
         "An investigation may name one evidence-backed next action.",
@@ -648,8 +648,9 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     }
     assert!(act.contains("Complete every part and every environment the request covers."));
     assert!(act.contains("make the normal call and let the harness answer."));
-    assert!(investigation.contains(INVESTIGATE_STATUS_CONTRACT));
-    assert!(!investigation.contains("ENVOY_STATUS: agent-done"));
+    assert!(investigation.contains(INVESTIGATE_DIRECTION));
+    assert!(investigation.contains(ENVOY_STATUS_CONTRACT));
+    assert!(!investigation.contains("Proposed action"));
     let (request, format) = report_request_and_format();
     for rule in recommendation_rules {
         assert!(format.contains(rule), "missing {rule:?} from the request's format");
@@ -660,116 +661,58 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     assert!(format.contains("is part of the work, which a report never hands back"), "{format}");
 }
 
-// Nick asked for a default Act instruction. In his words, "if i don't type anything this is the
-// default instruction". An Act launch that names no direction carries the same words the inbox
-// puts in its Instruction box. Leaving the box empty then still tells the session to think the
-// work through and spend only what it requires.
+// Nick's rule: a task changes only the direction text its brief carries and the title word that
+// names it. Every other line of the brief stays the same for every task.
 #[test]
-fn the_inbox_prefills_the_act_direction_every_act_brief_carries() {
-    let app = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js")).unwrap();
-    assert!(app.contains(DEFAULT_ACT_DIRECTION), "ui/app.js must hold the Act default");
-
+fn tasks_change_only_the_direction_and_title() {
     let card = finding_card(Path::new("/tmp"));
     let option = CardOption { label: "Apply".to_owned(), ..CardOption::default() };
-    let direction = format!(
-        "## Direction from the user (overrides the action and any skill)\n{DEFAULT_ACT_DIRECTION}\n"
-    );
-    let dispatched = dispatch_brief(&card, DispatchMode::Act, None, None);
-    assert!(dispatched.contains(&direction), "{dispatched}");
-    let answered = finding_brief(&card, &option, None, DispatchMode::Act);
-    assert!(answered.contains(&direction), "{answered}");
-    let mut questions = finding_card(Path::new("/tmp"));
-    questions.questions = vec![CardQuestion {
-        label: "Supplier".to_owned(),
-        question: "Supplier?".to_owned(),
-        options: vec![option],
-        allow_other: true,
-        star: None,
-    }];
-    let decision = FindingDecision::Authored(&questions.questions[0].options[0]);
-    let decided = finding_answers_brief(
-        &questions,
-        &[(&questions.questions[0], decision)],
-        None,
-        DispatchMode::Act,
-    );
-    assert!(decided.contains(&direction), "{decided}");
-
-    // A blank note counts as empty. Typing replaces the default. No other mode takes
-    // the Act default.
-    let blank = dispatch_brief(&card, DispatchMode::Act, Some("  \n"), None);
-    assert!(blank.contains(&direction), "{blank}");
-    let typed = dispatch_brief(&card, DispatchMode::Act, Some("just the docs"), None);
-    assert!(
-        typed.contains("just the docs") && !typed.contains(DEFAULT_ACT_DIRECTION),
-        "{typed}"
-    );
-    for mode in [DispatchMode::Investigate, DispatchMode::Plan, DispatchMode::PlanInto] {
-        let brief = dispatch_brief(&card, mode, None, None);
-        assert!(!brief.contains(DEFAULT_ACT_DIRECTION), "{mode:?} took the Act default");
+    for start in [Start::Goal, Start::Plan, Start::PlanInto(None, None)] {
+        let act = [
+            dispatch_brief(&card, start, Task::Act, None, None),
+            finding_brief(&card, &option, None, start, Task::Act),
+            context_brief("Org: Child\n", start, Task::Act, "", None),
+            session_brief("Build it.", start, Task::Act, None),
+        ];
+        for task in [Task::Investigate, Task::Fix, Task::Verify, Task::Simplify] {
+            let briefs = [
+                dispatch_brief(&card, start, task, None, None),
+                finding_brief(&card, &option, None, start, task),
+                context_brief("Org: Child\n", start, task, "", None),
+                session_brief("Build it.", start, task, None),
+            ];
+            for (brief, expected) in briefs.iter().zip(&act) {
+                let title = format!("# {}: ", launch_label(start, task));
+                let act_title = format!("# {}: ", launch_label(start, Task::Act));
+                let brief = brief.replace(task.direction(), ACT_DIRECTION).replacen(&title, &act_title, 1);
+                assert_eq!(&brief, expected, "{start:?} {task:?}");
+            }
+        }
     }
 }
 
-// Nick asked for a second investigate mode: Act's behavior with a direction that fixes the root
-// cause. Its Instruction starts on that direction, and its brief must ship work rather than ask
-// for an answer.
+// A typed note follows the task's direction text. A blank note leaves that text alone.
 #[test]
-fn investigate_and_fix_takes_the_act_contract_and_its_own_direction() {
-    let app = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/app.js")).unwrap();
-    assert!(
-        DEFAULT_INVESTIGATE_FIX_DIRECTION
-            .split('\n')
-            .all(|line| app.contains(line)),
-        "ui/app.js must hold the Investigate + fix default"
-    );
-
+fn a_note_follows_the_task_direction() {
     let card = finding_card(Path::new("/tmp"));
-    let option = CardOption {
-        label: "Investigate and fix".to_owned(),
-        ..CardOption::default()
-    };
-    let direction = format!(
-        "## Direction from the user (overrides the action and any skill)\n{DEFAULT_INVESTIGATE_FIX_DIRECTION}\n"
-    );
-    let brief = finding_brief(&card, &option, None, DispatchMode::InvestigateFix);
-    assert!(brief.contains("## Action\n"));
-    assert!(!brief.contains("## Proposed action, not approved"));
-    assert!(brief.contains(ACT_INSTRUCTION));
-    assert!(brief.contains(ENVOY_STATUS_CONTRACT));
-    assert!(!brief.contains(INVESTIGATE_STATUS_CONTRACT));
-    assert!(brief.contains(&direction), "{brief}");
+    let typed = dispatch_brief(&card, Start::Goal, Task::Act, Some("just the docs"), None);
     assert!(
-        dispatch_brief(&card, DispatchMode::InvestigateFix, None, None).contains(&direction)
-    );
-    let dispatch = dispatch_brief(&card, DispatchMode::InvestigateFix, None, None);
-    assert!(
-        dispatch.starts_with(&format!("# Investigate + fix: {}\n", card.title)),
-        "{dispatch}"
-    );
-
-    // A typed direction replaces the default, and Act keeps its shorter one.
-    let typed = dispatch_brief(&card, DispatchMode::InvestigateFix, Some("only the config"), None);
-    assert!(
-        typed.contains("only the config") && !typed.contains(DEFAULT_INVESTIGATE_FIX_DIRECTION),
+        typed.contains(&format!(
+            "## Direction from the user (overrides the action and any skill)\n{ACT_DIRECTION}\n\njust the docs\n"
+        )),
         "{typed}"
     );
-    let act = dispatch_brief(&card, DispatchMode::Act, None, None);
-    assert!(!act.contains("root cause permanently"), "{act}");
+    let blank = dispatch_brief(&card, Start::Goal, Task::Act, Some("  \n"), None);
+    assert!(blank.contains(&format!("{ACT_DIRECTION}\n\n\n## References\n")), "{blank}");
 }
 
 #[test]
-fn an_investigate_option_that_names_a_fix_takes_the_investigate_and_fix_mode() {
-    let mode = |label: &str| {
-        option_mode(&CardOption {
-            label: label.to_owned(),
-            ..CardOption::default()
-        })
-    };
-    assert_eq!(mode("Investigate first"), DispatchMode::Investigate);
-    assert_eq!(mode("investigate and fix"), DispatchMode::InvestigateFix);
-    assert_eq!(mode("Investigate + fix"), DispatchMode::InvestigateFix);
-    assert_eq!(mode("Fix it"), DispatchMode::Act);
-    assert_eq!(mode("Skip"), DispatchMode::Act);
+fn an_option_label_names_the_task_it_implies() {
+    assert_eq!(option_task("Investigate first"), Task::Investigate);
+    assert_eq!(option_task("investigate and fix"), Task::Fix);
+    assert_eq!(option_task("Investigate + fix"), Task::Fix);
+    assert_eq!(option_task("Fix it"), Task::Act);
+    assert_eq!(option_task("Skip"), Task::Act);
 }
 
 // Regression: on 2026-10-31 the user picked "Investigate first" on a transcript-audit finding
@@ -782,59 +725,42 @@ fn investigate_first_option_briefs_a_read_only_answer() {
         label: "Investigate first".to_owned(),
         ..CardOption::default()
     };
-    let brief = finding_brief(&card, &option, None, DispatchMode::Investigate);
-    assert!(brief.contains("## Proposed action, not approved\n"));
-    assert!(!brief.contains("## Action\n"));
-    assert!(brief.contains(INVESTIGATE_INSTRUCTION));
-    assert!(brief.contains(INVESTIGATE_STATUS_CONTRACT));
-    assert!(!brief.contains("ENVOY_STATUS: agent-done"));
+    let brief = finding_brief(&card, &option, None, Start::Goal, Task::Investigate);
+    assert!(brief.contains("## Action\n"));
+    assert!(!brief.contains("Proposed action"));
+    assert!(brief.contains(&format!(
+        "## Direction from the user (overrides the action and any skill)\n{INVESTIGATE_DIRECTION}\n"
+    )));
+    assert!(brief.contains(ENVOY_STATUS_CONTRACT));
     assert!(brief.contains("`Recommended action:`"));
-    assert!(brief.contains(&format!("{INVESTIGATE_STATUS_CONTRACT}{REPORT_STEP}")));
-}
-
-#[test]
-fn a_session_request_with_a_note_takes_a_dispatch_mode() {
-    let parse = |mode, note, executor| Subject::parse(mode, note, executor, None);
-    assert_eq!(parse(None, None, None), Ok((Subject::Task, Start::Goal)));
-    assert_eq!(
-        parse(None, Some(""), None),
-        Ok((Subject::Context(DispatchMode::Investigate, ""), Start::Goal))
-    );
-    assert_eq!(
-        parse(Some("investigate-fix"), Some("go"), None),
-        Ok((Subject::Context(DispatchMode::InvestigateFix, "go"), Start::Goal))
-    );
-    assert_eq!(
-        parse(Some("plan-into"), Some(""), Some("fast")),
-        Ok((Subject::Context(DispatchMode::PlanInto, ""), Start::PlanInto(Some("fast"), None)))
-    );
-    assert!(parse(Some("goal"), Some(""), None).is_err());
-    assert!(parse(Some("act"), None, None).is_err());
-    assert!(parse(Some("act"), Some(""), Some("fast")).is_err());
+    assert!(brief.contains(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}")));
 }
 
 #[test]
 fn a_context_brief_reads_like_a_card_dispatch() {
     let context = "Org: Child\n\n### Task\n\n** TODO Child\n";
-    let look = context_brief(context, DispatchMode::Investigate, "", None);
+    let look = context_brief(context, Start::Goal, Task::Investigate, "", None);
     assert!(look.starts_with("# Investigate: Org: Child\n\n## Context\nOrg: Child\n"), "{look}");
-    assert!(look.contains(&format!("{CONTEXT_INVESTIGATE_INSTRUCTION}\n\n{INVESTIGATE_STATUS_CONTRACT}{REPORT_STEP}")));
-    assert!(!look.contains(DEFAULT_INVESTIGATE_FIX_DIRECTION) && !look.contains(INVESTIGATE_INSTRUCTION));
+    assert!(look.contains(&format!("{GOAL_INSTRUCTION}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}")));
+    assert!(look.contains(&format!(
+        "## Direction from the user (overrides the action and any skill)\n{INVESTIGATE_DIRECTION}\n"
+    )));
 
-    let fix = context_brief(context, DispatchMode::InvestigateFix, " \n", Some("/work".to_owned()));
+    let fix = context_brief(context, Start::Goal, Task::Fix, " \n", Some("/work".to_owned()));
     assert!(fix.contains(&format!(
-        "## Direction from the user (overrides the action and any skill)\n{DEFAULT_INVESTIGATE_FIX_DIRECTION}\n\n## Working directory\n`/work`"
+        "## Direction from the user (overrides the action and any skill)\n{FIX_DIRECTION}\n\n## Working directory\n`/work`"
     )), "{fix}");
-    assert!(fix.contains(ACT_INSTRUCTION) && fix.contains(ENVOY_STATUS_CONTRACT));
+    assert!(fix.contains(GOAL_INSTRUCTION) && fix.contains(ENVOY_STATUS_CONTRACT));
 
-    let typed = context_brief(context, DispatchMode::Plan, "Only the docs", None);
-    assert!(typed.contains("skill)\nOnly the docs\n") && typed.contains(PLAN_REPORT_STEP), "{typed}");
+    let typed = context_brief(context, Start::Plan, Task::Act, "Only the docs", None);
+    assert!(typed.starts_with("# Plan + Act: Org: Child\n"), "{typed}");
+    assert!(typed.contains(&format!("{ACT_DIRECTION}\n\nOnly the docs\n")) && typed.contains(PLAN_REPORT_STEP), "{typed}");
 }
 #[test]
 fn finding_brief_plan_mode_includes_review_contract() {
     let card = finding_card(Path::new("/tmp"));
     let option = CardOption { label: "Do as recommended".to_owned(), ..CardOption::default() };
-    let brief = finding_brief(&card, &option, None, DispatchMode::Plan);
+    let brief = finding_brief(&card, &option, None, Start::Plan, Task::Act);
     assert!(brief.contains("## Action\n"));
     assert!(brief.contains(PLAN_INSTRUCTION));
     assert!(brief.ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}\n{PLAN_REPORT_STEP}\n")));
@@ -895,8 +821,8 @@ fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
 #[test]
 fn plan_briefs_make_the_plan_repeat_the_status_contract_for_a_fresh_session() {
     let card = info_card("done:%12:plan", "%12");
-    let dispatched = dispatch_brief(&card, DispatchMode::Plan, None, None);
-    let composed = session_brief("Prepare a plan.", true, None);
+    let dispatched = dispatch_brief(&card, Start::Plan, Task::Act, None, None);
+    let composed = session_brief("Prepare a plan.", Start::Plan, Task::Act, None);
     assert!(
         dispatched.ends_with(&format!(
             "{ENVOY_STATUS_CONTRACT}{REPORT_STEP}\n{PLAN_REPORT_STEP}\n"
@@ -909,14 +835,14 @@ fn plan_briefs_make_the_plan_repeat_the_status_contract_for_a_fresh_session() {
         )),
         "{composed}"
     );
-    assert!(!dispatch_brief(&card, DispatchMode::Act, None, None).contains(PLAN_REPORT_STEP));
-    assert!(!session_brief("Reply with pong.", false, None).contains(PLAN_REPORT_STEP));
+    assert!(!dispatch_brief(&card, Start::Goal, Task::Act, None, None).contains(PLAN_REPORT_STEP));
+    assert!(!session_brief("Reply with pong.", Start::Goal, Task::Fix, None).contains(PLAN_REPORT_STEP));
     assert!(
-        dispatch_brief(&card, DispatchMode::Act, None, None)
+        dispatch_brief(&card, Start::Goal, Task::Act, None, None)
             .ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}"))
     );
     assert!(
-        session_brief("Reply with pong.", false, None)
+        session_brief("Reply with pong.", Start::Goal, Task::Fix, None)
             .ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}"))
     );
 }
@@ -938,8 +864,8 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
             label: "Apply".to_owned(),
             ..CardOption::default()
         };
-        let first = write_brief(&configured_db, finding_brief(&short_card, &option, None, DispatchMode::Act));
-        let second = write_brief(&configured_db, finding_brief(&short_card, &option, None, DispatchMode::Act));
+        let first = write_brief(&configured_db, finding_brief(&short_card, &option, None, Start::Goal, Task::Act));
+        let second = write_brief(&configured_db, finding_brief(&short_card, &option, None, Start::Goal, Task::Act));
         let expected_directory = configured.join("briefs");
         let first_path = first.as_ref().ok();
         let second_path = second.as_ref().ok();
@@ -964,7 +890,7 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
             id: format!("finding-{}", "x".repeat(300)),
             ..finding_card(&root)
         };
-        let long_brief = write_brief(&configured_db, finding_brief(&long_card, &option, None, DispatchMode::Act));
+        let long_brief = write_brief(&configured_db, finding_brief(&long_card, &option, None, Start::Goal, Task::Act));
         let long_id_uses_bounded_path = long_brief
             .as_ref()
             .is_ok_and(|path| path.parent() == Some(expected_directory.as_path()));
@@ -973,7 +899,7 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
         fs::create_dir_all(&relative).unwrap();
         std::env::set_current_dir(&relative).unwrap();
         let relative_db = Db::open(Path::new("triage.db")).unwrap();
-        let relative_brief = write_brief(&relative_db, finding_brief(&short_card, &option, None, DispatchMode::Act));
+        let relative_brief = write_brief(&relative_db, finding_brief(&short_card, &option, None, Start::Goal, Task::Act));
         let expected_relative_parent = fs::canonicalize(&relative).unwrap().join("briefs");
         let relative_db_path_is_canonical = relative_brief.as_ref().is_ok_and(|path| {
             path.is_absolute() && path.parent() == Some(expected_relative_parent.as_path())
@@ -1997,11 +1923,18 @@ fn report_trail_follows_this_panes_latest_launch_and_keeps_the_first_topic() {
         "acting %12",
         born + 5,
         None,
-        Some(DispatchMode::InvestigateFix.swipe_text()),
+        Some("Fix"),
         None,
     );
+    assert_eq!(trail(), (fix.title.clone(), "Fix".to_owned()));
+    assert!(!investigation(), "a Fix launch owes no next step");
+    // Only a label that opens with Investigate is an investigation. Plan + Investigate and an
+    // old Investigate + fix label are not.
+    launch(&fix.id, "acting %12", born + 6, None, Some("Plan + Investigate"), None);
+    assert!(!investigation(), "a Plan + Investigate launch owes no next step");
+    launch(&fix.id, "acting %12", born + 7, None, Some("Investigate + fix"), None);
     assert_eq!(trail(), (fix.title.clone(), "Investigate + fix".to_owned()));
-    assert!(!investigation(), "an Investigate + fix launch owes no next step");
+    assert!(!investigation(), "an old Investigate + fix launch owes no next step");
 }
 
 // On 2026-11-01 the %46 card reported an access-audit investigation whose answer ended
@@ -4082,11 +4015,10 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
         let info_result = dispatch(
             &db,
             &info,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             Some("check the journal"),
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4094,22 +4026,20 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
         let repeat = dispatch(
             &db,
             &info,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
         let ask_result = dispatch(
             &db,
             &ask,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4137,8 +4067,9 @@ fn dispatch_launches_once_and_defers_asks_but_completes_info() {
                 .is_some_and(|until| until > events::now_ms())
             && info_brief.contains("# Investigate: ")
             && info_brief.contains("check the journal")
-            && info_brief.contains(INVESTIGATE_STATUS_CONTRACT)
-            && !info_brief.contains("ENVOY_STATUS: agent-done")
+            && info_brief.contains(ENVOY_STATUS_CONTRACT)
+            && info_brief.contains(INVESTIGATE_DIRECTION)
+            && info_brief.contains("## Action\n")
             && info_brief.contains("`Recommended action:`")
             && new_window_count(&root) == 2;
         assert!(contract);
@@ -4166,11 +4097,10 @@ fn dispatch_reuses_waiting_source_pane_instead_of_new_window() {
         let result = dispatch(
             &db,
             &info,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4209,11 +4139,10 @@ fn new_window_dispatch_opens_a_window_instead_of_the_waiting_pane() {
         let result = dispatch(
             &db,
             &info,
-            DispatchMode::Plan,
+            Start::Plan,
+            Task::Act,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             true,
         );
@@ -4255,11 +4184,10 @@ fn plan_card_dispatch_opens_a_window_and_keeps_the_review_card() {
         let result = dispatch(
             &db,
             &plan,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4376,11 +4304,10 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
         let result = dispatch(
             &db,
             &card,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &Launch::default(),
-            None,
-            None,
             None,
             false,
         );
@@ -4389,7 +4316,8 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
         let configured_result = dispatch(
             &db,
             &configured,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &Launch {
                 session: Some("work".to_owned()),
@@ -4397,8 +4325,6 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
                 thinking: Some("high".to_owned()),
                 ..Launch::default()
             },
-            None,
-            None,
             None,
             false,
         );
@@ -4447,33 +4373,30 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
         let act = dispatch(
             &db,
             &act_card,
-            DispatchMode::Act,
+            Start::Goal,
+            Task::Act,
             Some("ship it"),
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
         let look = dispatch(
             &db,
             &look_card,
-            DispatchMode::Investigate,
+            Start::Goal,
+            Task::Investigate,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
         let fix = dispatch(
             &db,
             &fix_card,
-            DispatchMode::InvestigateFix,
+            Start::Goal,
+            Task::Fix,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4493,21 +4416,21 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
             .unwrap();
         let fix_brief = briefs
             .iter()
-            .find(|brief| brief.contains("# Investigate + fix: "))
+            .find(|brief| brief.contains("# Fix: "))
             .unwrap();
         assert!(
             act.is_ok()
                 && look.is_ok()
                 && fix.is_ok()
-                && fix_brief.contains(ACT_INSTRUCTION)
-                && fix_brief.contains(DEFAULT_INVESTIGATE_FIX_DIRECTION)
-                && fix_swipe.text.as_deref() == Some("Investigate + fix")
-                && act_brief.contains(ACT_INSTRUCTION)
+                && fix_brief.contains(GOAL_INSTRUCTION)
+                && fix_brief.contains(FIX_DIRECTION)
+                && fix_swipe.text.as_deref() == Some("Fix")
+                && act_brief.contains(GOAL_INSTRUCTION)
                 && act_brief.contains("ship it")
                 && act_brief.contains("ENVOY_STATUS: complete")
                 && act_brief.contains("ENVOY_STATUS: agent-done")
                 && act_brief.contains("and names that step")
-                && !look_brief.contains(ACT_INSTRUCTION)
+                && !look_brief.contains(ACT_DIRECTION)
                 && swipe.action == "done"
                 && swipe.text.as_deref() == Some("Act")
                 && swipe.reason.as_deref() == Some("launched %42")
@@ -4526,25 +4449,19 @@ fn dispatch_act_mode_brief_authorizes_action_and_records_act_swipe() {
 }
 
 #[test]
-fn dispatch_mode_parse_accepts_known_modes_only() {
-    assert_eq!(
-        DispatchMode::parse("investigate"),
-        Some(DispatchMode::Investigate)
-    );
-    assert_eq!(DispatchMode::parse("plan"), Some(DispatchMode::Plan));
-    assert_eq!(DispatchMode::parse("act"), Some(DispatchMode::Act));
-    assert_eq!(
-        DispatchMode::parse("plan-into"),
-        Some(DispatchMode::PlanInto)
-    );
-    assert_eq!(
-        DispatchMode::parse("investigate-fix"),
-        Some(DispatchMode::InvestigateFix)
-    );
-    assert_eq!(DispatchMode::parse("implement"), None, "the implement mode is gone");
-    assert_eq!(DispatchMode::parse("Act"), None);
-    assert_eq!(DispatchMode::parse("fix"), None);
-    assert_eq!(DispatchMode::parse(""), None);
+fn task_parse_accepts_known_tasks_only() {
+    for (value, task) in [
+        ("investigate", Task::Investigate),
+        ("fix", Task::Fix),
+        ("act", Task::Act),
+        ("verify", Task::Verify),
+        ("simplify", Task::Simplify),
+    ] {
+        assert_eq!(Task::parse(value), Some(task), "{value}");
+    }
+    for value in ["investigate-fix", "Act", "plan", ""] {
+        assert_eq!(Task::parse(value), None, "{value}");
+    }
 }
 
 #[cfg(unix)]
@@ -4560,11 +4477,10 @@ fn dispatch_plan_mode_writes_reviewable_brief_and_config_overlay() {
         let result = dispatch(
             &db,
             &card,
-            DispatchMode::Plan,
+            Start::Plan,
+            Task::Act,
             Some("plan it"),
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4592,14 +4508,14 @@ fn dispatch_plan_mode_writes_reviewable_brief_and_config_overlay() {
         let swipe = current_swipe(&db, &card.id);
 
         assert!(result.is_ok());
-        assert!(brief.starts_with("# Plan: Earlier result"));
+        assert!(brief.starts_with("# Plan + Act: Earlier result"));
         assert!(brief.contains(PLAN_INSTRUCTION));
         assert!(brief.contains(ENVOY_STATUS_CONTRACT));
         assert!(brief.contains("plan it"));
         assert_eq!(overlay, "plan:\n  defaultOnStartup: true\n");
         assert!(
             launch.contains(&format!(
-                "--config '{}' '# Plan: Earlier result' @'{}'",
+                "--config '{}' '# Plan + Act: Earlier result' @'{}'",
                 overlay_path.display(),
                 brief_path.display()
             )),
@@ -4637,11 +4553,10 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
         let result = dispatch(
             &db,
             &card,
-            DispatchMode::PlanInto,
+            Start::PlanInto(Some("provider/executor"), None),
+            Task::Act,
             Some("plan it"),
             &launch,
-            Some("provider/executor"),
-            None,
             None,
             false,
         );
@@ -4680,7 +4595,7 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
         assert!(!keys.contains("Read the brief at "), "{keys}");
         assert!(
                 launch_line.contains(&format!(
-                    "--model=provider/planner --plan=provider/planner --plan-yolo --plan-yolo-into=provider/executor '# Plan into: Earlier result' @'{}'",
+                    "--model=provider/planner --plan=provider/planner --plan-yolo --plan-yolo-into=provider/executor '# Plan into + Act: Earlier result' @'{}'",
                     brief.display()
                 )),
                 "{launch_line}"
@@ -4688,14 +4603,14 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
         assert_eq!(new_window_count(&root), 1);
         assert_eq!(overlays, 0);
         assert!(
-            brief_text.starts_with("# Plan into: Earlier result"),
+            brief_text.starts_with("# Plan into + Act: Earlier result"),
             "{brief_text}"
         );
         assert!(brief_text.contains(PLAN_INTO_INSTRUCTION));
         assert!(brief_text.contains(ENVOY_STATUS_CONTRACT));
         assert!(brief_text.contains("plan it"));
         assert!(brief_text.ends_with(&format!("\n{PLAN_REPORT_STEP}\n")));
-        assert_eq!(swipe.text.as_deref(), Some("Plan into"));
+        assert_eq!(swipe.text.as_deref(), Some("Plan into + Act"));
         assert_eq!(swipe.reason.as_deref(), Some("launched %42"));
         return;
     }
@@ -4723,11 +4638,10 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
         let off_result = dispatch(
             &db,
             &off,
-            DispatchMode::Plan,
+            Start::Plan,
+            Task::Act,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4737,11 +4651,10 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
         let on_result = dispatch(
             &db,
             &on,
-            DispatchMode::Plan,
+            Start::Plan,
+            Task::Act,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -4758,11 +4671,10 @@ fn plan_dispatch_toggles_waiting_pane_only_when_needed_and_rejects_toggle_failur
         let failure = dispatch(
             &db,
             &failed,
-            DispatchMode::Plan,
+            Start::Plan,
+            Task::Act,
             None,
             &in_session("session"),
-            None,
-            None,
             None,
             false,
         );
@@ -5231,12 +5143,11 @@ fn pane_actions_wait_for_the_action_in_flight() {
                     dispatch(
                         &db,
                         &dispatched,
-                        DispatchMode::Investigate,
+                        Start::Goal,
+                        Task::Investigate,
                         None,
                         &launch,
                         None,
-                        None,
-                    None,
                         false,
                     )
                 }),
@@ -5314,6 +5225,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             "/tmp",
             &in_session("session"),
             Start::Goal,
+            Task::Fix,
         None,
         );
         let launched = start_session(
@@ -5322,6 +5234,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             "/tmp",
             &in_session("session"),
             Start::Goal,
+            Task::Fix,
         None,
         );
         let brief = fs::read_dir(root.join("briefs"))
@@ -5332,7 +5245,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
         let contract = blank.is_err()
             && launched.as_deref() == Ok("%42")
             && brief.starts_with("Reply with pong.\n")
-            && brief.contains(DEFAULT_ACT_DIRECTION)
+            && brief.contains(FIX_DIRECTION)
             && brief.contains("Investigate and fix the root cause permanently and generically")
             && brief.contains("ENVOY_STATUS: complete")
             && brief.contains("ENVOY_STATUS: agent-done")
@@ -5365,6 +5278,7 @@ fn start_session_plan_mode_uses_overlay_config_before_the_prompt_brief() {
             "/tmp",
             &in_session("session"),
             Start::Plan,
+            Task::Act,
         None,
         );
         let mut brief_path = None;
@@ -5607,11 +5521,10 @@ fn dispatch_with_an_image_types_it_into_a_waiting_pane() {
         dispatch(
             &db,
             &card,
-            DispatchMode::Act,
+            Start::Goal,
+            Task::Act,
             None,
             &in_session("session"),
-            None,
-            None,
             Some(&image),
             false,
         )
@@ -6084,7 +5997,8 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
             &AnswerReq {
                 option: Some(0),
                 note: Some("review".to_owned()),
-                mode: Some("investigate".to_owned()),
+                mode: Some("goal".to_owned()),
+                task: Some("investigate".to_owned()),
                 ..AnswerReq::default()
             },
             &in_session("session"),
@@ -6185,10 +6099,10 @@ fn finding_question_answers_are_validated_before_anything_is_recorded() {
             ),
             (
                 AnswerReq {
-                    mode: Some("investigate".to_owned()),
+                    task: Some("investigate".to_owned()),
                     ..question_req(vec![picked(0), picked(0), picked(0)], None)
                 },
-                "finding questions run act, plan, or plan-into",
+                "finding questions take every task except investigate",
             ),
         ];
         for (request, message) in rejected {
@@ -6248,8 +6162,8 @@ fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_i
         assert!(brief.contains("### 1. Supplier\nSupplier?\nDecision: Do as recommended\nDirection: \n"), "{brief}");
         assert!(brief.contains("### 2. Stock\nStock?\nDecision: Investigate first\nDirection: \n"), "{brief}");
         assert!(brief.contains("### 3. Note\nNote?\nDecision: Other\nDirection: Keep the audit log\n"), "{brief}");
-        assert!(brief.contains(FINDING_ANSWER_RULES) && brief.contains(ACT_INSTRUCTION), "{brief}");
-        assert!(brief.contains("## Direction from the user (overrides the action and any skill)\nreview all\n"), "{brief}");
+        assert!(brief.contains(FINDING_ANSWER_RULES) && brief.contains(GOAL_INSTRUCTION), "{brief}");
+        assert!(brief.contains(&format!("## Direction from the user (overrides the action and any skill)\n{ACT_DIRECTION}\n\nreview all\n")), "{brief}");
         return;
     }
 
@@ -8400,6 +8314,7 @@ fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
         "/work/project",
         &launch,
         Start::PlanInto(Some("deepseek-flash"), Some("max")),
+        Task::Act,
     None,
     );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
@@ -8431,7 +8346,7 @@ fn dsh_goal_launch_names_the_session_itself() {
     // brief. A host with no naming route leaves the brief's own task line, cut on a word
     // boundary, never the mid-word cut the bridge would make of 60.
     let title = "Launch kept dying at startup: the database was locked and the retry logged nothing";
-    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, None);
+    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8450,7 +8365,7 @@ fn dsh_goal_launch_pins_the_name_read_out_of_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.name_answer = Some("Fix session titles\n".to_owned()));
     let title = "DIRECTION FROM THE USER: this kind of session title is bad";
-    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, None);
+    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     // The name comes from the model that read the brief, on the fast route, in the
     // workspace triage ignores.
@@ -8476,7 +8391,7 @@ fn dsh_goal_launch_cuts_its_title_on_a_word_boundary() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let words = "naming a session from a title that runs well past the sidebar width and then some";
-    let pane = start_session(&db, words, "/work/project", &bridge.launch(), Start::Goal, None);
+    let pane = start_session(&db, words, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let title = bridge.posts("/v1/launch")[0]["title"].as_str().unwrap().to_owned();
     assert!(title.chars().count() <= 60, "{title}");
@@ -8490,7 +8405,7 @@ fn dsh_goal_launch_cuts_its_title_on_a_word_boundary() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let cjk = "会话标题".repeat(40);
-    let pane = start_session(&db, &cjk, "/work/project", &bridge.launch(), Start::Goal, None);
+    let pane = start_session(&db, &cjk, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let title = bridge.posts("/v1/launch")[0]["title"].as_str().unwrap().to_owned();
     assert!(title.len() <= 80, "{title}");
@@ -8502,7 +8417,7 @@ fn dsh_goal_launch_without_a_model_leaves_the_host_default() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
-    let pane = start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None);
+    let pane = start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8639,7 +8554,7 @@ fn dsh_launch_never_lists_the_host_sessions() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None),
+        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None),
         Ok("dsh:session-new".to_owned())
     );
     // `session/list` projects every session and is the slowest call the host has. A launch
@@ -8699,7 +8614,7 @@ fn dsh_launch_reports_an_error_that_started_no_session() {
         data.launch_error = Some("workspace is invalid".to_owned());
     });
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None),
+        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None),
         Err("workspace is invalid".to_owned())
     );
     assert_eq!(bridge.posts("/v1/launch").len(), 1);
@@ -8720,7 +8635,7 @@ fn dsh_launch_archives_the_session_a_refused_launch_created() {
     // The bridge names the session it created before the launch failed. Keeping it would
     // leave a duplicate behind the retry, so the failed launch archives it.
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, None),
+        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None),
         Err("session/model-unavailable: Select an available model".to_owned())
     );
     let archived = bridge.posts("/v1/archive");
@@ -8734,7 +8649,7 @@ fn dsh_launch_without_a_host_file_says_dsh_is_not_running() {
     let db = dsh_db(&scratch);
     let launch = Launch { engine: Engine::Dsh, ..Launch::default() };
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, None),
+        start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, Task::Fix, None),
         Err("dsh is not running".to_owned())
     );
 }
@@ -8746,7 +8661,7 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -8764,7 +8679,7 @@ fn dsh_next_step_dispatch_continues_the_cards_session() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, true).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, true).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -8772,7 +8687,7 @@ fn dsh_next_step_dispatch_continues_the_cards_session() {
     assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
 
     let card = dsh_card(&db, &format!("done:dsh:{SID}:5"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, true).unwrap();
+    dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, true).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -8796,11 +8711,10 @@ fn dsh_dispatch_carries_the_image() {
     dispatch(
         &db,
         &card,
-        DispatchMode::Act,
+        Start::Goal,
+        Task::Act,
         None,
         &bridge.launch(),
-        None,
-        None,
         Some(&image),
         false,
     )
@@ -8818,11 +8732,10 @@ fn dsh_dispatch_carries_the_image() {
     dispatch(
         &db,
         &card,
-        DispatchMode::Act,
+        Start::Goal,
+        Task::Act,
         None,
         &bridge.launch(),
-        None,
-        None,
         Some(&image),
         false,
     )
@@ -8842,7 +8755,7 @@ fn dsh_plan_on_an_idle_session_relaunches_it_in_plan_mode() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -8858,7 +8771,7 @@ fn dsh_plan_into_dispatch_relaunches_an_idle_session() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None, false).unwrap();
+    dispatch(&db, &card, Start::PlanInto(Some("deepseek-flash"), None), Task::Act, None, &bridge.launch(), None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["sessionId"], SID);
@@ -8878,7 +8791,7 @@ fn dsh_plan_into_dispatch_starts_a_new_session_when_the_card_session_runs() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::PlanInto, None, &bridge.launch(), Some("deepseek-flash"), None, None, false).unwrap();
+    dispatch(&db, &card, Start::PlanInto(Some("deepseek-flash"), None), Task::Act, None, &bridge.launch(), None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -8897,7 +8810,7 @@ fn dsh_dispatch_to_a_running_session_queues_the_brief_in_it() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
     // dsh queues a prompt for the session's next turn, so a running session keeps the work
     // the card came from instead of opening a second session on the same brief.
     let prompts = bridge.posts("/v1/prompt");
@@ -8918,7 +8831,7 @@ fn dsh_dispatch_to_a_session_waiting_for_an_answer_queues_the_brief_in_it() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": ["question"]}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Investigate, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Investigate, None, &bridge.launch(), None, false).unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -8931,7 +8844,7 @@ fn dsh_dispatch_starts_a_new_session_when_the_card_session_is_gone() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
     assert!(bridge.posts("/v1/prompt").is_empty());
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8949,7 +8862,7 @@ fn dsh_dispatch_starts_a_new_session_when_the_prompt_is_refused() {
         data.prompt_refusal = Some((409, "session is busy".to_owned()));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
     // A refused prompt was never queued, so the brief still starts.
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8967,7 +8880,7 @@ fn dsh_dispatch_reports_a_prompt_error_that_is_not_a_refusal() {
         data.prompt_refusal = Some((502, "dsh bridge unreachable: timeout".to_owned()));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    let error = dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false)
+    let error = dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false)
         .unwrap_err();
     assert_eq!(error, "dsh bridge unreachable: timeout");
     // A prompt that may have been queued must not start a second session on the same brief.
@@ -9076,7 +8989,7 @@ fn dsh_dispatch_reports_a_failed_state_read_and_starts_no_session() {
         data.state_error = Some("session/list: timeout".to_owned());
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    let error = dispatch(&db, &card, DispatchMode::Act, None, &bridge.launch(), None, None, None, false)
+    let error = dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false)
         .unwrap_err();
     assert_eq!(error, "session/list: timeout");
     // The session may still be there. The brief must not start a second one.
@@ -9095,7 +9008,7 @@ fn dsh_plan_on_a_running_session_starts_a_new_session() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Plan, None, &bridge.launch(), None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
@@ -9221,7 +9134,7 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
         card: finding.id.clone(),
         action: "later".to_owned(),
         option: Some(0),
-        text: Some(DispatchMode::Act.swipe_text().to_owned()),
+        text: Some("Act".to_owned()),
         note: None,
         until_ms: Some(events::now_ms()),
         reason: Some(format!("launching dsh:{SID}")),
@@ -9231,7 +9144,7 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
     answer(
         &db,
         &finding,
-        &AnswerReq { option: Some(0), mode: Some("act".to_owned()), ..AnswerReq::default() },
+        &AnswerReq { option: Some(0), mode: Some("goal".to_owned()), task: Some("act".to_owned()), ..AnswerReq::default() },
         &bridge.launch(),
     None,
     )
@@ -9477,7 +9390,7 @@ fn dsh_workspace_launch_posts_the_workspace_and_briefs_the_project_directory() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
-    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, None);
+    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -9496,7 +9409,7 @@ fn dsh_workspace_launch_falls_back_to_the_project_directory_on_an_older_host() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.refuse_workspace = true);
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
-    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, None);
+    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, Task::Fix, None);
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 2);
@@ -9512,7 +9425,7 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     let bridge = FakeBridge::start(scratch.path());
     let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, DispatchMode::Act, None, &launch, None, None, None, false).unwrap();
+    dispatch(&db, &card, Start::Goal, Task::Act, None, &launch, None, false).unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["workspace"], "triage");

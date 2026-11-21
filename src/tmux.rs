@@ -135,10 +135,10 @@ pub fn finding_pane(
     card_id: &str,
     option: usize,
     note: Option<&str>,
-    mode: crate::cards::DispatchMode,
+    label: &str,
 ) -> io::Result<Option<String>> {
     let card_tag = card_tag(card_id);
-    let expected_tag = finding_choice_tag(&card_tag, option, note, mode)?;
+    let expected_tag = finding_choice_tag(&card_tag, option, note, label)?;
     for pane in list_panes()? {
         if let Some(tag) = pane.triage_card_tag.as_deref() {
             let suffix = tag.strip_prefix(card_tag.as_str());
@@ -160,9 +160,9 @@ pub fn tag_finding_pane(
     card_id: &str,
     option: usize,
     note: Option<&str>,
-    mode: crate::cards::DispatchMode,
+    label: &str,
 ) -> io::Result<()> {
-    let tag = finding_choice_tag(&card_tag(card_id), option, note, mode)?;
+    let tag = finding_choice_tag(&card_tag(card_id), option, note, label)?;
     tmux_run(&["set-option", "-p", "-t", pane, "@triage_card_id", &tag])?;
     Ok(())
 }
@@ -171,13 +171,13 @@ fn finding_choice_tag(
     card_tag: &str,
     option: usize,
     note: Option<&str>,
-    mode: crate::cards::DispatchMode,
+    label: &str,
 ) -> io::Result<String> {
     use std::fmt::Write as _;
 
     let mut tag = String::with_capacity(card_tag.len().saturating_add(80));
     tag.push_str(card_tag);
-    write!(&mut tag, ":{option}:{}:", mode.swipe_text()).unwrap();
+    write!(&mut tag, ":{option}:{label}:").unwrap();
     if let Some(note) = note {
         write!(&mut tag, "s{:032x}", digest(note.as_bytes())).unwrap();
     } else {
@@ -549,19 +549,19 @@ esac
 "##;
 
         if std::env::var_os("TRIAGE_FINDING_PANE_CHILD").is_some() {
-            let mode = crate::cards::DispatchMode::Act;
-            tag_finding_pane("%1", "card", 2, Some("original note"), mode).unwrap();
-            let same_choice = finding_pane("card", 2, Some("original note"), mode)
+            let label = "Act";
+            tag_finding_pane("%1", "card", 2, Some("original note"), label).unwrap();
+            let same_choice = finding_pane("card", 2, Some("original note"), label)
                 .unwrap()
                 .as_deref()
                 == Some("%1");
-            let option_rejected = finding_pane("card", 3, Some("original note"), mode).is_err();
-            let note_rejected = finding_pane("card", 2, Some("changed note"), mode).is_err();
+            let option_rejected = finding_pane("card", 3, Some("original note"), label).is_err();
+            let note_rejected = finding_pane("card", 2, Some("changed note"), label).is_err();
             let mode_rejected = finding_pane(
                 "card",
                 2,
                 Some("original note"),
-                crate::cards::DispatchMode::Plan,
+                "Plan + Act",
             )
             .is_err();
             let results = format!("{same_choice}\n{option_rejected}\n{note_rejected}\n{mode_rejected}\n");
@@ -600,8 +600,8 @@ esac
         let note_a = "a".repeat(32 * 1024);
         let note_b = "b".repeat(32 * 1024);
         let card_tag = card_tag("card");
-        let tag_a = finding_choice_tag(&card_tag, 0, Some(&note_a), crate::cards::DispatchMode::Act).unwrap();
-        let tag_b = finding_choice_tag(&card_tag, 0, Some(&note_b), crate::cards::DispatchMode::Act).unwrap();
+        let tag_a = finding_choice_tag(&card_tag, 0, Some(&note_a), "Act").unwrap();
+        let tag_b = finding_choice_tag(&card_tag, 0, Some(&note_b), "Act").unwrap();
 
         assert!(tag_a.len() < 128);
         assert!(tag_b.len() < 128);
@@ -610,15 +610,15 @@ esac
     #[test]
     fn finding_choice_tag_distinguishes_mode() {
         let card_tag = card_tag("card");
-        let act = finding_choice_tag(&card_tag, 0, None, crate::cards::DispatchMode::Act).unwrap();
-        let plan = finding_choice_tag(&card_tag, 0, None, crate::cards::DispatchMode::Plan).unwrap();
+        let act = finding_choice_tag(&card_tag, 0, None, "Act").unwrap();
+        let plan = finding_choice_tag(&card_tag, 0, None, "Plan + Act").unwrap();
         assert_ne!(act, plan);
     }
 
     #[test]
     fn finding_tag_bounds_large_card_id() {
         let card_id = "x".repeat(70 * 1024);
-        let tag = finding_choice_tag(&card_tag(&card_id), 0, None, crate::cards::DispatchMode::Act).unwrap();
+        let tag = finding_choice_tag(&card_tag(&card_id), 0, None, "Act").unwrap();
         assert!(tag.len() < 128);
     }
 }

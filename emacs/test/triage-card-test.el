@@ -188,11 +188,14 @@
                  (questions . (((label . "Q1") (question . "?") (allow_other . t)))))
                0)))
 
-(ert-deftest triage-card-test-option-mode ()
-  "The option label picks the dispatch mode."
-  (should (equal (triage-card-option-mode "Investigate + fix it") "investigate-fix"))
-  (should (equal (triage-card-option-mode " investigate") "investigate"))
-  (should (equal (triage-card-option-mode "Do as recommended") "act")))
+(ert-deftest triage-card-test-option-task ()
+  "The option label picks the task."
+  (should (equal (triage-card-option-task "Investigate + fix it") "fix"))
+  (should (equal (triage-card-option-task "investigate and fix") "fix"))
+  (should (equal (triage-card-option-task " investigate") "investigate"))
+  (should (equal (triage-card-option-task "Fix it") "act"))
+  (should (equal (triage-card-option-task "Skip") "act"))
+  (should (equal (triage-card-option-task "Do as recommended") "act")))
 
 (ert-deftest triage-card-test-rec-index-and-sorted-options ()
   "Recommended options sort first and keep their original index."
@@ -282,11 +285,16 @@
   (let ((finding '((id . "f") (kind . "finding") (title . "T")))
         (info '((id . "i") (kind . "info") (title . "T"))))
     (should (equal (triage-card-result-message
-                    finding "dispatch" '((mode . "investigate-fix")) nil)
-                   "Investigating and fixing · T"))
-    (should (equal (triage-card-result-message finding "dispatch" '((mode . "act")) nil)
+                    finding "dispatch" '((mode . "goal") (task . "fix")) nil)
+                   "Fixing · T"))
+    (should (equal (triage-card-result-message
+                    finding "dispatch" '((mode . "goal") (task . "act")) nil)
                    "Acting · T"))
-    (should (equal (triage-card-result-message finding "dispatch" '((mode . "plan")) nil)
+    (should (equal (triage-card-result-message
+                    finding "dispatch" '((mode . "goal") (task . "investigate")) nil)
+                   "Investigating · T"))
+    (should (equal (triage-card-result-message
+                    finding "dispatch" '((mode . "plan") (task . "act")) nil)
                    "Planning · T"))
     (should (equal (triage-card-result-message finding "skip" nil nil) "Skipped · T"))
     (should (equal (triage-card-result-message finding "close" '((note . :null)) nil)
@@ -337,9 +345,10 @@
 
 (ert-deftest triage-card-test-choice-keys-are-mnemonic ()
   "Choice prompts take one mnemonic key per label, unique across labels."
-  (should (equal (triage-card-choice-keys
-                  (mapcar #'cadr triage-card-dispatch-modes))
-                 '(?i ?I ?a ?p ?P)))
+  (should (equal (triage-card-choice-keys (mapcar #'cadr triage-card-modes))
+                 '(?g ?p ?P)))
+  (should (equal (triage-card-choice-keys (mapcar #'cadr triage-card-tasks))
+                 '(?i ?f ?a ?v ?s)))
   (should (equal (triage-card-choice-keys '("Default" "omp" "dsh"))
                  '(?d ?o ?D)))
   (should (equal (triage-card-choice-keys

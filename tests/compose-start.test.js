@@ -52,7 +52,7 @@ function harness() {
     answer = { resolve, reject };
   });
   const context = vm.createContext({
-    S: { composeMode: 'goal', sheetCardId: null, cards: [] },
+    S: { composeMode: 'goal', composeTask: 'fix', sheetCardId: null, cards: [] },
     $: (selector) => {
       if (selector === 'dialog[open]') return compose.open ? compose : other.open ? other : null;
       return elements[selector] || null;

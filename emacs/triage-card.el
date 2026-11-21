@@ -82,12 +82,27 @@ A status without a tone is stored as (LABEL), so its tone is nil.")
           ((member kind '("ask" "finding")) "waiting")
           (t "notice"))))
 
-(defun triage-card--acting-verb (mode)
-  "Return the past-tense verb shown for a dispatch in MODE."
-  (cond ((equal mode "act") "Acting")
-        ((equal mode "investigate-fix") "Investigating and fixing")
-        ((member mode '("plan" "plan-into")) "Planning")
-        (t "Investigating")))
+(defconst triage-card-modes
+  '(("goal" "Goal" "The session works on it until it reports done.")
+    ("plan" "Plan" "Read-only planning. The plan arrives here for review before anything runs.")
+    ("plan-into" "Plan into"
+     "The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below."))
+  "Launch sheet modes as (WIRE LABEL HELP) rows, the ways a session starts.")
+
+(defconst triage-card-tasks
+  '(("investigate" "Investigate" "Read-only. The session checks the facts and reports back." "Investigating")
+    ("fix" "Fix" "Finds the root cause, fixes it for good, and checks nothing else broke." "Fixing")
+    ("act" "Act" "Carries out the work with the smallest change that fully solves it." "Acting")
+    ("verify" "Verify" "Checks the work is done and right, runs the full test gate, and fixes any gap." "Verifying")
+    ("simplify" "Simplify" "Makes it smaller and plainer without changing what it does." "Simplifying"))
+  "This constant lists launch tasks.  Each row contains all launch text.
+The row stores the wire value, label, help, and verb, while the daemon
+applies its direction text.")
+(defun triage-card--acting-verb (mode task)
+  "Return the past-tense verb shown for a dispatch in MODE and TASK."
+  (if (member mode '("plan" "plan-into"))
+      "Planning"
+    (or (nth 3 (assoc task triage-card-tasks)) "Launching")))
 
 (defun triage-card--answer-label (card answer index)
   "Return the text shown for ANSWER to question INDEX of CARD."
@@ -198,15 +213,15 @@ Port of otherAllowed in ui/app.js."
   (or (cl-position-if (lambda (option) (alist-get 'recommended option)) options)
       0))
 
-(defun triage-card-option-mode (option)
-  "Return the dispatch mode selected by OPTION's label.
-Port of optionMode in ui/app.js."
+(defun triage-card-option-task (option)
+  "Return the task selected by OPTION's label.
+Port of optionTask in ui/app.js."
   (let* ((label-text (if (stringp option)
                          option
                        (or (alist-get 'label option) "")))
          (label (downcase (string-trim-left label-text))))
     (cond ((not (string-prefix-p "investigate" label)) "act")
-          ((string-search "fix" label) "investigate-fix")
+          ((string-search "fix" label) "fix")
           (t "investigate"))))
 
 (defun triage-card-sorted-options (options)
@@ -392,7 +407,9 @@ Port resultMessage from ui/app.js."
      ((equal verb "later") (format "Later %s · %s" (plist-get choice :label) title))
      ((or (equal verb "dispatch")
           (and (equal verb "answer") answers (equal kind "finding")))
-      (format "%s · %s" (triage-card--acting-verb (alist-get 'mode body)) title))
+      (format "%s · %s"
+              (triage-card--acting-verb (alist-get 'mode body) (alist-get 'task body))
+              title))
      ((equal verb "close") (format "Closed · %s" title))
      ((equal verb "report") (format "Requested report · %s" title))
      ((equal verb "restore") (format "Restoring run · %s" title))
@@ -414,37 +431,6 @@ Port resultMessage from ui/app.js."
                                               (alist-get 'option body)))
                   "Custom answer")
               title)))))
-
-(defconst triage-card-dispatch-modes
-  '(("investigate" "Investigate"
-     "Read-only. The session looks into it and reports back.")
-    ("investigate-fix" "Investigate + fix"
-     "Investigates the root cause, fixes it for good, and reports the evidence.")
-    ("act" "Act"
-     "The session carries out the action end to end.")
-    ("plan" "Plan"
-     "The session prepares a plan for review before acting.")
-    ("plan-into" "Plan into"
-     "The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below."))
-  "Dispatch sheet modes as (WIRE LABEL HELP) rows.")
-
-(defconst triage-card-compose-modes
-  '(("goal" "Goal"
-     "The session works toward the prompt as a goal until it reports done.")
-    ("plan" "Plan"
-     "Read-only planning. The plan arrives here for review before anything runs.")
-    ("plan-into" "Plan into"
-     "The Model above drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below."))
-  "New session modes as (WIRE LABEL HELP) rows.")
-
-(defconst triage-card-act-default
-  "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions."
-  "Instruction that the act mode fills in when the body is empty.")
-
-(defconst triage-card-fix-default
-  (concat triage-card-act-default
-          "\n\nInvestigate and fix the root cause permanently and generically, not just this one problem. Make sure you don't break anything and that this type of problem does not occur again.")
-  "Instruction that the investigate-fix mode fills in when the body is empty.")
 
 (defconst triage-card-actions
   (list

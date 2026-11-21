@@ -302,6 +302,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         model: None,
         thinking: None,
         mode: None,
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -324,6 +325,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         model: Some("provider/chosen".to_owned()),
         thinking: Some("high".to_owned()),
         mode: None,
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -351,6 +353,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
         model: None,
         thinking: None,
         mode: None,
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -386,6 +389,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
         model: None,
         thinking: None,
         mode: Some("plan".to_owned()),
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -437,7 +441,7 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
 }
 
 // An Org heading or a mail thread sent from Emacs opens Triage Dispatch. A request with a note
-// dispatches its prompt as context in a Dispatch mode.
+// dispatches its prompt as context in the mode and task it names.
 #[cfg(unix)]
 #[tokio::test]
 async fn new_session_with_a_note_dispatches_its_prompt_as_context() {
@@ -449,20 +453,24 @@ async fn new_session_with_a_note_dispatches_its_prompt_as_context() {
     let directory = TestDir::new("triage-session-context");
     let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
     let state = state(db, None);
-    for refused in [
-        serde_json::json!({"prompt": "Email: Pong", "note": "", "mode": "goal"}),
-        serde_json::json!({"prompt": "Email: Pong", "mode": "act"}),
+    for (refused, error) in [
+        (serde_json::json!({"prompt": "Email: Pong", "note": "", "mode": "act"}), "unknown mode"),
+        (serde_json::json!({"prompt": "Email: Pong", "note": "", "task": "bogus"}), "unknown task"),
     ] {
         let request = serde_json::from_value(refused).unwrap();
         let response =
             super::start_session(axum::extract::State(state.clone()), axum::Json(request)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], error);
     }
     let request = serde_json::from_value(serde_json::json!({
         "prompt": "Email: Pong\n\nCURRENT THREAD\nPing?",
         "cwd": "/tmp",
         "note": "Draft a reply.",
-        "mode": "act",
+        "mode": "goal",
+        "task": "act",
     }))
     .unwrap();
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
@@ -472,11 +480,11 @@ async fn new_session_with_a_note_dispatches_its_prompt_as_context() {
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
         .next()
         .unwrap();
+    // The Act direction text, copied here because cards keeps it private.
+    const ACT_DIRECTION: &str = "Do everything reasonably and think hard. Think ponytail: the smallest change that fully solves the task, with smart, efficient, effective and clean decisions.";
     assert!(
         brief.starts_with("# Act: Email: Pong\n\n## Context\nEmail: Pong\n")
-            && brief.contains(
-                "## Direction from the user (overrides the action and any skill)\nDraft a reply.\n"
-            )
+            && brief.contains(&format!("{ACT_DIRECTION}\n\nDraft a reply.\n"))
             && brief.contains("Take the whole action this brief calls for")
             && !brief.contains("Investigate and fix the root cause"),
         "{brief}"
@@ -510,6 +518,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
         model: None,
         thinking: None,
         mode: Some("plan".to_owned()),
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -561,6 +570,7 @@ async fn new_session_plan_into_applies_effort_to_default_execution_model() {
         model: None,
         thinking: None,
         mode: Some("plan-into".to_owned()),
+        task: None,
         note: None,
         executor: None,
         executor_thinking: Some("medium".to_owned()),
@@ -625,6 +635,7 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
         model: None,
         thinking: None,
         mode: Some("goal".to_owned()),
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -657,6 +668,7 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
         model: None,
         thinking: None,
         mode: Some("goal".to_owned()),
+        task: None,
         note: None,
         executor: None,
         executor_thinking: None,
@@ -688,6 +700,7 @@ async fn new_session_rejects_plan_into_effort_the_engine_cannot_take() {
             model: None,
             thinking: None,
             mode: Some("plan-into".to_owned()),
+            task: None,
             note: None,
             executor: executor.map(str::to_owned),
             executor_thinking: effort.map(str::to_owned),
@@ -1442,11 +1455,17 @@ async fn dispatch_rejects_unknown_mode_before_touching_the_card() {
     assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
     assert_eq!(unknown.body["error"], "unknown mode");
     assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
+    let bogus_task = http_request(address, "POST", &path, r#"{"task":"bogus"}"#).await;
+    assert_eq!(bogus_task.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bogus_task.body["error"], "unknown task");
+    let legacy = http_request(address, "POST", &path, r#"{"mode":"act"}"#).await;
+    assert_eq!(legacy.status, StatusCode::BAD_REQUEST);
+    assert_eq!(legacy.body["error"], "unknown mode");
     let missing = http_request(
         address,
         "POST",
         "/v1/cards/missing/dispatch",
-        r#"{"mode":"act"}"#,
+        r#"{"mode":"goal","task":"act"}"#,
     )
     .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
@@ -1780,7 +1799,7 @@ esac
         address,
         "POST",
         &format!("/v1/cards/{}/dispatch", card.id),
-        r#"{"mode":"plan-into","model":"provider/chosen","executor":"provider/executor","executor_thinking":"high"}"#,
+        r#"{"mode":"plan-into","task":"act","model":"provider/chosen","executor":"provider/executor","executor_thinking":"high"}"#,
     )
     .await;
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
@@ -1797,7 +1816,7 @@ esac
         "{launch}"
     );
     assert!(
-        launch.contains("--plan-yolo --plan-yolo-into=provider/executor:high '# Plan into: Plan into with the requested model' @'"),
+        launch.contains("--plan-yolo --plan-yolo-into=provider/executor:high '# Plan into + Act: Plan into with the requested model' @'"),
         "{launch}"
     );
     assert!(!launch.contains("provider/daemon-model"), "{launch}");
@@ -1852,7 +1871,7 @@ esac
         address,
         "POST",
         &format!("/v1/cards/{}/dispatch", card.id),
-        r#"{"mode":"act","new_window":true}"#,
+        r#"{"mode":"goal","task":"act","new_window":true}"#,
     )
     .await;
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
@@ -1889,17 +1908,17 @@ async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     let state = state(db, None);
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{id}/dispatch");
-    let outside = http_request(address, "POST", &path, r#"{"mode":"act","executor":"provider/x"}"#).await;
+    let outside = http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","executor":"provider/x"}"#).await;
     assert_eq!(outside.status, StatusCode::BAD_REQUEST);
     assert_eq!(outside.body["error"], "executor needs mode plan-into");
     let bad = http_request(address, "POST", &path, r#"{"mode":"plan-into","executor":"x; rm -rf ~"}"#).await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
     assert_eq!(bad.body["error"], "invalid model x; rm -rf ~");
-    let thinking = http_request(address, "POST", &path, r#"{"mode":"act","thinking":"sideways"}"#).await;
+    let thinking = http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","thinking":"sideways"}"#).await;
     assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
     assert_eq!(thinking.body["error"], "unknown thinking level sideways");
     let effort_outside =
-        http_request(address, "POST", &path, r#"{"mode":"act","executor_thinking":"low"}"#).await;
+        http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","executor_thinking":"low"}"#).await;
     assert_eq!(effort_outside.status, StatusCode::BAD_REQUEST);
     assert_eq!(effort_outside.body["error"], "executor thinking needs mode plan-into");
     let dsh_effort_alone = http_request(
@@ -1954,7 +1973,7 @@ case "$1" in list-panes) printf '' ;; esac
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{}/answer", card.id);
     let response = http_request(address, "POST", &path,
-        r#"{"option":0,"mode":"act","model":"provider/chosen","thinking":"high"}"#).await;
+        r#"{"option":0,"mode":"goal","task":"act","model":"provider/chosen","thinking":"high"}"#).await;
     let mut args_path = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
     args_path.push(".args");
     let launch = std::fs::read_to_string(&args_path).unwrap();
@@ -1976,6 +1995,9 @@ async fn finding_answer_rejects_unknown_mode_and_thinking_level() {
     let mode = http_request(address, "POST", &path, r#"{"option":0,"mode":"fix"}"#).await;
     assert_eq!(mode.status, StatusCode::BAD_REQUEST);
     assert_eq!(mode.body["error"], "unknown mode");
+    let task = http_request(address, "POST", &path, r#"{"option":0,"task":"plan"}"#).await;
+    assert_eq!(task.status, StatusCode::BAD_REQUEST);
+    assert_eq!(task.body["error"], "unknown task");
     let thinking = http_request(address, "POST", &path, r#"{"option":0,"thinking":"sideways"}"#).await;
     assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
     assert_eq!(thinking.body["error"], "unknown thinking level sideways");
@@ -1999,6 +2021,24 @@ async fn new_session_rejects_unknown_mode_and_executor_outside_plan_into() {
     .await;
     assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
     assert_eq!(unknown.body["error"], "unknown mode");
+    let bogus_task = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","task":"bogus"}"#,
+    )
+    .await;
+    assert_eq!(bogus_task.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bogus_task.body["error"], "unknown task");
+    let legacy = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","mode":"investigate"}"#,
+    )
+    .await;
+    assert_eq!(legacy.status, StatusCode::BAD_REQUEST);
+    assert_eq!(legacy.body["error"], "unknown mode");
     let executor = http_request(
         address,
         "POST",
