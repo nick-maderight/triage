@@ -1,7 +1,7 @@
 //! Bridge poll and card actions for dsh sessions.
 
 use super::{
-    GOAL_CONTINUATION_GRACE, Launch, Start, TickReport, Tracker, dispatch_prompt, finish_cards,
+    GOAL_CONTINUATION_GRACE, Launch, TickReport, Tracker, dispatch_prompt, finish_cards,
     headline_of, record_swipe, reply_turn, report_request, supersede_info_cards, trail,
     truncate_chars, turn_card,
 };
@@ -791,15 +791,9 @@ fn answer_entry(question: &dsh::Question, answer: &Answer) -> Result<Value, Stri
     }
 }
 
-/// The prompt a dsh session gets for a brief file.
-fn brief_prompt(brief: &Path) -> String {
-    dispatch_prompt(brief)
-}
-
 /// The prompt a new dsh session gets. It opens with the task's name, which gives dsh's
 /// session titler the work itself instead of a brief path. dsh names a session from its
-/// first `user` message. A plan launch records this text as one. An empty `name` gives the
-/// plain prompt for the brief.
+/// first `user` message. An empty `name` gives the plain prompt for the brief.
 fn launch_prompt(brief: &Path, name: &str) -> String {
     let name = title_words(name, 120, 240);
     if name.is_empty() {
@@ -1172,56 +1166,31 @@ pub(super) fn request_report(
 }
 
 /// Give the brief to the card's dsh session, and start a session only when that one cannot take
-/// it. A goal brief is queued in the session whatever it is doing, and a plan brief relaunches
-/// it in plan mode while it is idle. A session the host no longer lists, or a prompt the bridge
-/// refuses, starts a session of its own. A state read that fails any other way is returned,
-/// because the session may still be there. The report card's next-step buttons ask for a new
-/// window. Only a tmux pane has one, which is why this function takes no such flag.
+/// it. dsh queues a prompt for the session's next turn, so a brief reaches a session whatever it
+/// is doing. A session the host no longer lists, or a prompt the bridge refuses, starts a session
+/// of its own. A state read that fails any other way is returned, because the session may still
+/// be there. The report card's next-step buttons ask for a new window. Only a tmux pane has one,
+/// which is why this function takes no such flag.
 pub(super) fn launch_brief(
     card: &Card,
     launch: &Launch,
     brief: &Path,
-    start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
     if let Some(sid) = dsh::session_id(card) {
         let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
         match client.state(sid) {
-            Ok(state) => match start {
-                // A goal brief is queued in the card's session even while it runs or waits for
-                // an answer, because dsh queues a prompt for the session's next turn. The work
-                // then continues where the card came from instead of in a second session.
-                Start::Goal => {
-                    match client.prompt(sid, &dispatch_prompt(brief), image.map(Upload::dsh_image)) {
-                        Ok(()) => return Ok(format!("dsh:{sid}")),
-                        // A refused prompt was not taken. The brief starts a session instead.
-                        Err(error) if prompt_refused(&error) => {}
-                        Err(error) => return Err(error),
-                    }
+            // The brief is queued in the card's session even while it runs or waits for an
+            // answer. The work then continues where the card came from instead of in a second
+            // session.
+            Ok(_) => {
+                match client.prompt(sid, &dispatch_prompt(brief), image.map(Upload::dsh_image)) {
+                    Ok(()) => return Ok(format!("dsh:{sid}")),
+                    // A refused prompt was not taken. The brief starts a session instead.
+                    Err(error) if prompt_refused(&error) => {}
+                    Err(error) => return Err(error),
                 }
-                // A plan sets the session's permission and plan mode with slash commands, which
-                // take effect between turns. A busy session cannot take one. Its brief starts
-                // a session of its own instead.
-                Start::Plan | Start::PlanInto(..) if !state.running && state.pending_input.is_empty() => {
-                    let (mode, executor, executor_effort) = match start {
-                        Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
-                        _ => ("plan", None, None),
-                    };
-                    let mut body = json!({
-                        "sessionId": sid,
-                        "cwd": card_cwd(card),
-                        "prompt": brief_prompt(brief),
-                        "mode": mode,
-                        "executor": executor,
-                        "executorEffort": executor_effort,
-                    });
-                    if let Some(image) = image {
-                        body["image"] = image.dsh_image();
-                    }
-                    return client.launch(&body).map(|launched| format!("dsh:{launched}"));
-                }
-                Start::Plan | Start::PlanInto(..) => {}
-            },
+            }
             // The host no longer lists the session. The brief starts one of its own.
             Err(error) if error.contains("session not found") => {}
             // Any other failure may be a slow host whose session is still there. A second
@@ -1229,7 +1198,7 @@ pub(super) fn launch_brief(
             Err(error) => return Err(error),
         }
     }
-    launch_new(launch, &card_cwd(card), brief, &card.title, start, image)
+    launch_new(launch, &card_cwd(card), brief, &card.title, image)
 }
 
 /// Whether the bridge refused a prompt without taking it. A timeout or an unreachable host is
@@ -1250,36 +1219,24 @@ pub(super) fn launch_new(
     cwd: &str,
     brief: &Path,
     task: &str,
-    start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::LAUNCH_TIMEOUT)?;
     let name = one_line(task);
-    let (mode, executor, executor_effort) = match start {
-        Start::Goal => ("goal", None, None),
-        Start::Plan => ("plan", None, None),
-        Start::PlanInto(executor, effort) => ("plan-into", executor, effort),
-    };
     let mut body = json!({
         "prompt": launch_prompt(brief, &name),
         // No model leaves the bridge its host's default from the dsh catalog.
         "model": launch.model.as_deref(),
         "effort": launch.thinking,
-        "mode": mode,
-        "executor": executor,
-        "executorEffort": executor_effort,
+        "mode": "goal",
     });
-    // dsh names a session from its first `user` message. A plan launch records the brief
-    // prompt as one. Since a goal launch only creates a goal, whose rounds are not user
-    // messages, dsh has nothing to name it from, so triage pins the name it reads out of
-    // the brief. Only a goal launch keeps this title. Naming runs on its own short timeout,
-    // because a busy host must not hold a launch for the launch timeout.
-    let pinned = match start {
-        Start::Goal => match dsh::connect(launch.dsh_host.as_deref(), dsh::ASK_TIMEOUT) {
-            Ok(namer) => brief_name(&namer, brief, &name),
-            Err(_) => title_words(&one_line(&name), 60, 80),
-        },
-        _ => String::new(),
+    // dsh names a session from its first `user` message, and a goal launch creates only a goal,
+    // whose rounds are not user messages. So triage pins the name it reads out of the brief.
+    // Naming runs on its own short timeout, because a busy host must not hold a launch for the
+    // launch timeout.
+    let pinned = match dsh::connect(launch.dsh_host.as_deref(), dsh::ASK_TIMEOUT) {
+        Ok(namer) => brief_name(&namer, brief, &name),
+        Err(_) => title_words(&one_line(&name), 60, 80),
     };
     if !pinned.is_empty() {
         body["title"] = json!(pinned);

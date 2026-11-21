@@ -89,6 +89,14 @@ A status without a tone is stored as (LABEL), so its tone is nil.")
      "The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below."))
   "Launch sheet modes as (WIRE LABEL HELP) rows, the ways a session starts.")
 
+(defconst triage-card-dsh-plan-help
+  "omp drafts the plan read-only on Opus. The plan arrives here for review. A dsh session carries out the plan you approve."
+  "Help line of Plan on the dsh engine.")
+
+(defconst triage-card-dsh-plan-into-help
+  "omp drafts the plan read-only on Opus. A dsh session then carries it out without asking you."
+  "Help line of Plan into on the dsh engine.")
+
 (defconst triage-card-tasks
   '(("investigate" "Investigate" "Read-only. The session checks the facts and reports back." "Investigating")
     ("fix" "Fix" "Finds the root cause, fixes it for good, and checks nothing else broke." "Fixing")

@@ -546,6 +546,32 @@ fn html_question(index: usize, field: &HtmlField, labels: &HashMap<String, Strin
     (question, answering)
 }
 
+/// The title and plan file path a proposal's `inner` data names.
+fn proposal_fields(inner: Option<&Value>) -> (Option<String>, Option<String>) {
+    (
+        inner
+            .and_then(|inner| inner.get("title"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        inner
+            .and_then(|inner| inner.get("planFilePath"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    )
+}
+
+/// Every object under `value` that names a `planFilePath`, as its title and plan file path.
+fn collect_proposals(value: Option<&Value>, out: &mut Vec<(Option<String>, Option<String>)>) {
+    match value {
+        Some(Value::Object(map)) if map.get("planFilePath").is_some_and(Value::is_string) => {
+            out.push(proposal_fields(value));
+        }
+        Some(Value::Object(map)) => map.values().for_each(|child| collect_proposals(Some(child), out)),
+        Some(Value::Array(items)) => items.iter().for_each(|child| collect_proposals(Some(child), out)),
+        _ => {}
+    }
+}
+
 /// Read plan proposals and matching results from an omp JSONL transcript.
 pub fn proposes(transcript: &Path) -> io::Result<Vec<Propose>> {
     let mut calls = Vec::new();
@@ -583,24 +609,20 @@ pub fn proposes(transcript: &Path) -> io::Result<Vec<Propose>> {
                 }
             }
             Some("toolResult") => {
-                if let Some(id) = message.get("toolCallId").and_then(Value::as_str) {
-                    let inner = message
-                        .get("details")
-                        .and_then(|details| details.get("xdev"))
-                        .and_then(|xdev| xdev.get("inner"));
-                    results.insert(
-                        id.to_owned(),
-                        (
-                            inner
-                                .and_then(|inner| inner.get("title"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            inner
-                                .and_then(|inner| inner.get("planFilePath"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                        ),
-                    );
+                let Some(id) = message.get("toolCallId").and_then(Value::as_str) else {
+                    return true;
+                };
+                // omp has moved the proposal between tools and result shapes across releases.
+                // Any object in the result that names a `planFilePath` is a proposal, wherever
+                // it sits, so a tool or nesting change does not hide the plan.
+                let mut found = Vec::new();
+                collect_proposals(message.get("details"), &mut found);
+                for (index, fields) in found.into_iter().enumerate() {
+                    let key = if index == 0 { id.to_owned() } else { format!("{id}:{index}") };
+                    if !calls.iter().any(|(call, _)| *call == key) {
+                        calls.push((key.clone(), String::new()));
+                    }
+                    results.insert(key, fields);
                 }
             }
             _ => {}
@@ -948,6 +970,19 @@ pub fn review_answers(screen: &str) -> Option<Vec<String>> {
 /// Detect the fullscreen Plan Review header in a captured screen.
 pub fn plan_review_open(screen: &str) -> bool {
     screen.lines().any(|line| line.starts_with("╭─ Plan Review"))
+}
+
+/// A looser read of the review overlay than `plan_review_open`: a boxed header that names a plan
+/// review, or a boxed row that starts an approval choice. It lets the tracker notice a review
+/// that `plan_review_open` no longer recognizes after an omp update. Plain chat text does not
+/// count, because the markers must open a line that starts with a box border.
+pub fn looks_like_plan_review(screen: &str) -> bool {
+    screen.lines().any(|line| {
+        let line = line.trim_start().to_lowercase();
+        let row = line.strip_prefix('│').map(|rest| rest.trim_start_matches([' ', '❯']));
+        (line.starts_with('╭') && line.contains("plan review"))
+            || row.is_some_and(|row| row.starts_with("approve and "))
+    })
 }
 
 /// Read the Plan Review footer's option labels and the row the `❯` marks, in display order. The
@@ -1982,6 +2017,51 @@ mod tests {
         assert_eq!(proposals[0].title, "fallback plan title");
         assert!(proposals[0].plan_path.ends_with("local/fallback-plan.md"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parses_bash_propose_result_from_omp_19_1() {
+        let path = std::env::temp_dir()
+            .join(format!("triage-omp-propose-bash-{}.jsonl", std::process::id()));
+        let transcript = concat!(
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"bash-call","name":"bash","arguments":{"command":"propose say-hello"}}]}}"#,
+            "\n",
+            r#"{"type":"message","message":{"role":"toolResult","toolCallId":"bash-call","toolName":"bash","details":{"toolCommands":[{"tool":"read","inner":{"title":"ignored"}},{"tool":"propose","args":{"title":"say-hello"},"inner":{"planFilePath":"local://say-hello-plan.md","title":"say-hello"}}]}}}"#,
+        );
+        fs::write(&path, transcript).unwrap();
+
+        let proposals = proposes(&path).unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].title, "say-hello");
+        assert!(proposals[0].plan_path.ends_with("local/say-hello-plan.md"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn finds_a_proposal_wherever_the_result_nests_it() {
+        let path = std::env::temp_dir()
+            .join(format!("triage-omp-propose-nested-{}.jsonl", std::process::id()));
+        // A tool and a nesting that no code names: only the `planFilePath` field identifies it.
+        let transcript = concat!(
+            r#"{"type":"message","message":{"role":"toolResult","toolCallId":"new-tool","toolName":"exit_plan","details":{"a":[{"b":{"title":"deep-plan","planFilePath":"local://deep-plan.md"}}]}}}"#,
+            "\n",
+            r#"{"type":"message","message":{"role":"toolResult","toolCallId":"read-call","toolName":"read","details":{"path":"local://deep-plan.md","lines":3}}}"#,
+        );
+        fs::write(&path, transcript).unwrap();
+
+        let proposals = proposes(&path).unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].title, "deep-plan");
+        assert!(proposals[0].plan_path.ends_with("local/deep-plan.md"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_renamed_review_still_looks_like_one_and_chat_does_not() {
+        assert!(looks_like_plan_review("╭─ Plan review ─╮\n│ ❯ Go ahead │\n"));
+        assert!(looks_like_plan_review("│ ❯ Approve and run │\n"));
+        assert!(!looks_like_plan_review("I opened the Plan Review and chose Approve and execute.\n"));
+        assert!(!looks_like_plan_review("π > session\n"));
     }
 
     #[test]

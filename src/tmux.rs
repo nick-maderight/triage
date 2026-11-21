@@ -167,6 +167,20 @@ pub fn tag_finding_pane(
     Ok(())
 }
 
+/// Tag `pane` as the planner of a dsh plan. `into` is the JSON array `[model, effort, auto]`.
+/// The dsh model and effort run the approved plan. `auto` is true for Plan into, whose plan
+/// the daemon approves without review.
+pub fn set_dsh_into(pane: &str, into: &str) -> io::Result<()> {
+    tmux_run(&["set-option", "-p", "-t", pane, "@triage_dsh_into", into]).map(|_| ())
+}
+
+/// The tag `set_dsh_into` left on `pane`. `None` for every other pane.
+pub fn dsh_into(pane: &str) -> io::Result<Option<String>> {
+    let into = tmux_text(&["display", "-p", "-t", pane, "#{@triage_dsh_into}"])?;
+    let into = into.trim();
+    Ok((!into.is_empty()).then(|| into.to_owned()))
+}
+
 fn finding_choice_tag(
     card_tag: &str,
     option: usize,

@@ -153,6 +153,13 @@
   "Return the label of the current mode."
   (nth 1 (assoc triage-launch--mode triage-card-modes)))
 
+(defun triage-launch--mode-help (mode)
+  "Return the help line of MODE, with the dsh wording for a plan on dsh."
+  (pcase (and (triage-launch--dsh-p) mode)
+    ("plan" triage-card-dsh-plan-help)
+    ("plan-into" triage-card-dsh-plan-into-help)
+    (_ (nth 2 (assoc mode triage-card-modes)))))
+
 (defun triage-launch--task-label ()
   "Return the label of the current task."
   (nth 1 (assoc triage-launch--task triage-card-tasks)))
@@ -337,7 +344,7 @@ One key changes an option, the way a Magit menu does."
 (defun triage-launch--offers-p (key)
   "Return non-nil when KEY names an option on this sheet."
   (pcase key
-    ((or "x" "X") (equal triage-launch--mode "plan-into"))
+    ((or "x" "X") (and (equal triage-launch--mode "plan-into") (not (triage-launch--dsh-p))))
     ("d" (memq triage-launch--kind '(compose context)))
     ("s" (and (memq triage-launch--kind '(compose context))
               (not (triage-launch--dsh-p))))
@@ -373,7 +380,7 @@ own start.  Return nil when the sheet does not offer the option."
              ""
              (triage-launch--row "m" "Mode"
                                  (format "%s · %s" (triage-launch--mode-label)
-                                         (nth 2 (assoc triage-launch--mode triage-card-modes))))
+                                         (triage-launch--mode-help triage-launch--mode)))
              (triage-launch--row "T" "Task"
                                  (format "%s · %s" (triage-launch--task-label)
                                          (nth 2 (assoc triage-launch--task triage-card-tasks))))
@@ -432,7 +439,7 @@ the point of every window on the sheet stay in the zone they were in."
   "Make MODE the mode of this sheet and echo its help.
 Port of setSheetMode in ui/app.js.  The body is left alone."
   (setq triage-launch--mode (or (triage-launch--valid mode triage-card-modes) "goal"))
-  (message "%s" (nth 2 (assoc triage-launch--mode triage-card-modes))))
+  (message "%s" (triage-launch--mode-help triage-launch--mode)))
 
 (defun triage-launch--set-task (task)
   "Make TASK the task of this sheet and echo its help.
@@ -652,7 +659,7 @@ Port of submitCompose in ui/app.js."
                  (message "%s"
                           (cond ((alist-get 'starting response)
                                  (if dsh "Starting a dsh session." "Starting the session."))
-                                (dsh "Started a dsh session.")
+                                ((string-prefix-p "dsh:" (or (alist-get 'pane response) "")) "Started a dsh session.")
                                 (t (format "Started · %s" (alist-get 'pane response))))))
          :else (lambda (_status message)
                  (when (buffer-live-p buffer)
@@ -838,7 +845,8 @@ the prompt."
   (interactive)
   (let ((mode (triage-launch--read-fixed
                "Mode"
-               (mapcar (lambda (row) (list (cadr row) (car row) (nth 2 row)))
+               (mapcar (lambda (row)
+                         (list (cadr row) (car row) (triage-launch--mode-help (car row))))
                        triage-card-modes))))
     (triage-launch--set-mode mode)
     (when (eq triage-launch--kind 'compose)
@@ -873,6 +881,7 @@ A sheet with answers cannot investigate, because each question decides that."
           triage-launch--thinking nil
           triage-launch--executor nil
           triage-launch--executor-thinking nil)
+    (triage-launch--set-mode triage-launch--mode)
     (when (eq triage-launch--kind 'dispatch)
       (setq triage-launch--last-dispatch-engine engine))
     (triage-launch--draw)

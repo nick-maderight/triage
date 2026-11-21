@@ -140,7 +140,7 @@ pub struct Card {
     /// Info replies without a status line can request a final report.
     #[serde(default)]
     pub report_due: bool,
-    /// Harness of a session that is not omp, such as `dsh`.
+    /// Harness of a session that is not omp, such as `dsh`. A plan card omp wrote for dsh names dsh too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
     /// The card's own outcome, shown above its title. A card stored before this field existed

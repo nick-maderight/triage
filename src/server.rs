@@ -412,7 +412,7 @@ async fn answer(
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::Json(request): axum::Json<AnswerRequest>,
 ) -> axum::response::Response {
-    let answer = request.answer;
+    let mut answer = request.answer;
     if let Err(error) = crate::cards::Start::parse(answer.mode.as_deref(), None, None) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
@@ -428,9 +428,14 @@ async fn answer(
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
+    plan_dsh_in_omp(
+        &mut launch,
+        answer.mode.as_deref(),
+        &mut answer.executor,
+        &mut answer.executor_thinking,
+    );
     if answer.mode.as_deref() == Some("plan-into") {
         if let Err(error) = crate::cards::plan_into_choices(
-            launch.engine,
             answer.executor.as_deref(),
             answer.executor_thinking.as_deref(),
         ) {
@@ -472,6 +477,23 @@ fn apply_launch_choices(
         launch.thinking = Some(thinking.to_owned());
     }
     Ok(())
+}
+
+/// A dsh `plan` or `plan-into` request opens an omp planner, because a dsh session starts only
+/// in goal mode. Approve on the plan card hands a `plan` plan to dsh. The daemon approves a
+/// `plan-into` plan itself. The request's execution fields are dropped, because they name an
+/// omp execution model.
+fn plan_dsh_in_omp(
+    launch: &mut crate::cards::Launch,
+    mode: Option<&str>,
+    executor: &mut Option<String>,
+    executor_thinking: &mut Option<String>,
+) {
+    if launch.engine == crate::cards::Engine::Dsh && matches!(mode, Some("plan" | "plan-into")) {
+        *launch = launch.dsh_planner(mode == Some("plan-into"));
+        *executor = None;
+        *executor_thinking = None;
+    }
 }
 
 async fn card_action<F>(state: Arc<AppState>, id: String, action: F) -> axum::response::Response
@@ -569,7 +591,7 @@ async fn dispatch(
     axum::extract::Path(id): axum::extract::Path<String>,
     request: Option<axum::Json<DispatchRequest>>,
 ) -> axum::response::Response {
-    let request = request.map(|request| request.0).unwrap_or_default();
+    let mut request = request.map(|request| request.0).unwrap_or_default();
     if let Err(error) = crate::cards::Start::parse(
         request.mode.as_deref(),
         request.executor.as_deref(),
@@ -584,7 +606,6 @@ async fn dispatch(
             None => return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown task"),
         },
     };
-    let plan_into = request.mode.as_deref() == Some("plan-into");
     let mut launch = state.launch.clone();
     if let Err(error) = apply_launch_choices(
         &mut launch,
@@ -594,9 +615,14 @@ async fn dispatch(
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
-    if plan_into {
+    plan_dsh_in_omp(
+        &mut launch,
+        request.mode.as_deref(),
+        &mut request.executor,
+        &mut request.executor_thinking,
+    );
+    if request.mode.as_deref() == Some("plan-into") {
         if let Err(error) = crate::cards::plan_into_choices(
-            launch.engine,
             request.executor.as_deref(),
             request.executor_thinking.as_deref(),
         ) {
@@ -1058,7 +1084,7 @@ fn pane_directories<'a>(cwds: impl IntoIterator<Item = &'a str>) -> Vec<String> 
 
 async fn start_session(
     State(state): State<Arc<AppState>>,
-    axum::Json(request): axum::Json<SessionRequest>,
+    axum::Json(mut request): axum::Json<SessionRequest>,
 ) -> axum::response::Response {
     let cwd = request
         .cwd
@@ -1077,6 +1103,12 @@ async fn start_session(
     ) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
+    plan_dsh_in_omp(
+        &mut launch,
+        request.mode.as_deref(),
+        &mut request.executor,
+        &mut request.executor_thinking,
+    );
     // Reject a bad mode or task now; the worker parses the mode again, because `Start` borrows
     // the request.
     if let Err(error) = crate::cards::Start::parse(
@@ -1711,9 +1743,13 @@ pub async fn serve(
             let result = tokio::task::spawn_blocking(move || {
                 let before = state.db.queue(last_poll_ms)?;
                 let mut tracker = state.tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let written = tracker.tick(&state.db).written
+                let mut written = tracker.tick(&state.db).written
                     + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written
                     + tracker.chase_missing_reports(&state.db, &state.launch).written;
+                drop(tracker);
+                // shortcut: the poll waits while a Plan into plan starts its dsh session, up to
+                // dsh::LAUNCH_TIMEOUT. Move it to a task of its own if those waits slow the inbox.
+                written += crate::cards::approve_plans_into_dsh(&state.db, &state.launch);
                 let after = state.db.queue(now_ms)?;
                 let previous: std::collections::HashSet<_> = before.iter().map(|card| card.id.as_str()).collect();
                 let added = after.iter().any(|card| !previous.contains(card.id.as_str()));

@@ -890,7 +890,8 @@
         rows()[0].click();
         await closed(executor, 'execution reset close');
         assert(executor.value === '', 'Default resets the executor');
-        // A dsh sheet offers no execution effort until it names an execution model.
+        // dsh offers Plan and Plan into with no execution fields. Its Model and Thinking name the
+        // session that carries the plan out.
         const engineField = document.querySelector('#compose-engine');
         engineField.click();
         await waitFor(() => picker.open, 'engine picker open on dsh');
@@ -900,35 +901,20 @@
         await closed(engineField, 'engine picker close');
         assert(engineField.value === 'dsh', 'the compose engine holds dsh');
         await waitFor(() => text('#compose-model').includes('Dsh Fast'), 'dsh models load');
-        assert(
-          text('#compose-executor-effort').includes('needs an execution model'),
-          'a dsh effort names the execution model it waits for',
-        );
-        effort.click();
-        await waitFor(() => picker.open, 'dsh execution effort picker open');
-        assert(rows().length === 1, 'the dsh execution effort lists only Default');
-        assert(
-          text('#picker-empty').includes('Nothing to choose'),
-          'the dsh effort picker says there is nothing to choose yet',
-        );
-        picker.close();
-        executor.click();
-        await waitFor(() => picker.open, 'dsh execution picker open');
-        setQuery('fast');
-        await waitFor(
-          () => rows().length === 2,
-          'dsh model query narrows to the model and its free-text row',
-        );
-        keydown(document.querySelector('#picker-search'), 'Enter');
-        await closed(executor, 'dsh execution picker close');
-        assert(executor.value === 'fixture/fast', 'the dsh executor holds the chosen model');
-        effort.click();
-        await waitFor(() => picker.open, 'dsh execution effort picker reopens');
-        setQuery('high');
-        await waitFor(() => rows().length === 1, 'the dsh model effort narrows to one row');
-        keydown(document.querySelector('#picker-search'), 'Enter');
-        await closed(effort, 'dsh execution effort picker close');
-        assert(effort.value === 'high', 'the dsh execution effort holds high');
+        document.querySelector('#compose-mode-plan').click();
+        assert(visible(document.querySelector('#compose-mode-plan')), 'dsh offers Plan');
+        assert(compose.querySelector('#compose-models').hidden, 'dsh Plan hides the execution fields');
+        assert(text('#compose-mode-help').includes('The plan arrives here for review'), 'dsh Plan waits for review');
+        document.querySelector('#compose-mode-plan-into').click();
+        assert(compose.querySelector('#compose-models').hidden, 'dsh Plan into hides the execution fields');
+        assert(text('#compose-mode-help').includes('without asking you'), 'dsh Plan into runs without review');
+        posted = null;
+        document.querySelector('#compose-prompt').value = 'fixture prompt dsh plan';
+        compose.querySelector('#compose-form').requestSubmit();
+        await waitFor(() => posted, 'dsh plan body posted');
+        assert(posted.engine === 'dsh' && posted.mode === 'plan-into', 'a dsh Plan into posts plan-into to dsh');
+        document.querySelector('#btn-compose').click();
+        await waitFor(() => compose.open, 'compose reopens after the dsh plan');
         engineField.click();
         await waitFor(() => picker.open, 'engine picker reopens');
         rows()[0].click();

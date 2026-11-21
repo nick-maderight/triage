@@ -166,6 +166,11 @@ const S = {
     'plan-into':
       'The planner drafts a plan read-only, the harness approves it without review, and the execution model carries it out at the execution effort chosen below.',
   };
+  // dsh has its own help line for each plan mode, because a dsh plan runs in an omp planner.
+  const DSH_MODES = {
+    plan: 'omp drafts the plan read-only on Opus. The plan arrives here for review. A dsh session carries out the plan you approve.',
+    'plan-into': 'omp drafts the plan read-only on Opus. A dsh session then carries it out without asking you.',
+  };
   // What a session is asked to do. The daemon keeps each task's direction text. The sheet
   // shows its help line, and the result message names the launch by its verb.
   const TASKS = {
@@ -2538,7 +2543,11 @@ const S = {
     if (!row) return;
     const changed = p.id.endsWith('-engine') && $(`#${p.id}`).value !== row.value;
     setPickerValue(p.id, row.value);
-    if (p.id === 'compose-engine') S.sheetEngine = row.value;
+    if (p.id === 'compose-engine') {
+      S.sheetEngine = row.value;
+      const c = sheetCard();
+      setSheetMode(c ? draft(c).dispatchMode : S.composeMode, c);
+    }
     if (p.id === 'plan-executor' && current()?.kind === 'plan') draft(current()).executor = row.value;
     if (p.id === 'plan-executor-effort' && current()?.kind === 'plan') draft(current()).executorThinking = row.value;
     $('#picker').close();
@@ -2939,11 +2948,16 @@ const S = {
   // Mode says how the session starts. Start sends the mode the sheet shows.
   function setSheetMode(mode, c = sheetCard()) {
     if (!Object.hasOwn(MODES, mode)) mode = 'goal';
+    // shortcut: a daemon whose default engine is dsh still shows the omp help lines and
+    // execution fields, which the daemon ignores, because this reads only the Engine field;
+    // resolve the default here once a daemon runs with --engine dsh.
+    const dsh = $('#compose-engine').value === 'dsh';
     if (c) draft(c).dispatchMode = mode;
     else S.composeMode = mode;
     selectSegment($('#compose-mode'), mode);
-    $('#compose-mode-help').textContent = MODES[mode];
-    $('#compose-models').hidden = mode !== 'plan-into';
+    $('#compose-mode-help').textContent = (dsh && DSH_MODES[mode]) || MODES[mode];
+    // dsh has no execution fields, because the sheet's Model and Thinking carry the plan out.
+    $('#compose-models').hidden = dsh || mode !== 'plan-into';
   }
   // Task says what the session is asked to do. A task the context does not offer falls back to Act.
   function setSheetTask(task, c = sheetCard()) {

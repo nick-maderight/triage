@@ -677,14 +677,21 @@ impl Db {
     }
 
     /// True when a swipe with reason `closed <pane>` was recorded at or after `since_ms`:
-    /// the user closed that pane from one of its cards. The time bound keeps a close of an
-    /// earlier tmux server's pane with the same id from matching.
+    /// the user closed that pane from one of its cards, or a plan card of that pane was
+    /// approved into a dsh session, which closes the planner's pane. The time bound keeps a
+    /// close of an earlier tmux server's pane with the same id from matching.
     pub(crate) fn pane_closed_since(&self, pane: &str, since_ms: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         Ok(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM events WHERE type = ?1 AND ts_ms >= ?2
-             AND json_extract(data, '$.reason') = ?3)",
-            params![crate::events::T_SWIPE, since_ms, format!("closed {pane}")],
+             AND (json_extract(data, '$.reason') = ?3
+                  OR (card_id GLOB ?4 AND json_extract(data, '$.reason') GLOB 'launched dsh:*')))",
+            params![
+                crate::events::T_SWIPE,
+                since_ms,
+                format!("closed {pane}"),
+                format!("plan:{pane}:*"),
+            ],
             |row| row.get(0),
         )?)
     }

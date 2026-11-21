@@ -97,6 +97,22 @@
     (should (equal (triage-launch--body) "Keep this"))
     (should (< (point) triage-launch--body-start))))
 
+(ert-deftest triage-launch-test-dsh-offers-both-plan-modes ()
+  "On dsh, Plan and Plan into show their dsh help lines and no execution options."
+  (with-temp-buffer
+    (triage-launch-test--sheet 'compose "goal" "fix")
+    (setq triage-launch--engine "dsh")
+    (triage-launch--set-mode "plan")
+    (triage-launch--draw)
+    (should (equal triage-launch--mode "plan"))
+    (should (string-match-p (regexp-quote triage-card-dsh-plan-help) (buffer-string)))
+    (triage-launch--set-mode "plan-into")
+    (triage-launch--draw)
+    (should (equal triage-launch--mode "plan-into"))
+    (should-not (triage-launch--offers-p "x"))
+    (should-not (triage-launch--offers-p "X"))
+    (should (string-match-p (regexp-quote triage-card-dsh-plan-into-help) (buffer-string)))))
+
 (ert-deftest triage-launch-test-engine-takes-one-key ()
   "The fixed Engine choices accept one mnemonic key instead of a completion prompt."
   (with-temp-buffer

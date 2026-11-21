@@ -440,6 +440,48 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh() {
+    if run_with_fake_tmux_child("server::tests::new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh") {
+        return;
+    }
+    let directory = TestDir::new("triage-session-dsh-plan");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let state = state(db, None);
+    for (mode, auto) in [("plan-into", true), ("plan", false)] {
+        // The dsh execution fields are dropped: the planner runs on the omp planning model.
+        let request = super::SessionRequest {
+            prompt: "Prepare a plan.".to_owned(),
+            cwd: Some("/tmp".to_owned()),
+            session: None,
+            model: Some("deepseek-v4-pro".to_owned()),
+            thinking: None,
+            mode: Some(mode.to_owned()),
+            task: None,
+            note: None,
+            executor: Some("deepseek-flash".to_owned()),
+            executor_thinking: Some("max".to_owned()),
+            engine: Some("dsh".to_owned()),
+            image: None,
+        };
+        let response =
+            super::start_session(axum::extract::State(Arc::clone(&state)), axum::Json(request)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{mode}");
+        let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
+        args.push(".args");
+        let calls = std::fs::read_to_string(&args).unwrap();
+        let window = calls.lines().rfind(|line| line.starts_with("new-window")).unwrap();
+        assert!(window.contains("--model=@opus --plan=@opus:xhigh --thinking=xhigh"), "{window}");
+        assert!(window.contains("--config") && !window.contains("--plan-yolo"), "{window}");
+        let tag = calls
+            .lines()
+            .rfind(|line| line.starts_with("set-option -p -t") && line.contains("@triage_dsh_into"))
+            .unwrap();
+        assert!(tag.ends_with(&format!(r#"@triage_dsh_into ["deepseek-v4-pro",null,{auto}]"#)), "{tag}");
+    }
+}
+
 // An Org heading or a mail thread sent from Emacs opens Triage Dispatch. A request with a note
 // dispatches its prompt as context in the mode and task it names.
 #[cfg(unix)]
@@ -708,8 +750,6 @@ async fn new_session_rejects_plan_into_effort_the_engine_cannot_take() {
         })
     };
     for (engine, executor, effort) in [
-        ("dsh", Some("deepseek-flash"), Some("medium")),
-        ("dsh", None, Some("low")),
         ("omp", Some("provider/executor"), Some("sideways")),
     ] {
         let response = super::start_session(
@@ -1921,15 +1961,6 @@ async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
         http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","executor_thinking":"low"}"#).await;
     assert_eq!(effort_outside.status, StatusCode::BAD_REQUEST);
     assert_eq!(effort_outside.body["error"], "executor thinking needs mode plan-into");
-    let dsh_effort_alone = http_request(
-        address,
-        "POST",
-        &path,
-        r#"{"mode":"plan-into","engine":"dsh","executor_thinking":"low"}"#,
-    )
-    .await;
-    assert_eq!(dsh_effort_alone.status, StatusCode::BAD_REQUEST);
-    assert_eq!(dsh_effort_alone.body["error"], "execution effort needs an execution model");
     let bad_effort = http_request(
         address,
         "POST",
@@ -3153,11 +3184,11 @@ async fn new_session_refuses_a_bad_mode_before_it_waits_for_the_launch() {
         address,
         "POST",
         "/v1/sessions",
-        r#"{"prompt":"Reply pong.","engine":"dsh","mode":"plan-into","executor_thinking":"max"}"#,
+        r#"{"prompt":"Reply pong.","engine":"omp","mode":"plan","executor_thinking":"max"}"#,
     )
     .await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    assert_eq!(response.body["error"], "execution effort needs an execution model");
+    assert_eq!(response.body["error"], "executor thinking needs mode plan-into");
     server.abort();
 }
 

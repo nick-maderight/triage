@@ -260,6 +260,25 @@ test('the sheet offers every mode, and every task but Investigate for a finding 
   assert.equal(ui.task(), 'act', 'an answered finding falls back to Act');
 });
 
+// A dsh plan runs in an omp planner. Plan waits for review and Plan into runs without one. Both
+// hide the omp execution fields, because the dsh Model and Thinking carry the plan out.
+test('dsh offers Plan and Plan into, each with its dsh help line and no execution fields', () => {
+  const ui = sheet([report, finding]);
+  ui.context.openSheet(null, 'goal', 'fix');
+  ui.elements['#compose-engine'].value = 'dsh';
+  ui.context.setSheetMode('plan');
+  assert.equal(ui.state.composeMode, 'plan');
+  assert.equal(ui.elements['#compose-models'].hidden, true);
+  assert.match(ui.elements['#compose-mode-help'].textContent, /The plan arrives here for review/);
+  ui.context.setSheetMode('plan-into');
+  assert.equal(ui.state.composeMode, 'plan-into');
+  assert.equal(ui.elements['#compose-models'].hidden, true);
+  assert.match(ui.elements['#compose-mode-help'].textContent, /without asking you/);
+  ui.elements['#compose-engine'].value = 'omp';
+  ui.context.setSheetMode('plan-into');
+  assert.equal(ui.elements['#compose-models'].hidden, false);
+});
+
 test('the sheet opens on the engine of the card session, and on the last pick for a card without one', () => {
   const ui = sheet([dshReport, report, finding]);
   ui.context.openSheet(dshReport, 'goal', 'investigate');

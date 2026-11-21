@@ -221,6 +221,7 @@ new-window)
     printf '%%42\n'
     ;;
 set-option)
+    if [ "$5" = '@triage_dsh_into' ]; then printf '%s\n' "$6" > "$HOME/tmux-into-$4"; exit 0; fi
     if [ -f "$HOME/tmux-fail-first-tag" ] && [ ! -f "$HOME/tmux-tag-failed" ]; then
         : > "$HOME/tmux-tag-failed"
         exit 1
@@ -230,6 +231,9 @@ set-option)
 kill-pane)
     if [ -f "$HOME/tmux-fail-kill" ]; then exit 1; fi
     if [ -f "$HOME/tmux-gone-pane" ]; then printf 'can'\''t find pane: %s\n' "$3" >&2; exit 1; fi
+    ;;
+display)
+    if [ "$5" = '#{@triage_dsh_into}' ] && [ -f "$HOME/tmux-into-$4" ]; then /bin/cat "$HOME/tmux-into-$4"; fi
     ;;
 *) exit 0 ;;
 esac
@@ -4215,6 +4219,203 @@ fn plan_card_dispatch_opens_a_window_and_keeps_the_review_card() {
     );
 }
 
+// A dsh plan starts an omp planner. The planner's pane is tagged with the dsh model and effort
+// that run the approved plan, plus whether the daemon approves the plan without review.
+#[cfg(unix)]
+#[test]
+fn dsh_plan_opens_an_omp_planner_tagged_with_the_dsh_choice() {
+    if let Some(root) = child_root("dsh_plan_opens_an_omp_planner_tagged_with_the_dsh_choice") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let base = Launch {
+            engine: Engine::Dsh,
+            model: Some("deepseek-v4-pro".to_owned()),
+            thinking: Some("high".to_owned()),
+            session: Some("session".to_owned()),
+            ..Launch::default()
+        };
+        for (start, auto) in [(Start::Plan, false), (Start::PlanInto(None, None), true)] {
+            let pane = start_session(
+                &db,
+                "Fix the login redirect",
+                root.to_str().unwrap(),
+                &base.dsh_planner(auto),
+                start,
+                Task::Fix,
+                None,
+            );
+            assert_eq!(pane, Ok("%42".to_owned()));
+            let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+            let window = log
+                .lines()
+                .rfind(|line| line.starts_with("new-window "))
+                .unwrap_or_default();
+            assert!(
+                window.contains("omp --config '")
+                    && window.contains(
+                        "--model=@opus --plan=@opus:xhigh --thinking=xhigh 'Fix the login redirect' @'"
+                    )
+                    && !window.contains("--plan-yolo"),
+                "{window}"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("tmux-into-%42")).unwrap().trim(),
+                format!(r#"["deepseek-v4-pro","high",{auto}]"#)
+            );
+            let brief = window.rsplit("@'").next().unwrap().trim_end_matches('\'');
+            let brief = fs::read_to_string(brief).unwrap();
+            assert!(!brief.contains("working_directory"));
+            assert_eq!(brief.contains(PLAN_INTO_STEP), auto);
+        }
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "dsh_plan_opens_an_omp_planner_tagged_with_the_dsh_choice",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn approving_a_dsh_plan_hands_the_plan_file_to_a_dsh_session() {
+    if let Some(root) = child_root("approving_a_dsh_plan_hands_the_plan_file_to_a_dsh_session") {
+        fs::write(root.join("tmux-plan-review"), b"").unwrap();
+        fs::write(root.join("tmux-into-%12"), br#"["deepseek-v4-pro","high",false]"#).unwrap();
+        let plan_path = root.join("dsh-plan.md");
+        fs::write(&plan_path, "# Fix the redirect\n\n1. Edit the redirect.\n").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let planner = pane(&root, "%12", "/dev/pts/12", "π > session");
+        let mut plan = plan_card(&planner, 0);
+        plan.engine = Some("dsh".to_owned());
+        plan.refs = vec![plan_path.display().to_string()];
+        db.insert_card(&plan).unwrap();
+        let bridge = FakeBridge::start(&root);
+        let launch = bridge.launch();
+        let result = answer(&db, &plan, &answer_req(0, None), &launch, None);
+        assert!(result.is_ok(), "{result:?}");
+        let launches = bridge.posts("/v1/launch");
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0]["mode"], "goal");
+        assert_eq!(launches[0]["model"], "deepseek-v4-pro");
+        assert_eq!(launches[0]["effort"], "high");
+        assert!(launches[0].get("executor").is_none(), "{}", launches[0]);
+        let prompt = launches[0]["prompt"].as_str().unwrap();
+        let brief_path = prompt
+            .split("Read the brief at ")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .trim_end_matches(['.', '\'', '"', '`']);
+        let brief = fs::read_to_string(brief_path).unwrap();
+        assert!(brief.contains("Carry out this approved plan") && brief.contains("1. Edit the redirect."), "{brief}");
+        let swipe = current_swipe(&db, &plan.id);
+        assert_eq!(swipe.action, "done");
+        assert_eq!(swipe.option, Some(0));
+        assert_eq!(swipe.reason.as_deref(), Some("launched dsh:session-new"));
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+        assert!(!keys.contains("Enter"), "{keys}");
+        assert!(log.contains("kill-pane -t %12"), "{log}");
+        assert!(db.pane_closed_since("%12", 0).unwrap());
+
+        // The approval's own model and effort replace the tag's.
+        let mut second = plan_card(&planner, 1);
+        second.engine = Some("dsh".to_owned());
+        second.refs = vec![plan_path.display().to_string()];
+        db.insert_card(&second).unwrap();
+        let overridden = AnswerReq {
+            option: Some(0),
+            executor: Some("deepseek-flash".to_owned()),
+            executor_thinking: Some("max".to_owned()),
+            ..AnswerReq::default()
+        };
+        assert_eq!(answer(&db, &second, &overridden, &launch, None), Ok(()));
+        let launches = bridge.posts("/v1/launch");
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[1]["model"], "deepseek-flash");
+        assert_eq!(launches[1]["effort"], "max");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "approving_a_dsh_plan_hands_the_plan_file_to_a_dsh_session",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+// For dsh Plan into the daemon approves the planner's plan itself. A Plan planner's card waits
+// for review. A hand-off that fails leaves its card queued and clears the flag, which keeps
+// the next poll from retrying it.
+#[cfg(unix)]
+#[test]
+fn the_daemon_approves_a_dsh_plan_into_plan_without_review() {
+    if let Some(root) = child_root("the_daemon_approves_a_dsh_plan_into_plan_without_review") {
+        fs::write(root.join("tmux-plan-review"), b"").unwrap();
+        let plan_path = root.join("dsh-plan.md");
+        fs::write(&plan_path, "# Fix the redirect\n\n1. Edit the redirect.\n").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut plans = Vec::new();
+        for (id, tty, auto, plan_file) in [
+            ("%12", "/dev/pts/12", true, plan_path.clone()),
+            ("%13", "/dev/pts/9013", false, plan_path.clone()),
+            ("%14", "/dev/pts/9014", true, root.join("missing-plan.md")),
+        ] {
+            fs::write(
+                root.join(format!("tmux-into-{id}")),
+                format!(r#"["deepseek-v4-pro","high",{auto}]"#),
+            )
+            .unwrap();
+            let mut plan = plan_card(&pane(&root, id, tty, "π > session"), 0);
+            plan.engine = Some("dsh".to_owned());
+            plan.refs = vec![plan_file.display().to_string()];
+            db.insert_card(&plan).unwrap();
+            plans.push(plan);
+        }
+        let bridge = FakeBridge::start(&root);
+        let launch = bridge.launch();
+        assert_eq!(approve_plans_into_dsh(&db, &launch), 1);
+        let launches = bridge.posts("/v1/launch");
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0]["model"], "deepseek-v4-pro");
+        assert_eq!(launches[0]["effort"], "high");
+        assert_eq!(
+            current_swipe(&db, &plans[0].id).reason.as_deref(),
+            Some("launched dsh:session-new")
+        );
+        let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
+        assert!(log.contains("kill-pane -t %12"), "{log}");
+        assert!(!log.contains("kill-pane -t %13") && !log.contains("kill-pane -t %14"), "{log}");
+        assert!(db.card(&plans[1].id).unwrap().unwrap().1.is_none());
+        assert!(db.card(&plans[2].id).unwrap().unwrap().1.is_none());
+        assert_eq!(
+            fs::read_to_string(root.join("tmux-into-%14")).unwrap().trim(),
+            r#"["deepseek-v4-pro","high",false]"#
+        );
+        assert_eq!(approve_plans_into_dsh(&db, &launch), 0);
+        assert_eq!(bridge.posts("/v1/launch").len(), 1);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "the_daemon_approves_a_dsh_plan_into_plan_without_review",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn finding_answer_opens_new_window_and_leaves_idle_dispatched_window_alone() {
@@ -4609,7 +4810,8 @@ fn plan_into_dispatch_opens_a_new_window_even_when_the_source_pane_waits() {
         assert!(brief_text.contains(PLAN_INTO_INSTRUCTION));
         assert!(brief_text.contains(ENVOY_STATUS_CONTRACT));
         assert!(brief_text.contains("plan it"));
-        assert!(brief_text.ends_with(&format!("\n{PLAN_REPORT_STEP}\n")));
+        assert!(brief_text.ends_with(&plan_handoff(Start::PlanInto(None, None))));
+        assert!(brief_text.contains(PLAN_INTO_STEP));
         assert_eq!(swipe.text.as_deref(), Some("Plan into + Act"));
         assert_eq!(swipe.reason.as_deref(), Some("launched %42"));
         return;
@@ -4862,6 +5064,7 @@ fn plan_refine_refuses_a_review_that_approved_instead_of_refining() {
                       ╰────────────────╯\n";
         fs::write(screens.join("0"), review).unwrap();
         fs::write(screens.join("1"), review).unwrap();
+        fs::write(screens.join("2"), review).unwrap();
         fs::write(screens.join("rest"), "complete\n").unwrap();
         let card = plan_card(&pane, 0);
         db.insert_card(&card).unwrap();
@@ -4894,6 +5097,60 @@ fn plan_refine_refuses_a_review_that_approved_instead_of_refining() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "plan_refine_refuses_a_review_that_approved_instead_of_refining",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_refine_without_a_refine_row_escapes_then_types_the_note() {
+    if let Some(root) = child_root("plan_refine_without_a_refine_row_escapes_then_types_the_note") {
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
+        let screens = root.join("tmux-capture-seq");
+        fs::create_dir_all(&screens).unwrap();
+        // omp 19.1 lists Refine plan only once the review carries comments.
+        let review = "╭─ Plan Review ─╮\n\
+                      ├────────────────╮\n\
+                      │   Approve and execute │\n\
+                      │ ❯ Approve and keep context (~8k / 1m) │\n\
+                      │   Save │\n\
+                      ├────────────────╮\n\
+                      │ ↑/↓ select · ⎋ cancel │\n\
+                      ╰────────────────╯\n";
+        fs::write(screens.join("0"), review).unwrap();
+        fs::write(screens.join("1"), review).unwrap();
+        fs::write(screens.join("rest"), "⬢ Opus 5.5 · ◕ xhigh · 🗺 Plan · 🗑 scratch\n").unwrap();
+        let card = plan_card(&pane, 0);
+        db.insert_card(&card).unwrap();
+
+        let result = answer(
+            &db,
+            &card,
+            &AnswerReq {
+                option: Some(1),
+                text: Some("Add a rollback step".to_owned()),
+                ..AnswerReq::default()
+            },
+            &Launch::default(),
+            None,
+        );
+        let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
+
+        assert!(result.is_ok(), "{result:?}\n{keys}");
+        let escape = keys.find("Escape").unwrap_or_else(|| panic!("no Escape sent: {keys}"));
+        let note = keys.find("Add a rollback step").unwrap_or_else(|| panic!("note not sent: {keys}"));
+        assert!(escape < note, "{keys}");
+        assert!(!keys.contains("Down") && !keys.contains("Up"), "{keys}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "plan_refine_without_a_refine_row_escapes_then_types_the_note",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -5419,11 +5676,8 @@ fn execution_effort_belongs_to_each_engine() {
     );
     assert_eq!(executor_effort(Engine::Omp, None), Ok(None));
     assert_eq!(executor_effort(Engine::Dsh, Some("  ")), Ok(None));
-    assert_eq!(plan_into_choices(Engine::Omp, None, Some("medium")), Ok(()));
-    assert_eq!(
-        plan_into_choices(Engine::Dsh, None, Some("low")),
-        Err("execution effort needs an execution model".to_owned())
-    );
+    assert_eq!(plan_into_choices(None, Some("medium")), Ok(()));
+    assert_eq!(plan_into_choices(Some("@opus"), None), Ok(()));
 }
 
 #[test]
@@ -5746,6 +6000,140 @@ fn tracker_creates_plan_card_and_reconciles_closed_and_superseded_proposals() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "tracker_creates_plan_card_and_reconciles_closed_and_superseded_proposals",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged() {
+    if let Some(root) =
+        child_root("tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged")
+    {
+        let transcript = root.join("session.jsonl");
+        let lines = include_str!("../../tests/fixtures/transcript_propose.jsonl")
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let local = root.join("session").join("local");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(local.join("planverify-proof-plan.md"), "Deploy in order.").unwrap();
+        fs::write(local.join("second-plan.md"), "Second plan.").unwrap();
+        write_transcript(&root, "/dev/pts/12", &transcript, &lines);
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        fs::write(root.join("tmux-plan-review"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+
+        tracker.tick(&db);
+        let plain = db.card("plan:%12:toolu_bdrk_01F9sZDXkT5zNBmzjiCthZTN").unwrap().unwrap().0;
+        assert_eq!(plain.engine, None);
+        assert!(plain.refs.is_empty());
+        assert_eq!(plain.options[0].description, None);
+
+        // The planner was launched for dsh, so its next proposal is a dsh plan.
+        fs::write(root.join("tmux-into-%12"), br#"["deepseek-v4-pro",null,false]"#).unwrap();
+        let second_call = serde_json::json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "toolCall", "id": "plan-call-2", "name": "write", "arguments": {"path": "xd://propose", "content": "second plan"}}]
+                }
+            })
+            .to_string();
+        let second_result = serde_json::json!({
+                "type": "message",
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": "plan-call-2",
+                    "details": {"xdev": {"inner": {"title": "second-plan", "planFilePath": "local://second-plan.md"}}}
+                }
+            })
+            .to_string();
+        let mut newer_lines = lines;
+        newer_lines.push(second_call);
+        newer_lines.push(second_result);
+        write_transcript(&root, "/dev/pts/12", &transcript, &newer_lines);
+
+        tracker.tick(&db);
+        let dsh_plan = db.card("plan:%12:plan-call-2").unwrap().unwrap().0;
+        assert_eq!(dsh_plan.engine.as_deref(), Some("dsh"));
+        assert_eq!(dsh_plan.refs.len(), 1);
+        assert!(dsh_plan.refs[0].ends_with("second-plan.md"), "{:?}", dsh_plan.refs);
+        assert_eq!(
+            dsh_plan.options[0].description.as_deref(),
+            Some("A dsh session carries out the plan.")
+        );
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn tracker_reports_a_plan_review_it_cannot_turn_into_a_card() {
+    if let Some(root) = child_root("tracker_reports_a_plan_review_it_cannot_turn_into_a_card") {
+        let transcript = root.join("session.jsonl");
+        // omp proposed through a result shape the tracker does not know, so no proposal parses.
+        let lines = vec![serde_json::json!({
+            "type": "message",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "Plan ready."}]}
+        })
+        .to_string()];
+        let local = root.join("session").join("local");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(local.join("lost-plan.md"), "Lost plan.").unwrap();
+        write_transcript(&root, "/dev/pts/12", &transcript, &lines);
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        let db = Db::open(&root.join("triage.db")).unwrap();
+        let mut tracker = Tracker::default();
+        let unreadable = |db: &Db| {
+            db.queue(events::now_ms())
+                .unwrap()
+                .into_iter()
+                .filter(|card| card.id.starts_with("plan-unreadable:%12:"))
+                .collect::<Vec<_>>()
+        };
+
+        // An idle pane that shows no review raises nothing.
+        fs::write(root.join("tmux-idle-screen"), b"").unwrap();
+        for _ in 0..12 {
+            tracker.tick(&db);
+        }
+        assert!(unreadable(&db).is_empty());
+
+        // The pane works, then settles again with a review on screen.
+        fs::remove_file(root.join("tmux-idle-screen")).unwrap();
+        fs::write(root.join("tmux-plan-review"), b"").unwrap();
+        fs::remove_file(root.join("tmux-waiting")).unwrap();
+        fs::write(root.join("tmux-working"), b"").unwrap();
+        tracker.tick(&db);
+        fs::remove_file(root.join("tmux-working")).unwrap();
+        fs::write(root.join("tmux-waiting"), b"").unwrap();
+        for _ in 0..12 {
+            tracker.tick(&db);
+        }
+        let cards = unreadable(&db);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        assert_eq!(cards[0].kind, Kind::Info);
+        assert!(cards[0].refs[0].ends_with("lost-plan.md"), "{:?}", cards[0].refs);
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "tracker_reports_a_plan_review_it_cannot_turn_into_a_card",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -6757,14 +7145,14 @@ fn reused_pane_id_closes_old_pane_card_as_exited() {
             &transcript,
             &[assistant_text_line("a1", "The new pane's own reply.")],
         );
-        fs::write(root.join("tmux-second-pane"), b"").unwrap();
         // The second pane's tty is fake and far above any real pty, so a pty the first pane
         // gets from the kernel can never share its breadcrumb.
-        fs::write(root.join("tmux-tty-13"), b"/dev/pts/9514\n").unwrap();
+        fs::write(root.join("tmux-second-pane"), b"").unwrap();
+        fs::write(root.join("tmux-tty-13"), b"/dev/pts/9013\n").unwrap();
         let transcript13 = root.join("transcript-13.jsonl");
         write_transcript(
             &root,
-            "/dev/pts/9514",
+            "/dev/pts/9013",
             &transcript13,
             &[assistant_text_line("e1", "Second pane reply.")],
         );
@@ -8306,45 +8694,6 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
 }
 
 #[test]
-fn dsh_session_launch_posts_plan_into_with_its_model_effort_and_executor() {
-    let scratch = Scratch::new();
-    let db = dsh_db(&scratch);
-    let bridge = FakeBridge::start(scratch.path());
-    let launch = Launch {
-        model: Some("deepseek-v4-pro".to_owned()),
-        thinking: Some("high".to_owned()),
-        ..bridge.launch()
-    };
-    let pane = start_session(
-        &db,
-        "Write the report\nwith detail",
-        "/work/project",
-        &launch,
-        Start::PlanInto(Some("deepseek-flash"), Some("max")),
-        Task::Act,
-    None,
-    );
-    assert_eq!(pane, Ok("dsh:session-new".to_owned()));
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    let body = &launches[0];
-    assert_eq!(body["cwd"], "/work/project");
-    // dsh names a plan session from the brief prompt, which opens with the task, so the
-    // launch carries no title that would pin the row to triage's own clip.
-    assert!(body.get("title").is_none(), "{body}");
-    assert_eq!(body["model"], "deepseek-v4-pro");
-    assert_eq!(body["effort"], "high");
-    assert_eq!(body["mode"], "plan-into");
-    assert_eq!(body["executor"], "deepseek-flash");
-    assert_eq!(body["executorEffort"], "max");
-    assert!(body.get("sessionId").is_none(), "{body}");
-    assert!(
-        body["prompt"].as_str().is_some_and(|prompt| prompt.starts_with("Write the report: Read the brief at ") && prompt.ends_with(" and carry it out.")),
-        "{body}"
-    );
-}
-
-#[test]
 fn dsh_goal_launch_names_the_session_itself() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
@@ -8694,12 +9043,12 @@ fn dsh_next_step_dispatch_continues_the_cards_session() {
     assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
 
     let card = dsh_card(&db, &format!("done:dsh:{SID}:5"), Kind::Info);
-    dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, true).unwrap();
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    assert_eq!(launches[0]["sessionId"], SID);
-    assert_eq!(launches[0]["mode"], "plan");
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+    let error = dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, true)
+        .unwrap_err();
+    // A dsh plan runs in an omp planner. The server routes it there before this dispatch.
+    assert_eq!(error, "a dsh session starts in goal mode");
+    assert_eq!(bridge.posts("/v1/launch").len(), 0);
+    assert_eq!(swipe_reason(&db, &card.id), None);
 }
 
 #[test]
@@ -8753,58 +9102,6 @@ fn dsh_dispatch_carries_the_image() {
     assert_eq!(prompts[1]["image"]["mediaType"], "image/png");
     assert_eq!(prompts[1]["image"]["data"], "iVBORw0KGgo=");
     assert!(bridge.posts("/v1/launch").is_empty());
-}
-
-#[test]
-fn dsh_plan_on_an_idle_session_relaunches_it_in_plan_mode() {
-    let scratch = Scratch::new();
-    let db = dsh_db(&scratch);
-    let bridge = FakeBridge::start(scratch.path());
-    bridge.edit(|data| data.sessions = vec![session(4)]);
-    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, false).unwrap();
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    assert_eq!(launches[0]["sessionId"], SID);
-    assert_eq!(launches[0]["mode"], "plan");
-    assert!(bridge.posts("/v1/prompt").is_empty());
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
-}
-
-#[test]
-fn dsh_plan_into_dispatch_relaunches_an_idle_session() {
-    let scratch = Scratch::new();
-    let db = dsh_db(&scratch);
-    let bridge = FakeBridge::start(scratch.path());
-    bridge.edit(|data| data.sessions = vec![session(4)]);
-    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::PlanInto(Some("deepseek-flash"), None), Task::Act, None, &bridge.launch(), None, false).unwrap();
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    assert_eq!(launches[0]["sessionId"], SID);
-    assert_eq!(launches[0]["mode"], "plan-into");
-    assert_eq!(launches[0]["executor"], "deepseek-flash");
-    assert!(bridge.posts("/v1/prompt").is_empty());
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
-}
-
-#[test]
-fn dsh_plan_into_dispatch_starts_a_new_session_when_the_card_session_runs() {
-    let scratch = Scratch::new();
-    let db = dsh_db(&scratch);
-    let bridge = FakeBridge::start(scratch.path());
-    bridge.edit(|data| {
-        data.sessions = vec![session(4)];
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
-    });
-    let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::PlanInto(Some("deepseek-flash"), None), Task::Act, None, &bridge.launch(), None, false).unwrap();
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
-    assert_eq!(launches[0]["mode"], "plan-into");
-    assert_eq!(launches[0]["executor"], "deepseek-flash");
-    assert!(bridge.posts("/v1/prompt").is_empty());
 }
 
 #[test]
@@ -9006,7 +9303,7 @@ fn dsh_dispatch_reports_a_failed_state_read_and_starts_no_session() {
 }
 
 #[test]
-fn dsh_plan_on_a_running_session_starts_a_new_session() {
+fn dsh_plan_on_a_running_session_is_refused_because_dsh_starts_in_goal_mode() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
@@ -9015,11 +9312,10 @@ fn dsh_plan_on_a_running_session_starts_a_new_session() {
         data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, false).unwrap();
-    let launches = bridge.posts("/v1/launch");
-    assert_eq!(launches.len(), 1);
-    assert!(launches[0].get("sessionId").is_none(), "{launches:?}");
-    assert_eq!(launches[0]["mode"], "plan");
+    let error = dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, false)
+        .unwrap_err();
+    assert_eq!(error, "a dsh session starts in goal mode");
+    assert!(bridge.posts("/v1/launch").is_empty());
     assert!(bridge.posts("/v1/prompt").is_empty());
 }
 
@@ -9442,23 +9738,3 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     assert!(brief.find("## Working directory") < brief.find("## References"), "{brief}");
 }
 
-#[test]
-fn dsh_plan_on_an_existing_session_archives_nothing_when_the_launch_fails() {
-    let scratch = Scratch::new();
-    let db = dsh_db(&scratch);
-    let bridge = FakeBridge::start(scratch.path());
-    bridge.edit(|data| {
-        data.sessions.push(session(5));
-        data.launch_error = Some("plan mode did not turn on".to_owned());
-    });
-    let card = dsh_card(&db, "plan-on-live", Kind::Info);
-    let brief = scratch.path().join("brief.md");
-    fs::write(&brief, "# Plan\n").unwrap();
-    // The session was the card's before the launch. Failing to start a plan in it must
-    // not archive the session the user already had.
-    assert_eq!(
-        super::dsh_track::launch_brief(&card, &bridge.launch(), &brief, Start::Plan, None),
-        Err("plan mode did not turn on".to_owned())
-    );
-    assert!(bridge.posts("/v1/archive").is_empty());
-}

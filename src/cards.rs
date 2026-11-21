@@ -23,6 +23,9 @@ pub struct Tracker {
     pending_ask_ids: HashMap<String, String>,
     pending_ask_cache: HashMap<String, CachedAsk>,
     pending_proposals: HashMap<String, u32>,
+    /// Pane id -> ticks since an omp pane settled with no proposal the tracker can read. A
+    /// plan review still on screen when the count ends becomes an inbox card.
+    review_watch: HashMap<String, u32>,
     proposal_cache: HashMap<String, CachedProposals>,
     pending_panes: HashSet<String>,
     exit_scans: HashMap<String, CachedExit>,
@@ -135,6 +138,7 @@ impl Tracker {
             pending_ask_ids: HashMap::new(),
             pending_ask_cache: HashMap::new(),
             pending_proposals: HashMap::new(),
+            review_watch: HashMap::new(),
             proposal_cache: HashMap::new(),
             pending_panes,
             exit_scans: HashMap::new(),
@@ -485,6 +489,22 @@ impl Tracker {
                 self.states.remove(&pane.id);
                 continue;
             }
+            // A plan review can open with no proposal the tracker can read, so a pane that
+            // settles without one gets a short watch for a review it fails to turn into a card.
+            if pane.command != "omp" || state != PaneState::Waiting {
+                self.review_watch.remove(&pane.id);
+            } else if previous != Some(PaneState::Waiting)
+                && self.proposal_cache.get(&pane.id).is_none_or(|cached| cached.proposals.is_empty())
+            {
+                self.review_watch.entry(pane.id.clone()).or_insert(0);
+            }
+            if let Some(ticks) = self.review_watch.get_mut(&pane.id) {
+                *ticks += 1;
+                if *ticks >= 10 {
+                    self.review_watch.remove(&pane.id);
+                    report_unreadable_plan_review(db, pane, &mut written);
+                }
+            }
             if proposal_changed {
                 self.pending_proposals.insert(pane.id.clone(), 0);
             }
@@ -500,6 +520,7 @@ impl Tracker {
                     *tries += 1;
                     if *tries >= 10 {
                         self.pending_proposals.remove(&pane.id);
+                        report_unreadable_plan_review(db, pane, &mut written);
                     }
                 }
             } else {
@@ -606,6 +627,7 @@ impl Tracker {
             self.held_info.remove(&pane);
             self.paused_info.remove(&pane);
             self.pending_proposals.remove(&pane);
+            self.review_watch.remove(&pane);
             self.proposal_cache.remove(&pane);
             // Information cards are swept once per vanish. A retried audit skips the sweep,
             // which keeps the card its first run raised.
@@ -814,7 +836,7 @@ fn target_lock(db: &Db, card: &Card) -> Option<std::sync::Arc<std::sync::Mutex<(
 ///   then type the text), press Enter, re-capture and require the dialog gone.
 ///   Record the swipe with reason `typed`. Any mismatch returns Err and writes nothing.
 /// - info: swipe done.
-/// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval, or confirms the overlay's own `Refine plan` row and then sends the note as literal text, and stores the choice in the swipe.
+/// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval. For a refine it confirms the overlay's `Refine plan` row when the review offers one, else it sends Escape; once the overlay closes it sends the note as literal text, and stores the choice in the swipe.
 /// `launch` names the harness, tmux session, model and thinking level a launched session uses.
 pub fn answer(
     db: &Db,
@@ -865,7 +887,7 @@ pub enum Start<'a> {
     Plan,
     /// `--plan-yolo`. omp approves the plan itself and hands it to this execution model,
     /// or to its `smol` role when unset. The effort names the execution model's own level:
-    /// omp appends it to the selector, and dsh applies it at approval.
+    /// omp appends it to the selector.
     PlanInto(Option<&'a str>, Option<&'a str>),
 }
 
@@ -1234,8 +1256,10 @@ fn session_id(path: &str) -> Option<String> {
 /// Launch a session from free text. Returns the new omp pane id, or `dsh:<sid>` for a dsh session.
 /// The session's asks and final report reach the inbox through the tracker like any other pane.
 /// A plan launch starts in read-only plan mode and a plan-into launch hands its plan to the
-/// execution model without review. Every other session starts in goal mode with an objective
-/// that names the brief. `task` picks the direction the brief carries.
+/// execution model without review. A dsh plan runs as an omp plan launch through
+/// `Launch::dsh_planner`, so a dsh session only ever starts in goal mode. Every other session
+/// starts in goal mode with an objective that names the brief. `task` picks the direction the
+/// brief carries.
 pub fn start_session(
     db: &Db,
     prompt: &str,
@@ -1284,34 +1308,28 @@ fn launch_text(
         return Err("prompt is empty".to_owned());
     }
     if launch.engine == Engine::Dsh {
-        engine_flags(Engine::Dsh, launch.model.as_deref(), launch.thinking.as_deref())?;
-        if let Start::PlanInto(executor, effort) = start {
-            plan_into_choices(Engine::Dsh, executor, effort)?;
+        if start != Start::Goal {
+            return Err("a dsh session starts in goal mode".to_owned());
         }
+        engine_flags(Engine::Dsh, launch.model.as_deref(), launch.thinking.as_deref())?;
         let path = write_brief(db, brief(workspace_workdir(launch, cwd)))?;
         let title = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
-        return dsh_track::launch_new(launch, cwd, &path, title, start, image);
+        return dsh_track::launch_new(launch, cwd, &path, title, image);
     }
     // Validate before writing the brief so a bad choice leaves nothing behind.
     launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
     if let Start::PlanInto(executor, effort) = start {
-        plan_into_choices(Engine::Omp, executor, effort)?;
+        plan_into_choices(executor, effort)?;
     }
     let path = write_brief(db, brief(None))?;
-    let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
     let command = omp_command(
         &path,
         launch.model.as_deref(),
         launch.thinking.as_deref(),
-        start,
+        omp_start(launch, start),
         image,
     )?;
-    tmux::new_window(session, cwd, &command).map_err(|error| error.to_string())
-}
-
-/// Whether a launch has a plan to review, which adds the plan report section to its brief.
-fn plans_for_review(start: Start) -> bool {
-    matches!(start, Start::Plan | Start::PlanInto(..))
+    open_window(launch, cwd, &command)
 }
 
 /// The prompt a session gets for a brief. Every dispatch reads the brief, which holds the
@@ -1320,14 +1338,15 @@ fn dispatch_prompt(brief: &Path) -> String {
     format!("Read the brief at {} and carry it out.", brief.display())
 }
 
-/// An info card's dsh brief always goes to its session. For omp, type into the source pane only
-/// when it waits for input. Otherwise open a new omp window in the daemon's launch session and
-/// never take a window another launch left behind. A new window starts in omp goal mode with an
-/// objective that names the brief, except a plan dispatch, which starts in read-only plan mode,
-/// and a plan-into dispatch, which runs `--plan-yolo` and hands the approved plan to the execution
-/// model. A waiting source pane keeps its own modes and receives the brief as typed text, except
-/// that a plan-into dispatch always opens a new window, because only launch flags turn plan-yolo
-/// on. A caller that asks for `new_window` opens a window of its own instead.
+/// An info card's dsh brief always goes to its session, which only takes goal briefs. For omp,
+/// type into the source pane only when it waits for input. Otherwise open a new omp window in
+/// the daemon's launch session and never take a window another launch left behind. A new
+/// window starts in omp goal mode with an objective that names the brief, except a plan
+/// dispatch, which starts in read-only plan mode, and a plan-into dispatch, which runs
+/// `--plan-yolo` and hands the approved plan to the execution model. A waiting source pane
+/// keeps its own modes and receives the brief as typed text, except that a plan-into dispatch
+/// always opens a new window, because only launch flags turn plan-yolo on. A caller that asks
+/// for `new_window` opens a window of its own instead.
 fn launch_brief(
     card: &Card,
     launch: &Launch,
@@ -1337,13 +1356,20 @@ fn launch_brief(
     new_window: bool,
 ) -> Result<String, String> {
     if launch.engine == Engine::Dsh {
-        return dsh_track::launch_brief(card, launch, brief, start, image);
+        if start != Start::Goal {
+            return Err("a dsh session starts in goal mode".to_owned());
+        }
+        return dsh_track::launch_brief(card, launch, brief, image);
     }
     // Only a pane that finished its turn takes typed text. A plan review also reads as waiting,
     // where a typed brief would run as overlay keys. An ask or a plan card opens a window for
     // that reason. Plan into opens one as well, because only launch flags turn plan-yolo on.
+    // A dsh plan opens one too, because approval closes the planner's pane.
     let source = card.source.pane.as_deref().filter(|_| {
-        card.kind == Kind::Info && !new_window && !matches!(start, Start::PlanInto(..))
+        card.kind == Kind::Info
+            && !new_window
+            && !matches!(start, Start::PlanInto(..))
+            && launch.dsh_into.is_none()
     });
     if let Some(pane) = source {
         let waiting = tmux::list_panes()
@@ -1357,15 +1383,30 @@ fn launch_brief(
             return Ok(pane.to_owned());
         }
     }
-    let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
     let command = omp_command(
         brief,
         launch.model.as_deref(),
         launch.thinking.as_deref(),
-        start,
+        omp_start(launch, start),
         image,
     )?;
-    tmux::new_window(session, &card.source.cwd, &command).map_err(|error| error.to_string())
+    open_window(launch, &card.source.cwd, &command)
+}
+
+/// Open an omp window on `command`. A dsh plan's planner window carries the dsh choice on its
+/// pane. A window that cannot take the tag is closed, because an untagged planner would carry
+/// the plan out in omp.
+fn open_window(launch: &Launch, cwd: &str, command: &str) -> Result<String, String> {
+    let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
+    let pane = tmux::new_window(session, cwd, command).map_err(|error| error.to_string())?;
+    let Some(into) = launch.dsh_into.as_deref() else {
+        return Ok(pane);
+    };
+    if let Err(error) = tmux::set_dsh_into(&pane, into) {
+        let _ = tmux::kill_pane(&pane);
+        return Err(error.to_string());
+    }
+    Ok(pane)
 }
 
 /// Type a brief into a waiting omp pane, turning plan mode on first for a plan brief. The
@@ -1757,6 +1798,9 @@ fn recover_no_model_launch(db: &Db, pane: &tmux::Pane, relaunched: &mut HashSet<
     if relaunched.insert(command.clone()) {
         return match tmux::new_window(&pane.session, &pane.cwd, &command) {
             Ok(new_pane) => {
+                if let Ok(Some(into)) = tmux::dsh_into(&pane.id) {
+                    let _ = tmux::set_dsh_into(&new_pane, &into);
+                }
                 eprintln!("triage: {} started without a model; relaunched as {new_pane}", pane.id);
                 let _ = tmux::kill_pane(&pane.id);
                 true
@@ -2233,6 +2277,65 @@ fn queue_ended_card(
     }
 }
 
+/// The newest plan file in the session's `local/` directory.
+fn newest_plan_file(transcript: &Path) -> Option<PathBuf> {
+    fs::read_dir(transcript.with_extension("").join("local"))
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with("-plan.md"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .max()
+        .map(|(_, path)| path)
+}
+
+/// A plan review is on screen, but the tracker could not turn it into a card. An omp update
+/// has probably changed the screen or the transcript, so say so in the inbox. The plan stays
+/// answerable in its pane, and the card names the plan file.
+fn report_unreadable_plan_review(db: &Db, pane: &tmux::Pane, written: &mut usize) {
+    let Ok(screen) = tmux::screen(&pane.id) else {
+        return;
+    };
+    if !omp::looks_like_plan_review(&screen) {
+        return;
+    }
+    eprintln!("triage: plan review on {} did not become a card", pane.id);
+    let plan = omp::transcript_path(pane).and_then(|transcript| newest_plan_file(&transcript));
+    let card = Card {
+        id: format!("plan-unreadable:{}:{}", pane.id, events::now_ms()),
+        kind: Kind::Info,
+        priority: 2,
+        created_ms: events::now_ms(),
+        source: pane_source(pane),
+        title: "Triage could not read the plan review in this pane".to_owned(),
+        star: Star::default(),
+        options: vec![CardOption {
+            label: "Acknowledge".to_owned(),
+            description: None,
+            direction: None,
+            recommended: false,
+        }],
+        answerable: true,
+        allow_other: false,
+        questions: Vec::new(),
+        body: Some(format!(
+            "omp shows a plan review that triage could not turn into a plan card. An omp update \
+             probably changed the review screen or the transcript. Answer the review in the pane.{}",
+            plan.as_ref()
+                .map(|path| format!("\n\nPlan file: {}", path.display()))
+                .unwrap_or_default()
+        )),
+        refs: plan.iter().map(|path| path.display().to_string()).collect(),
+        level: Some("warn".to_owned()),
+        tool_call_id: None,
+        report_due: false,
+        engine: None,
+        status: Some(events::CardStatus::Notice),
+    };
+    if let Ok(inserted) = db.insert_card(&card) {
+        *written += usize::from(inserted);
+    }
+}
+
 fn add_plan_card(
     db: &Db,
     pane: &tmux::Pane,
@@ -2250,6 +2353,11 @@ fn add_plan_card(
         Ok(body) => omp::redact(&body),
         Err(_) => return false,
     };
+    // A planner launched for dsh: approval hands this plan file to a dsh session.
+    let Ok(into) = tmux::dsh_into(&pane.id) else {
+        return false;
+    };
+    let for_dsh = into.is_some();
     let source = pane_source(pane);
     let title = if proposal.title.trim().is_empty() {
         source.label.clone()
@@ -2267,6 +2375,7 @@ fn add_plan_card(
         options: vec![
             CardOption {
                 label: "Approve".to_owned(),
+                description: for_dsh.then(|| "A dsh session carries out the plan.".to_owned()),
                 recommended: true,
                 ..CardOption::default()
             },
@@ -2279,11 +2388,11 @@ fn add_plan_card(
         allow_other: true,
         questions: Vec::new(),
         body: Some(body),
-        refs: Vec::new(),
+        refs: if for_dsh { vec![proposal.plan_path.display().to_string()] } else { Vec::new() },
         level: None,
         tool_call_id: None,
         report_due: false,
-        engine: None,
+        engine: for_dsh.then(|| "dsh".to_owned()),
         status: Some(events::CardStatus::PlanReady),
     };
     match db.insert_card(&card) {
@@ -2962,9 +3071,11 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
         return Err("plan card is not answerable".to_owned());
     }
     let dsh_card = dsh::session_id(card).is_some();
-    let engine = if dsh_card { Engine::Dsh } else { Engine::Omp };
+    // A plan omp wrote for dsh: the card names dsh and still sits on the planner's pane.
+    let for_dsh = !dsh_card && card.engine.as_deref() == Some("dsh");
+    let engine = if dsh_card || for_dsh { Engine::Dsh } else { Engine::Omp };
     // omp's Plan Review slider lists roles only, so its execution model keeps the role's level.
-    if !dsh_card && req.executor_thinking.is_some() {
+    if engine == Engine::Omp && req.executor_thinking.is_some() {
         return Err("an omp plan review keeps the role's own thinking level".to_owned());
     }
     let executor = match engine {
@@ -3004,6 +3115,10 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
     let mut screen = tmux::screen(pane).map_err(|error| error.to_string())?;
     if !omp::plan_review_open(&screen) {
         return Err("plan review is not open".to_owned());
+    }
+
+    if for_dsh && option == Some(0) {
+        return hand_plan_to_dsh(db, card, req, pane, executor, executor_effort, launch);
     }
     let recorded = if option == Some(0) {
         let role = if let Some(executor) = executor {
@@ -3082,12 +3197,18 @@ fn confirm_plan_option(pane: &str, label: &str) -> Result<(), String> {
     Err(format!("plan review did not select {label}"))
 }
 
-/// Refine a plan: confirm Plan Review's own Refine row, wait for the overlay to close while plan
-/// mode stays on, then type the feedback into the prompt. Escape is not a refine: it cancels the
-/// review, and the keystrokes that follow can reach the overlay's highlighted row and approve the
-/// plan instead of refining it.
+/// Refine a plan. omp's Plan Review lists `Refine plan` only once the review carries comments.
+/// Without that row, Escape closes the review, and the feedback goes to the planner's prompt once
+/// the overlay has closed. Nothing else is sent while the overlay is still open.
 fn refine_plan(pane: &str, refinement: &str) -> Result<(), String> {
-    confirm_plan_option(pane, "Refine plan")?;
+    let screen = tmux::screen(pane).map_err(|error| error.to_string())?;
+    let offers_refine = omp::plan_review_options(&screen)
+        .is_some_and(|(rows, _)| rows.iter().any(|row| row == "Refine plan"));
+    if offers_refine {
+        confirm_plan_option(pane, "Refine plan")?;
+    } else {
+        tmux::send_keys(pane, &["Escape"]).map_err(|error| error.to_string())?;
+    }
     for _ in 0..20 {
         thread::sleep(Duration::from_millis(100));
         let screen = tmux::screen(pane).map_err(|error| error.to_string())?;
@@ -3101,6 +3222,93 @@ fn refine_plan(pane: &str, refinement: &str) -> Result<(), String> {
         return Err("plan review did not close".to_owned());
     }
     Err("plan review approved the plan instead of refining".to_owned())
+}
+
+/// The dsh model, effort and Plan into flag on a planner pane's `@triage_dsh_into` tag.
+fn dsh_choice(tag: &str) -> Option<(Option<String>, Option<String>, bool)> {
+    serde_json::from_str(tag).ok()
+}
+
+/// Approve a plan omp wrote for dsh. A new dsh session gets the plan as its brief, on the model
+/// and effort the approval names, else the ones the launch tagged the planner's pane with. The
+/// planner has nothing left to do, so its pane closes once the swipe is recorded.
+fn hand_plan_to_dsh(
+    db: &Db,
+    card: &Card,
+    req: &AnswerReq,
+    pane: &str,
+    executor: Option<&str>,
+    effort: Option<&str>,
+    launch: &Launch,
+) -> Result<(), String> {
+    let (model, thinking): (Option<String>, Option<String>) = match executor {
+        Some(model) => (Some(model.to_owned()), effort.map(str::to_owned)),
+        None => tmux::dsh_into(pane)
+            .map_err(|error| error.to_string())?
+            .and_then(|into| dsh_choice(&into))
+            .map(|(model, thinking, _)| (model, thinking))
+            .ok_or_else(|| "pane has no dsh plan tag".to_owned())?,
+    };
+    let path = card.refs.first().ok_or_else(|| "plan card names no plan file".to_owned())?;
+    let plan = fs::read_to_string(path).map_err(|error| format!("could not read plan: {error}"))?;
+    let launch = Launch { engine: Engine::Dsh, model, thinking, dsh_into: None, ..launch.clone() };
+    let cwd = card_workdir(card);
+    let brief = write_brief(db, plan_brief(&plan, workspace_workdir(&launch, &cwd)))?;
+    let title = card.title.strip_prefix("Plan ready: ").unwrap_or(card.title.as_str());
+    let session = dsh_track::launch_new(&launch, &cwd, &brief, title, None)?;
+    if !record_swipe(
+        db,
+        &card.id,
+        "done",
+        Some(0),
+        executor.map(str::to_owned),
+        req.note.clone(),
+        Some(format!("launched {session}")),
+    ) {
+        return Err("could not record swipe".to_owned());
+    }
+    let _ = tmux::kill_pane(pane);
+    Ok(())
+}
+
+/// Approve each queued plan card whose planner pane carries the Plan into flag, the way the
+/// card's Approve does, because nobody reviews a Plan into plan. A failed approval clears the
+/// flag. The card then waits for the user while later polls leave it alone. Returns how many
+/// cards it approved.
+pub fn approve_plans_into_dsh(db: &Db, launch: &Launch) -> usize {
+    let Ok(cards) = db.queue(events::now_ms()) else {
+        return 0;
+    };
+    let approve = AnswerReq { option: Some(0), ..AnswerReq::default() };
+    let mut approved = 0;
+    for card in cards {
+        // A plan omp wrote for dsh, the same test `answer_plan` makes.
+        if card.kind != Kind::Plan
+            || card.engine.as_deref() != Some("dsh")
+            || dsh::session_id(&card).is_some()
+        {
+            continue;
+        }
+        let Some(pane) = card.source.pane.as_deref() else {
+            continue;
+        };
+        let Some((model, effort, true)) =
+            tmux::dsh_into(pane).ok().flatten().and_then(|tag| dsh_choice(&tag))
+        else {
+            continue;
+        };
+        match answer(db, &card, &approve, launch, None) {
+            Ok(()) => approved += 1,
+            Err(error) => {
+                eprintln!("triage: Plan into could not hand {} to dsh: {error}", card.id);
+                let _ = tmux::set_dsh_into(
+                    pane,
+                    &serde_json::json!([model, effort, false]).to_string(),
+                );
+            }
+        }
+    }
+    approved
 }
 
 fn answer_finding(
@@ -3515,9 +3723,7 @@ fn push_instructions(brief: &mut String, start: Start) {
     brief.push_str("\n\n");
     brief.push_str(ENVOY_STATUS_CONTRACT);
     brief.push_str(REPORT_STEP);
-    if plans_for_review(start) {
-        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
-    }
+    brief.push_str(&plan_handoff(start));
 }
 
 fn finding_brief(
@@ -3613,6 +3819,20 @@ const PLAN_INTO_INSTRUCTION: &str = "Start in plan mode. Explore read-only, draf
 /// model, so the plan has to carry the report section.
 const PLAN_REPORT_STEP: &str = "## Plan handoff\n\nApproval hands the plan to a model that may see only the plan. End the plan with a section headed \"Final report\" that repeats the Final report section above word for word.";
 
+/// A question from a Plan into planner would stop the run until someone answered it, because
+/// nobody reviews that plan.
+const PLAN_INTO_STEP: &str = "Because this plan runs without review, do not ask the user anything. Take the recommended default for each open choice and record it under the plan's assumptions.";
+
+/// The plan handoff a plan brief ends with. A Plan into planner also hears that it settles
+/// open choices itself.
+fn plan_handoff(start: Start) -> String {
+    match start {
+        Start::Goal => String::new(),
+        Start::Plan => format!("\n{PLAN_REPORT_STEP}\n"),
+        Start::PlanInto(..) => format!("\n{PLAN_REPORT_STEP}\n\n{PLAN_INTO_STEP}\n"),
+    }
+}
+
 /// The directory a dsh workspace session must work from. A workspace session starts in the
 /// workspace directory, so its brief names the project directory and the tool that moves it.
 fn workspace_workdir(launch: &Launch, cwd: &str) -> Option<String> {
@@ -3640,6 +3860,16 @@ fn workdir_section(cwd: &str) -> String {
     )
 }
 
+/// The brief of the dsh session that carries out an approved plan. The plan ends with the
+/// report format, which `PLAN_REPORT_STEP` asked its planner to repeat.
+fn plan_brief(plan: &str, workdir: Option<String>) -> String {
+    format!(
+        "{}Carry out this approved plan end to end. Its planner only read, so none of the work is done yet.\n\n{}\n",
+        workdir.as_deref().map(workdir_note).unwrap_or_default(),
+        plan.trim(),
+    )
+}
+
 fn session_brief(prompt: &str, start: Start, task: Task, workdir: Option<String>) -> String {
     let mut brief = String::new();
     if let Some(cwd) = workdir.as_deref() {
@@ -3650,9 +3880,7 @@ fn session_brief(prompt: &str, start: Start, task: Task, workdir: Option<String>
         prompt.trim(),
         task.direction(),
     ));
-    if plans_for_review(start) {
-        brief.push_str(&format!("\n{PLAN_REPORT_STEP}\n"));
-    }
+    brief.push_str(&plan_handoff(start));
     brief
 }
 
@@ -3814,6 +4042,28 @@ pub struct Launch {
     pub dsh_host: Option<PathBuf>,
     pub dsh_workspace: Option<String>,
     pub dsh_workspaces: Option<PathBuf>,
+    /// Set on the omp planner launch of a dsh plan to the JSON array `[model, effort, auto]`
+    /// that `tmux::set_dsh_into` describes.
+    pub dsh_into: Option<String>,
+}
+
+/// The omp model and thinking level that plan for dsh.
+const DSH_PLANNER_MODEL: &str = "@opus";
+const DSH_PLANNER_THINKING: &str = "xhigh";
+
+impl Launch {
+    /// The planner launch of a dsh plan, an omp plan window on `DSH_PLANNER_MODEL`. `dsh_into`
+    /// keeps the dsh model and effort this launch chose, which run the approved plan. `auto`
+    /// is true for a Plan into launch, whose plan the daemon approves without review.
+    pub fn dsh_planner(&self, auto: bool) -> Self {
+        Self {
+            engine: Engine::Omp,
+            model: Some(DSH_PLANNER_MODEL.to_owned()),
+            thinking: Some(DSH_PLANNER_THINKING.to_owned()),
+            dsh_into: Some(serde_json::json!([self.model, self.thinking, auto]).to_string()),
+            ..self.clone()
+        }
+    }
 }
 
 /// Trim an omp model selector and refuse shell characters. A blank selector means unset.
@@ -3901,8 +4151,8 @@ pub fn engine_selector(engine: Engine, model: Option<&str>) -> Result<Option<&st
 }
 
 /// Trim the execution model's effort. dsh takes one of its effort levels, which it applies to
-/// the executor model at approval. omp takes one of its thinking levels, which the launch
-/// appends to the execution model selector.
+/// the executor model when it approves a plan it reviews. omp takes one of its thinking levels,
+/// which the launch appends to the execution model selector.
 pub fn executor_effort(engine: Engine, effort: Option<&str>) -> Result<Option<&str>, String> {
     let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) else {
         return Ok(None);
@@ -3916,18 +4166,14 @@ pub fn executor_effort(engine: Engine, effort: Option<&str>) -> Result<Option<&s
     }
 }
 
-/// Check a plan-into launch's execution model and effort. dsh requires a named executor for effort. omp uses its default smol role.
+/// Check an omp plan-into launch's execution model and effort. omp uses its default smol role
+/// when the model is unset.
 pub(crate) fn plan_into_choices(
-    engine: Engine,
     executor: Option<&str>,
     effort: Option<&str>,
 ) -> Result<(), String> {
-    engine_selector(engine, executor)?;
-    let effort = executor_effort(engine, effort)?;
-    if engine == Engine::Dsh && effort.is_some() && executor.is_none() {
-        return Err("execution effort needs an execution model".to_owned());
-    }
-    Ok(())
+    model_selector(executor)?;
+    executor_effort(Engine::Omp, effort).map(|_| ())
 }
 
 /// omp's execution model selector with `effort` as its thinking level. A selector that names
@@ -3955,6 +4201,16 @@ pub fn engine_flags(engine: Engine, model: Option<&str>, thinking: Option<&str>)
             dsh_selector(model)?;
             thinking_level(thinking).map(|_| ())
         }
+    }
+}
+
+/// The start an omp window runs. A dsh planner runs in omp plan mode for both plan modes,
+/// because triage approves its plan and hands it to dsh, which `--plan-yolo` would skip.
+fn omp_start<'a>(launch: &Launch, start: Start<'a>) -> Start<'a> {
+    if launch.dsh_into.is_some() {
+        Start::Plan
+    } else {
+        start
     }
 }
 

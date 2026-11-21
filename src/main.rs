@@ -143,6 +143,7 @@ async fn run() -> Result<(), String> {
                     dsh_host: dsh::host_file(),
                     dsh_workspace,
                     dsh_workspaces: workspaces,
+                    dsh_into: None,
                 },
                 allowed_hosts: allow_hosts,
             });
