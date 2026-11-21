@@ -16,7 +16,7 @@
 ;;   M-x triage-history     browse handled cards
 ;;   M-x triage-settings    edit dictation phrases
 ;;   M-x triage-delegate   dispatch the current Org, mail, Dired or region context
-;;   M-x triage-mode-line-mode toggle the global counter
+;;   M-x triage-clock-mode  clock an Org heading while you review cards
 ;;
 ;; In the inbox, use RET for the primary action, 1-9 for options, j/k to move,
 ;; d to dispatch, s to skip, l to defer, t for context, v to peek and ? for keys.
@@ -33,6 +33,7 @@
 (require 'triage-history)
 (require 'triage-settings)
 (require 'triage-inbox)
+(require 'triage-clock)
 
 ;;;###autoload
 (defun triage ()

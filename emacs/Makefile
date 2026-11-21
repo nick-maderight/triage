@@ -29,8 +29,8 @@ BATCH = $(EMACS) -Q --batch -L . $(foreach d,$(DEPS),-L $(ELPACA)/$(d))
 # while passing locally.  One line each keeps both versions honest.
 
 # triage.el must compile last because it requires every module above it.
-SRC = triage-api.el triage-card.el triage-queue.el triage-render.el triage-launch.el triage-peek.el triage-history.el triage-settings.el triage-inbox.el triage-context.el triage.el
-TEST = test/triage-card-test.el test/triage-render-test.el test/triage-inbox-test.el test/triage-launch-test.el test/triage-context-test.el test/triage-daemon-test.el
+SRC = triage-api.el triage-card.el triage-queue.el triage-render.el triage-launch.el triage-peek.el triage-history.el triage-settings.el triage-inbox.el triage-context.el triage-clock.el triage.el
+TEST = test/triage-card-test.el test/triage-render-test.el test/triage-inbox-test.el test/triage-launch-test.el test/triage-context-test.el test/triage-daemon-test.el test/triage-clock-test.el
 ELC = $(SRC:.el=.elc) $(TEST:.el=.elc)
 
 .PHONY: all check test compile checkdoc clean
