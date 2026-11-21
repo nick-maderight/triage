@@ -17,7 +17,7 @@
   (triage-launch--set-task task)
   (triage-launch--draw))
 
-;; Options stay live the way Magit's menus do, so one key changes, launches or cancels.
+;; Option rows keep one-key setting changes; launch stays on C-c C-c.
 (ert-deftest triage-launch-test-option-rows-take-one-key ()
   "One key on the option rows acts at once, while the body still takes text."
   (with-temp-buffer
@@ -29,7 +29,8 @@
       (should (eq (key-binding "e") #'triage-launch-set-engine))
       (should (eq (key-binding "m") #'triage-launch-set-mode))
       (should (eq (key-binding "T") #'triage-launch-set-task))
-      (should (eq (key-binding (kbd "RET")) #'triage-launch-submit))
+      (should-not (eq (key-binding (kbd "RET")) #'triage-launch-submit))
+      (should (eq (key-binding (kbd "C-c C-c")) #'triage-launch-submit))
       (should (eq (key-binding "q") #'triage-launch-cancel))
       (should (eq (key-binding (kbd "TAB")) #'triage-launch-edit))
       (should (eq (key-binding "f") #'undefined)))
@@ -38,6 +39,9 @@
       (should (eq (key-binding "e") #'self-insert-command))
       (should (eq (key-binding "q") #'self-insert-command))
       (should (eq (key-binding (kbd "C-c C-c")) #'triage-launch-submit))
+      (should (eq (key-binding (kbd "C-c p")) #'triage-launch-insert-phrase))
+      (should (eq (key-binding (kbd "RET")) #'newline))
+      (should (eq (key-binding "p") #'self-insert-command))
       (should (eq (key-binding (kbd "<backtab>")) #'triage-launch-options)))
     (goto-char (+ triage-launch--body-start 2))
     (triage-launch-options)
@@ -126,6 +130,19 @@
                    nil)))
         (triage-launch--draw))
       (should-not sync-called))))
+
+(ert-deftest triage-launch-test-phrase-inserts-at-point-in-the-body ()
+  "A saved phrase inserts at point when called from the sheet body."
+  (with-temp-buffer
+    (triage-launch-test--sheet 'compose "goal" "fix")
+    (goto-char triage-launch--body-start)
+    (insert "x ")
+    (cl-letf (((symbol-function 'triage-api-request-sync)
+               (lambda (&rest _args) '((phrases . "alpha prompt\nbeta prompt"))))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _args) "alpha prompt")))
+      (triage-launch-insert-phrase))
+    (should (equal (triage-launch--body) "x alpha prompt"))))
 
 (ert-deftest triage-launch-test-model-catalog-loads-before-the-prompt ()
   "The model prompt waits for an asynchronous catalog without blocking Emacs."

@@ -5,13 +5,13 @@
 ;; The Dispatch and New session sheets.  Each is an edit buffer.  Its
 ;; read-only preamble lists the options, each beside the key that changes
 ;; it, the way a Magit menu does.  On those rows one key changes an
-;; option, RET launches, q cancels and TAB moves into the body
-;; below, which holds the instruction or the prompt.  There `C-c C-c'
-;; launches, `C-c C-k' cancels and S-TAB or `C-c C-o' returns to the
-;; options.  A context Dispatch sends an Org heading, a mail thread or other
-;; Emacs context the way a card is dispatched.  The functions here port
-;; openDispatch, submitDispatch, openCompose and submitCompose from
-;; ui/app.js.
+;; option, `q' cancels and TAB moves into the body below, which holds the
+;; instruction or the prompt.  `C-c C-c' launches from either area, `p'
+;; inserts a phrase from the rows, and `C-c p' inserts one in the body.
+;; `C-c C-k' cancels and S-TAB or `C-c C-o' returns to the options.  A context
+;; Dispatch sends an Org heading, a mail thread or other Emacs context the way
+;; a card is dispatched.  The functions here port openDispatch, submitDispatch,
+;; openCompose and submitCompose from ui/app.js.
 
 ;;; Code:
 
@@ -327,7 +327,6 @@ One key changes an option, the way a Magit menu does."
   "y" #'triage-launch-paste-image
   "D" #'triage-launch-drop-image
   "p" #'triage-launch-insert-phrase
-  "RET" #'triage-launch-submit
   "q" #'triage-launch-cancel
   "TAB" #'triage-launch-edit)
 
@@ -392,11 +391,11 @@ own start.  Return nil when the sheet does not offer the option."
                                          (triage-launch--keys '(("y" . "paste")
                                                                 ("D" . "drop")))))
              ""
-             (triage-launch--keys '(("RET" . "launch") ("q" . "cancel")
+             (triage-launch--keys '(("C-c C-c" . "launch") ("q" . "cancel")
                                     ("TAB" . "edit text") ("p" . "phrase")))
              (concat (propertize "In the text  " 'face 'triage-muted)
                      (triage-launch--keys '(("C-c C-c" . "launch") ("C-c C-k" . "cancel")
-                                            ("S-TAB" . "back"))))
+                                            ("C-c p" . "phrase") ("S-TAB" . "back"))))
              ""
              (propertize (if compose "──── Prompt ────" "──── Instruction ────")
                          'face 'shadow)))
@@ -999,8 +998,8 @@ A sheet with answers cannot investigate, because each question decides that."
   (triage-launch--draw))
 
 (defun triage-launch-insert-phrase ()
-  "Insert one of the saved dictation phrases into the body.
-The phrase goes where point last was in the body, or at its end."
+  "Insert a saved phrase at point in the body, or where it last was.
+Use `p' on the option rows or `C-c p' in the body."
   (interactive)
   (let* ((data (triage-api-request-sync 'get "/v1/dictation"))
          (phrases (seq-remove
@@ -1020,6 +1019,7 @@ The phrase goes where point last was in the body, or at its end."
   "C-c C-c" #'triage-launch-submit
   "C-c C-k" #'triage-launch-cancel
   "C-c C-o" #'triage-launch-options
+  "C-c p" #'triage-launch-insert-phrase
   "<backtab>" #'triage-launch-options)
 
 (define-derived-mode triage-launch-mode text-mode "Triage-Launch"
@@ -1028,8 +1028,8 @@ The top of the buffer is a read-only preamble that lists the options.
 There one key changes an option:
 \\{triage-launch-options-map}
 The body below it is the instruction or the prompt.  There
-\\<triage-launch-mode-map>\\[triage-launch-submit] launches, \\[triage-launch-cancel] cancels and
-\\[triage-launch-options] returns to the options."
+\\<triage-launch-mode-map>\\[triage-launch-submit] launches and \\[triage-launch-cancel] cancels.
+\\[triage-launch-insert-phrase] inserts a phrase.  \\[triage-launch-options] returns to options."
   (triage-render-setup-view)
   ;; The rows carry their own wrap prefix, which this mode would replace.
   (visual-wrap-prefix-mode -1)

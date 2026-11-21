@@ -187,6 +187,7 @@ Two performance limits are known. Each poll tick scans and parses every open and
 The Emacs client uses `j`/`k` or Left/Right to switch cards. After you answer a card, the next card takes its place. Repeated card switches reuse Markdown fontification.
 
 Card actions use Magit-style mnemonic keys, and every dock button prints its key: `d` Dispatch, `D` Do next step, `f` Fix, `A` Act, `p` Plan, `P` Plan into, `a` Acknowledge, `C` Acknowledge & close, `r` Request final report, `R` Restore run, `s` Skip, `l` Later, `t` Context, `v` Peek, `J` Jump, `n` Note, `o` Other, `w` Copy reply. `?` lists every key on the shown card.
+In a session sheet, `C-c C-c` launches from the option rows or the text. `RET` never launches. `C-c p` inserts a saved phrase at point in the text. Press `p` on the rows for the same picker.
 
 `M-x triage-delegate` captures an Org heading or agenda entry, a notmuch thread, marked Dired files, or an active file region and opens it in a session sheet. The sheet starts in the context's directory on Goal and Fix. Its direction is empty. The launch goes through `/v1/sessions` with the direction as `note`. Org tasks name their attachment directory when one exists. A selected mail passage limits the task to that passage. The whole thread remains reference. `triage-delegate-omp` and `triage-delegate-dsh` preselect the engine. `triage-start-session` starts a prompt through `/v1/sessions` for unattended fallbacks such as mail unsubscribe.
 
