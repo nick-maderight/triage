@@ -314,7 +314,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let launch = last_launch();
-    assert!(launch.contains("-t daemon-default:") && launch.contains("--model=provider/daemon-model --plan=provider/daemon-model --thinking=low --goal 'Reply pong."), "{launch}");
+    assert!(launch.contains("-t daemon-default:") && launch.contains("--model=provider/daemon-model --plan=provider/daemon-model:low --thinking=low --goal 'Reply pong."), "{launch}");
 
     let request = super::SessionRequest {
         prompt: "Reply pong.".to_owned(),
@@ -335,7 +335,7 @@ async fn new_session_prefers_request_then_daemon_launch_settings() {
     assert!(
         launch.contains("-t bill:")
             && launch.contains(
-                "--model=provider/chosen --plan=provider/chosen --thinking=high --goal 'Reply pong."
+                "--model=provider/chosen --plan=provider/chosen:high --thinking=high --goal 'Reply pong."
             ),
         "{launch}"
     );
@@ -477,7 +477,7 @@ async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {
     // Without --plan, omp's plan mode moves the session onto its own plan role model.
     assert!(
         launch.contains(
-            " --model=provider/daemon-model --plan=provider/daemon-model --thinking=max 'Prepare a plan.' @'",
+            " --model=provider/daemon-model --plan=provider/daemon-model:max --thinking=max 'Prepare a plan.' @'",
         ),
         "{launch}"
     );
@@ -526,7 +526,7 @@ async fn new_session_plan_into_applies_effort_to_default_execution_model() {
         .to_owned();
     assert!(
         launch.contains(
-            " --model=provider/daemon-model --plan=provider/daemon-model --thinking=low --plan-yolo --plan-yolo-into=@smol:medium 'Prepare a plan.' @'"
+            " --model=provider/daemon-model --plan=provider/daemon-model:low --thinking=low --plan-yolo --plan-yolo-into=@smol:medium 'Prepare a plan.' @'"
         ),
             "{launch}"
         );
@@ -1903,7 +1903,7 @@ case "$1" in list-panes) printf '' ;; esac
     args_path.push(".args");
     let launch = std::fs::read_to_string(&args_path).unwrap();
     assert_eq!(response.status, StatusCode::OK);
-    assert!(launch.contains("--model=provider/chosen --plan=provider/chosen --thinking=high --goal"), "{launch}");
+    assert!(launch.contains("--model=provider/chosen --plan=provider/chosen:high --thinking=high --goal"), "{launch}");
     assert!(state.db.card(&card.id).unwrap().unwrap().1.is_some());
     server.abort();
 }

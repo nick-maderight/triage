@@ -3771,18 +3771,37 @@ pub fn model_selector(model: Option<&str>) -> Result<Option<&str>, String> {
 
 /// Validate the launch choices and render the `--model`, `--plan` and `--thinking` flags.
 /// omp moves a session onto its `plan` role model whenever plan mode turns on, so the chosen
-/// model fills that role too and a plan session stays on it. An unset model or thinking level
-/// leaves the choice to omp's configuration.
+/// model fills that role too and a plan session stays on it, at the launch's thinking level. An
+/// unset model or thinking level leaves the choice to omp's configuration.
 pub fn launch_flags(model: Option<&str>, thinking: Option<&str>) -> Result<String, String> {
     let model = model_selector(model)?;
     let thinking = thinking_level(thinking)?;
     Ok(format!(
         "{}{}",
-        model.map(|model| format!("--model={model} --plan={model} ")).unwrap_or_default(),
+        model
+            .map(|model| format!("--model={model} --plan={} ", plan_selector(model, thinking)))
+            .unwrap_or_default(),
         thinking
             .map(|thinking| format!("--thinking={thinking} "))
             .unwrap_or_default(),
     ))
+}
+
+/// Whether a selector already ends in one of omp's thinking levels.
+fn names_level(selector: &str) -> bool {
+    selector
+        .rsplit_once(':')
+        .is_some_and(|(_, level)| THINKING_LEVELS.contains(&level))
+}
+
+/// The plan model selector: the launch model, plus the launch thinking level when the selector
+/// names none of its own. `--thinking` covers the session, while plan mode takes the level the
+/// plan model carries, so the level is named here too.
+fn plan_selector(model: &str, thinking: Option<&str>) -> String {
+    match thinking {
+        Some(level) if !names_level(model) => format!("{model}:{level}"),
+        _ => model.to_owned(),
+    }
 }
 
 /// Trim a thinking level and check it against `THINKING_LEVELS`. A blank level means unset.
@@ -3861,9 +3880,7 @@ fn omp_execution_model(executor: Option<&str>, effort: Option<&str>) -> Result<O
         (None, Some(_)) => "@smol",
         (Some(executor), _) => executor,
     };
-    let named = executor
-        .rsplit_once(':')
-        .is_some_and(|(_, level)| THINKING_LEVELS.contains(&level));
+    let named = names_level(executor);
     let selector = match effort {
         Some(effort) if !named => format!("{executor}:{effort}"),
         _ => executor.to_owned(),

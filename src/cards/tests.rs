@@ -4376,7 +4376,7 @@ fn dispatch_uses_launch_settings_and_defaults_to_triage_session() {
                     && launches[0].contains(" omp --goal '# Investigate: ")
                     && !launches[0].contains("@'")
                     && launches[1].contains(" -t work: ")
-                    && launches[1].contains(" omp --model=provider/example-model --plan=provider/example-model --thinking=high --goal '# Investigate: ")
+                    && launches[1].contains(" omp --model=provider/example-model --plan=provider/example-model:high --thinking=high --goal '# Investigate: ")
                     && !log.contains("list-clients")
             );
         return;
@@ -5381,11 +5381,26 @@ fn chosen_model_and_thinking_reach_launch_and_bad_values_are_refused() {
     let chosen = launch_flags(Some("provider/example-model"), Some("high")).unwrap();
     assert_eq!(
         chosen,
-        "--model=provider/example-model --plan=provider/example-model --thinking=high "
+        "--model=provider/example-model --plan=provider/example-model:high --thinking=high "
     );
     assert_eq!(launch_flags(Some(" "), Some("")).unwrap(), "");
     assert!(launch_flags(None, Some("turbo")).is_err());
     assert!(launch_flags(Some("x; rm -rf ~"), None).is_err());
+}
+
+#[test]
+fn the_plan_model_takes_the_launch_thinking_level() {
+    // A selector that names its own level keeps it, and no launch level leaves omp's plan model
+    // alone, so plan mode never drops to a bare or surprising effort.
+    assert_eq!(
+        launch_flags(Some("@opus"), Some("xhigh")).unwrap(),
+        "--model=@opus --plan=@opus:xhigh --thinking=xhigh "
+    );
+    assert_eq!(
+        launch_flags(Some("@opus:max"), Some("xhigh")).unwrap(),
+        "--model=@opus:max --plan=@opus:max --thinking=xhigh "
+    );
+    assert_eq!(launch_flags(Some("@opus"), None).unwrap(), "--model=@opus --plan=@opus ");
 }
 
 #[test]
@@ -5405,7 +5420,7 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
     assert_eq!(
         chosen,
         format!(
-            "omp --model=provider/planner --plan=provider/planner --thinking=high --plan-yolo --plan-yolo-into=provider/executor '# Ship the fix' @'{}'",
+            "omp --model=provider/planner --plan=provider/planner:high --thinking=high --plan-yolo --plan-yolo-into=provider/executor '# Ship the fix' @'{}'",
             brief.display()
         )
     );
@@ -5488,7 +5503,7 @@ fn goal_command_names_the_brief_in_its_objective() {
     assert_eq!(
         chosen,
         format!(
-            "omp --model=provider/example-model --plan=provider/example-model --thinking=high --goal '# Act: Ship it\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you mark the goal complete; it holds the full task and the report format.'",
+            "omp --model=provider/example-model --plan=provider/example-model:high --thinking=high --goal '# Act: Ship it\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you mark the goal complete; it holds the full task and the report format.'",
             brief.display()
         )
     );
