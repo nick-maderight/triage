@@ -280,6 +280,37 @@
       (should (string-match-p "! [^\n]* · Emacs dispatch finding"
                               (triage-test--messages))))))
 
+(ert-deftest triage-daemon-test-compose-repairs-invalid-mode ()
+  "A repaired mode reaches tmux, and the failed launch leaves the sheet ready."
+  (triage-test-with-daemon
+    (with-temp-buffer
+      (triage-launch-mode)
+      (setq triage-launch--kind 'compose
+            triage-launch--mode '((mode . "goal"))
+            triage-launch--engine "omp")
+      (insert "Check the session payload")
+      (let ((buffer (current-buffer))
+            (request (symbol-function 'triage-api-request))
+            status message)
+        (cl-letf (((symbol-function 'triage-api-request)
+                   (lambda (method path &rest args)
+                     (let ((else (plist-get args :else)))
+                       (apply request method path
+                              (plist-put
+                               args :else
+                               (lambda (status-code detail)
+                                 (setq status status-code
+                                       message detail)
+                                 (when else
+                                   (funcall else status-code detail)))))))))
+          (triage-launch--submit-compose))
+        (triage-test--wait
+         (lambda () (and status (not (bound-and-true-p triage-launch--starting))))
+         5)
+        (should (= status 400))
+        (should (string-match-p "tmux" message))
+        (should (buffer-live-p buffer))))))
+
 (ert-deftest triage-daemon-test-mode-line ()
   "The mode-line counter shows one queued card."
   (triage-test-with-daemon

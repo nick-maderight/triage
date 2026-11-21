@@ -59,5 +59,98 @@
       (should (equal cwd "/tmp/"))
       (should (equal engine "omp")))))
 
+(ert-deftest triage-context-test-org-narrowing-keeps-context ()
+  "Narrowing does not drop ancestor context or change the selected heading."
+  (with-temp-buffer
+    (org-mode)
+    (setq buffer-file-name "/tmp/triage-context-narrow.org")
+    (insert "* Parent\nParent body\n** Child\nChild body\n** Sibling\nSibling body\n")
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\* Child")
+    (let ((start (line-beginning-position))
+          (end (save-excursion (org-end-of-subtree t t) (point))))
+      (narrow-to-region start end)
+      (goto-char start)
+      (set-buffer-modified-p nil)
+      (cl-letf (((symbol-function 'org-attach-dir) (lambda (&rest _) "/tmp/"))
+                ((symbol-function 'read-string)
+                 (lambda (&rest _)
+                   (should (= (point-min) start))
+                   (should (= (point-max) end))
+                   "")))
+        (let ((context (triage-context--org-session)))
+          (should (string-prefix-p "Org: Child\n" (car context)))
+          (should (string-match-p "Parent body" (car context)))
+          (should-not (string-match-p "Sibling body" (car context)))
+          (should (= (point-min) start))
+          (should (= (point-max) end)))))))
+
+(ert-deftest triage-context-test-agenda-widens-before-using-marker ()
+  "An agenda marker outside the narrowing still selects its own heading."
+  (with-temp-buffer
+    (org-mode)
+    (setq buffer-file-name "/tmp/triage-context-agenda.org")
+    (insert "* Parent\nParent body\n** Child\nChild body\n** Sibling\nSibling body\n")
+    (goto-char (point-min))
+    (re-search-forward "^\\*\\* Child")
+    (let ((start (line-beginning-position))
+          (marker (copy-marker (+ (line-beginning-position) 2))))
+      (narrow-to-region (point-min) start)
+      (set-buffer-modified-p nil)
+      (cl-letf (((symbol-function 'org-get-at-bol) (lambda (&rest _) marker))
+                ((symbol-function 'org-attach-dir) (lambda (&rest _) "/tmp/"))
+                ((symbol-function 'read-string)
+                 (lambda (&rest _)
+                   (should (= (point-max) start))
+                   "")))
+        (let ((context (triage-context--agenda-session)))
+          (should (string-prefix-p "Org: Child\n" (car context)))
+          (should (string-match-p "Parent body" (car context)))
+          (should (= (point-max) start)))))))
+
+(ert-deftest triage-context-test-region-uses-saved-text-and-lines ()
+  "Region prompts use saved text and exclude the next line at column zero."
+  (let ((file (make-temp-name "/tmp/triage-context-region-"))
+        (transient-mark-mode t))
+    (unwind-protect
+        (with-temp-buffer
+          (setq buffer-file-name file)
+          (insert "one\ntwo\nthree\nfour\nfive  \nsix\nseven\neight\n")
+          (setq-local before-save-hook '(delete-trailing-whitespace))
+          (goto-char (point-min))
+          (forward-line 4)
+          (set-mark (point))
+          (forward-line 3)
+          (setq mark-active t)
+          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                    ((symbol-function 'read-string) (lambda (&rest _) "Fix it")))
+            (let ((context (triage-context--region-session)))
+              (should (string-prefix-p (format "Rewrite: %s:5-7" file) (car context)))
+              (should (string-match-p "five\nsix\nseven" (car context)))
+              (should-not (string-match-p "five  \n" (car context))))))
+      (when (file-exists-p file)
+        (delete-file file)))))
+
+(ert-deftest triage-context-test-starting-launch-stops-context-capture ()
+  "An in-flight launch stops delegation before context capture."
+  (let ((buffer (get-buffer-create triage-launch--compose-buffer)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (triage-launch-mode)
+            (setq triage-launch--starting t))
+          (with-temp-buffer
+            (org-mode)
+            (let (called)
+              (cl-letf (((symbol-function 'triage-context--org-session)
+                         (lambda ()
+                           (setq called t)
+                           '("Prompt" . "/tmp/")))
+                        ((symbol-function 'triage-new-session) #'ignore))
+                (should-error (triage-delegate) :type 'user-error)
+                (should-not called)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (provide 'triage-context-test)
 ;;; triage-context-test.el ends here

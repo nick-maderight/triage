@@ -64,34 +64,39 @@
         (push (concat title (when body (concat "\n\n" body))) contexts)))
     (mapconcat #'identity contexts "\n\n")))
 
-(defun triage-context--org-session ()
-  "Return an Org heading prompt and working directory as a cons cell."
+(defun triage-context--org-session (&optional marker)
+  "Return an Org heading prompt and working directory as a cons cell.
+MARKER selects the heading before capture."
   (require 'org)
   (require 'org-attach)
   (unless buffer-file-name
     (user-error "The Org buffer must visit a file"))
   (triage-context--save-source-buffer)
-  (save-excursion
-    (org-back-to-heading t)
-    (let* ((title (org-get-heading t t t t))
-           (subtree (buffer-substring-no-properties
-                     (point)
-                     (save-excursion (org-end-of-subtree t t) (point))))
-           (ancestors (save-excursion (triage-context--org-ancestors)))
-           (attach-dir (ignore-errors (org-attach-dir nil t)))
-           (attach-dir (and attach-dir (file-directory-p attach-dir) attach-dir))
-           (direction (triage-context--direction t)))
-      (cons (concat "Org: " title "\n\n"
-                    (when (and ancestors (not (string-empty-p ancestors)))
-                      (concat "## Ancestor context\n\n" ancestors "\n\n"))
-                    (when attach-dir
-                      (format "## Attachment directory\n\nWrite task files in %s.\n\n"
-                              (directory-file-name attach-dir)))
-                    "## Task\n\n" subtree
-                    (unless (string-suffix-p "\n" subtree) "\n")
-                    (unless (string-empty-p direction)
-                      (concat "\n## Direction from the user\n\n" direction "\n")))
-            (or attach-dir (file-name-directory buffer-file-name))))))
+  (let ((direction (triage-context--direction t)))
+    (save-restriction
+      (widen)
+      (save-excursion
+        (when marker
+          (goto-char marker))
+        (org-back-to-heading t)
+        (let* ((title (org-get-heading t t t t))
+               (subtree (buffer-substring-no-properties
+                         (point)
+                         (save-excursion (org-end-of-subtree t t) (point))))
+               (ancestors (save-excursion (triage-context--org-ancestors)))
+               (attach-dir (ignore-errors (org-attach-dir nil t)))
+               (attach-dir (and attach-dir (file-directory-p attach-dir) attach-dir)))
+          (cons (concat "Org: " title "\n\n"
+                        (when (and ancestors (not (string-empty-p ancestors)))
+                          (concat "## Ancestor context\n\n" ancestors "\n\n"))
+                        (when attach-dir
+                          (format "## Attachment directory\n\nWrite task files in %s.\n\n"
+                                  (directory-file-name attach-dir)))
+                        "## Task\n\n" subtree
+                        (unless (string-suffix-p "\n" subtree) "\n")
+                        (unless (string-empty-p direction)
+                          (concat "\n## Direction from the user\n\n" direction "\n")))
+                (or attach-dir (file-name-directory buffer-file-name))))))))
 
 (defun triage-context--agenda-session ()
   "Return the selected agenda heading's prompt and working directory."
@@ -100,9 +105,7 @@
     (unless (and (markerp marker) (marker-buffer marker))
       (user-error "No Org heading at point"))
     (with-current-buffer (marker-buffer marker)
-      (save-excursion
-        (goto-char marker)
-        (triage-context--org-session)))))
+      (triage-context--org-session marker))))
 
 (defun triage-context--mail-prompt (title direction query thread &optional selection)
   "Build a mail prompt from TITLE, DIRECTION, QUERY and THREAD.
@@ -171,25 +174,28 @@ SELECTION limits the task to the exact selected text."
   "Return the active file region prompt and working directory."
   (unless (and buffer-file-name (use-region-p))
     (user-error "No supported Org, mail, Dired, or file-region context"))
-  (let ((file buffer-file-name)
-        (beg (region-beginning))
-        (end (region-end))
-        (selection (buffer-substring-no-properties (region-beginning) (region-end))))
-    (triage-context--save-source-buffer)
-    (let ((direction (triage-context--direction)))
-      (cons (concat (format "Rewrite: %s:%d-%d\n\n" file
-                            (line-number-at-pos beg) (line-number-at-pos end))
-                    "DIRECTION FROM THE USER\n" direction "\n\n"
-                    "Change only the selected lines in the source file.\n\n"
-                    "PRIMARY SELECTION\n" selection
-                    (unless (string-suffix-p "\n" selection) "\n"))
-            (file-name-directory file)))))
+  (triage-context--save-source-buffer)
+  (let* ((file buffer-file-name)
+         (beg (region-beginning))
+         (end (region-end))
+         (last (if (and (> end beg) (eq (char-before end) ?\n)) (1- end) end))
+         (selection (buffer-substring-no-properties beg end))
+         (direction (triage-context--direction)))
+    (cons (concat (format "Rewrite: %s:%d-%d\n\n" file
+                          (line-number-at-pos beg t) (line-number-at-pos last t))
+                  "DIRECTION FROM THE USER\n" direction "\n\n"
+                  "Change only the selected lines in the source file.\n\n"
+                  "PRIMARY SELECTION\n" selection
+                  (unless (string-suffix-p "\n" selection) "\n"))
+          (file-name-directory file))))
 
 ;;;###autoload
 (defun triage-delegate (&optional show-options engine)
   "Open a New session sheet for the current Emacs context.
 With SHOW-OPTIONS, open its option menu.  ENGINE names the launch engine."
   (interactive "P")
+  (when (triage-launch--compose-starting-p)
+    (user-error "Wait for the current session to finish starting"))
   (let ((context
          (cond ((derived-mode-p 'org-agenda-mode)
                 (triage-context--agenda-session))

@@ -64,6 +64,14 @@
 (defvar-local triage-launch--thinking nil
   "Thinking level the sheet launches with, or nil for Default.")
 
+(defvar-local triage-launch--starting nil
+  "Non-nil while this New session sheet has a launch request in flight.")
+
+(defun triage-launch--compose-starting-p ()
+  "Return non-nil when the New session sheet has a launch in flight."
+  (let ((buffer (get-buffer triage-launch--compose-buffer)))
+    (and buffer (buffer-local-value 'triage-launch--starting buffer))))
+
 (defvar-local triage-launch--executor nil
   "Execution model selector for plan-into, or nil for Default.")
 
@@ -135,6 +143,10 @@
   (if (eq triage-launch--kind 'compose)
       triage-card-compose-modes
     triage-card-dispatch-modes))
+
+(defun triage-launch--compose-mode-name (mode)
+  "Return MODE when it is a valid New session wire mode."
+  (and (stringp mode) (assoc mode triage-card-compose-modes) mode))
 
 (defun triage-launch--mode-label ()
   "Return the label of the current mode."
@@ -510,6 +522,8 @@ MODE, EXECUTOR, EXECUTOR-THINKING and IMAGE match `/v1/sessions'.
 THEN receives a successful response and ELSE receives status and message."
   (when (string-empty-p (string-trim prompt))
     (user-error "Type what the session should do"))
+  (unless (triage-launch--compose-mode-name mode)
+    (user-error "Invalid New session mode: %S" mode))
   (triage-api-request
    'post "/v1/sessions"
    :body (append
@@ -531,37 +545,47 @@ THEN receives a successful response and ELSE receives status and message."
 (defun triage-launch--submit-compose ()
   "Start the New session that the sheet describes.
 Port of submitCompose in ui/app.js."
+  (when triage-launch--starting
+    (user-error "Session is already starting"))
   (let* ((prompt (string-trim (triage-launch--body)))
+         (mode (or (triage-launch--compose-mode-name triage-launch--mode) "goal"))
          (engine (triage-launch--effective-engine))
          (dsh (equal engine "dsh"))
          (buffer (current-buffer)))
     (when (string-empty-p prompt)
       (user-error "Type what the session should do"))
-    (quit-window nil)
+    (setq triage-launch--mode mode
+          triage-launch--last-compose-mode mode
+          triage-launch--starting t)
     (message "Starting…")
-    (triage-start-session
-     prompt
-     :cwd triage-launch--cwd
-     :session triage-launch--session
-     :engine triage-launch--engine
-     :model triage-launch--model
-     :thinking triage-launch--thinking
-     :mode triage-launch--mode
-     :executor triage-launch--executor
-     :executor-thinking triage-launch--executor-thinking
-     :image triage-launch--image
-     :then (lambda (response)
-             (when (buffer-live-p buffer)
-               (kill-buffer buffer))
-             (message "%s"
-                      (cond ((alist-get 'starting response)
-                             (if dsh "Starting a dsh session." "Starting the session."))
-                            (dsh "Started a dsh session.")
-                            (t (format "Started · %s" (alist-get 'pane response))))))
-     :else (lambda (_status message)
-             (when (buffer-live-p buffer)
-               (pop-to-buffer buffer))
-             (message "%s" (propertize message 'face 'error))))))
+    (condition-case err
+        (triage-start-session
+         prompt
+         :cwd triage-launch--cwd
+         :session triage-launch--session
+         :engine triage-launch--engine
+         :model triage-launch--model
+         :thinking triage-launch--thinking
+         :mode mode
+         :executor triage-launch--executor
+         :executor-thinking triage-launch--executor-thinking
+         :image triage-launch--image
+         :then (lambda (response)
+                 (when (buffer-live-p buffer)
+                   (kill-buffer buffer))
+                 (message "%s"
+                          (cond ((alist-get 'starting response)
+                                 (if dsh "Starting a dsh session." "Starting the session."))
+                                (dsh "Started a dsh session.")
+                                (t (format "Started · %s" (alist-get 'pane response))))))
+         :else (lambda (_status message)
+                 (when (buffer-live-p buffer)
+                   (with-current-buffer buffer
+                     (setq triage-launch--starting nil)))
+                 (message "%s" (propertize message 'face 'error))))
+      (error
+       (setq triage-launch--starting nil)
+       (signal (car err) (cdr err))))))
 
 (defun triage-launch-submit ()
   "Launch the Dispatch sheet's card, or start the New session the sheet describes."
@@ -574,6 +598,8 @@ Port of submitCompose in ui/app.js."
   "Close the sheet without launching.
 A Dispatch sheet keeps its text in its card's draft."
   (interactive)
+  (when triage-launch--starting
+    (user-error "Wait for the session to finish starting"))
   (when (eq triage-launch--kind 'dispatch)
     (triage-launch--remember-current))
   (kill-buffer (current-buffer)))
@@ -631,15 +657,27 @@ A failed request leaves the lists empty."
 When PROMPT is non-nil, fill the body and use CWD and ENGINE for the launch."
   (interactive)
   (let ((buffer (get-buffer-create triage-launch--compose-buffer)))
+    (when (triage-launch--compose-starting-p)
+      (user-error "Wait for the current session to finish starting"))
     (with-current-buffer buffer
       (unless (derived-mode-p 'triage-launch-mode)
         (triage-launch-mode))
+      (when prompt
+        (let ((draft (string-trim (triage-launch--body))))
+          (when (and (not (string-empty-p draft))
+                     (not (equal draft (string-trim prompt)))
+                     (not (y-or-n-p "Replace the New session draft? ")))
+            (user-error "New session draft kept"))))
       (setq triage-launch--kind 'compose
             triage-launch--card-id nil
             triage-launch--option nil
             triage-launch--answers nil
             triage-launch--new-window nil
-            triage-launch--mode triage-launch--last-compose-mode
+            triage-launch--mode
+            (or (triage-launch--compose-mode-name triage-launch--last-compose-mode)
+                "goal")
+            triage-launch--last-compose-mode triage-launch--mode
+            triage-launch--starting nil
             triage-launch--default-text nil
             triage-launch--catalogs nil
             triage-launch--catalog-waiters nil
@@ -650,7 +688,9 @@ When PROMPT is non-nil, fill the body and use CWD and ENGINE for the launch."
               triage-launch--model nil
               triage-launch--thinking nil
               triage-launch--session nil
-              triage-launch--image nil)
+              triage-launch--image nil
+              triage-launch--executor nil
+              triage-launch--executor-thinking nil)
         (triage-launch--set-body prompt)
         (goto-char (point-max)))
       (triage-launch--load-tmux-sessions)

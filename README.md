@@ -211,6 +211,8 @@ Open Dispatch or New session options with `C-c C-o`. Mode, Engine, Thinking, Lat
 
 `M-x triage-delegate` captures an Org heading or agenda entry, a notmuch thread, marked Dired files, or an active file region into a New session sheet. The sheet starts in the context's directory and keeps the prompt editable before launch. Org tasks name their attachment directory when one exists. A selected mail passage limits the task to that passage. The whole thread remains reference. `triage-delegate-omp` and `triage-delegate-dsh` preselect the engine. A prefix argument opens the launch options after the sheet appears. `triage-start-session` starts a prompt through `/v1/sessions` for unattended fallbacks such as mail unsubscribe.
 
+Context capture widens narrowed Org buffers while it reads the task and restores the narrowing before it returns. Region prompts use the saved text and name the exact selected lines. A contextual launch asks before replacing a different unsent draft. New session submit keeps the sheet open until the daemon answers. A failed launch leaves the prompt and options ready for another try. Repeated submits cannot start duplicate sessions.
+
 New omp windows set `OMP_MCP_STARTUP_TIMEOUT_MS=0`, so the first turn waits for MCP servers before it uses their tools.
 
 ## Development
