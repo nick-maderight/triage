@@ -1116,8 +1116,8 @@ const REPORT_FORMAT_INTRO: &str = "# Triage report format\n\nTriage is the inbox
 
 /// The one line triage sends a session that owes a final report. The format sits in a file
 /// beside the database, where the session reads it, which leaves a single line in the user's
-/// pane instead of the rules. That line asks for the report alone, because a sentence ahead
-/// of the status line stops the reply from counting as a report.
+/// pane instead of the rules. That line asks for nothing ahead of the report, because a
+/// sentence ahead of the status line stops the reply from counting as a report.
 fn report_request(db: &Db) -> Result<String, String> {
     let path = db.path().with_file_name("report-format.md");
     let format = format!("{REPORT_FORMAT_INTRO}{ENVOY_STATUS_CONTRACT}{REPORT_STEP}");
@@ -1125,7 +1125,7 @@ fn report_request(db: &Db) -> Result<String, String> {
         fs::write(&path, format).map_err(|error| format!("report format: {error}"))?;
     }
     Ok(format!(
-        "Triage, the inbox that tracks this session, needs a final report. Finish any open part of the task first, then reply with the report alone. Its first line is the `ENVOY_STATUS` line and its format is at {}.",
+        "Triage, the inbox that tracks this session, needs a final report. Finish any open part of the task first, then reply with the report and put nothing ahead of it. Its first line is the `ENVOY_STATUS` line and its format is at {}.",
         path.display()
     ))
 }
@@ -3770,7 +3770,7 @@ After `R:`, write one `Remaining:` line for each action item still open.
 - Advice for future work, optional improvements, standing rules and finished steps are not open items.
 - Write one `Remaining: none` line when no item is open, as every `complete` report does.
 
-Then write one last line that starts `Recommended action:`.
+Then write one line that starts `Recommended action:`.
 
 - A non-investigation `complete` report writes `Recommended action: none`.
 - An investigation may name one evidence-backed next action.
@@ -3779,7 +3779,9 @@ Then write one last line that starts `Recommended action:`.
 - Never recommend unfinished requested work, another slice of the same task, an optional improvement, or a guessed approval blocker. Resume and finish anything your instructions allow.
 - The recommended action is never a remaining item that only the user can do or that waits on a later event, and never advice for future work, a standing rule or a finished step.
 
-Never ask for, suggest or invite a send anywhere in the report, and never tell the user how to open or send a draft, because the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked.
+After that line, leave one blank line and end the reply with the summary you would write if this brief asked for no report format. Write it in full for a person to read, including how you checked the work. Keep the STAR, `Remaining` and `Recommended action` labels out of the summary, because triage reads those labels anywhere in the reply.
+
+Never ask for, suggest or invite a send anywhere in the reply, and never tell the user how to open or send a draft, because the draft Nick asked for is the finished work. A direction from the user overrides the action above and any skill's default flow. Leave out how you checked, except in the summary.
 
 A later question in this session gets a plain answer with no report. Later work ends with a report in the same shape.
 "#;

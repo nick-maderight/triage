@@ -2300,6 +2300,26 @@ fn a_report_with_a_remaining_item_keeps_its_card_open() {
     assert_eq!(reply_turn(report("incomplete", open), None, false, true).status, events::CardStatus::Incomplete);
 }
 
+// Nick asked on 2026-11-22 to read the full summary under the STAR report. A summary after a
+// blank line stays in the card body while the card keeps its outcome and title.
+#[test]
+fn a_star_report_followed_by_its_summary_keeps_both_on_a_complete_card() {
+    let summary = "I moved the summary under the report.\n\nThe gate passed on the final tree.";
+    let turn = reply_turn(
+        format!(
+            "ENVOY_STATUS: complete\nS: Reports were hard to read.\nT: Add the summary.\nA: Changed REPORT_STEP.\nR: Cards show both.\nRemaining: none\nRecommended action: none\n\n{summary}"
+        ),
+        None,
+        false,
+        true,
+    );
+    assert_eq!(turn.status, events::CardStatus::Complete);
+    assert_eq!(turn.title, "Done: Cards show both.");
+    assert!(turn.action.is_empty(), "action: {}", turn.action);
+    let body = turn.body.unwrap();
+    assert!(body.starts_with("S: Reports were hard to read.") && body.ends_with(summary), "{body}");
+}
+
 
 #[test]
 fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
