@@ -6,7 +6,7 @@
  * Geist sets the text and Geist Mono the keys, IDs and counts. The peek pane keeps the terminal face
  * so box drawing stays aligned. The top bar and the card share one centered column (`--col`), so the
  * mark sits on the card's left edge and the last header control ends on its right edge. From 1100px
- * the card body splits into two equal columns, with the evidence (.context) on the left and the
+ * the card body splits into two equal columns, with the evidence (.evidence) on the left and the
  * answer (.action-block) on the right.
  */
 @font-face {
@@ -686,7 +686,7 @@ main {
 }
 /* The facts' rule already closes the head, so the first block in each column drops its own top rule. */
 .card-scroll > .block:first-child,
-.context > .block:first-child {
+.evidence > .block:first-child {
   border-top: 0;
 }
 .block h3 {
@@ -1819,29 +1819,6 @@ dialog.picker::backdrop {
   .more {
     margin-top: 4px;
   }
-  .action-block .block-content {
-    display: flex;
-    flex-direction: column;
-  }
-  .action-block .notice {
-    order: -3;
-    margin: 0 0 10px;
-  }
-  .action-block .plan-executor {
-    order: -2;
-    margin-bottom: 10px;
-  }
-  .action-block .options {
-    order: -2;
-    margin: 0;
-  }
-  .action-block .note {
-    order: -1;
-    margin: 12px 0 0;
-  }
-  .action-block .block-content > .md {
-    margin-top: 14px;
-  }
   .option {
     grid-template-columns: 24px minmax(0, 1fr) auto;
     gap: 10px;
@@ -2014,7 +1991,72 @@ dialog.picker::backdrop {
     margin-left: auto;
   }
 }
-/* Phones need room for the Settings button. Under 440px the wordmark keeps only its symbol. New session keeps only its plus under 390px. */
+/* On phones and touch tablets, the options lead the Action block. They follow the evidence on phones and start the answer column on tablets. */
+@media (max-width: 639px), (pointer: coarse) and (min-width: 640px) and (min-height: 481px) {
+  .action-block .block-content {
+    display: flex;
+    flex-direction: column;
+  }
+  .action-block .notice {
+    order: -3;
+    margin: 0 0 10px;
+  }
+  .action-block .plan-executor {
+    order: -2;
+    margin-bottom: 10px;
+  }
+  .action-block .options {
+    order: -2;
+    margin: 0;
+  }
+  .action-block .note {
+    order: -1;
+    margin: 12px 0 0;
+  }
+  .action-block .block-content > .md {
+    margin-top: 14px;
+  }
+}
+/* Touch tablets use tighter spacing to give the card body more height. Facts keep labels beside values. The final reply scrolls with the card. */
+@media (pointer: coarse) and (min-width: 640px) and (min-height: 481px) {
+  main {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .card-head {
+    padding: 8px 20px 0;
+  }
+  .report-status {
+    margin-top: 4px;
+  }
+  .title {
+    margin-top: 4px;
+    font-size: 22px;
+    line-height: 1.25;
+  }
+  .facts {
+    gap: 4px 20px;
+    margin-top: 8px;
+    padding-bottom: 12px;
+  }
+  .fact {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .fact dt {
+    flex: none;
+  }
+  .card-scroll {
+    padding-inline: 20px;
+  }
+  .body {
+    max-height: none;
+    overflow: visible;
+  }
+  .dock {
+    padding: 6px 8px 6px 12px;
+  }
+}
 @media (max-width: 439px) {
   .brand-name {
     position: absolute;

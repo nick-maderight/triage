@@ -1223,7 +1223,12 @@
     assert(!rendered.length, `closed dialogs take no room (${rendered.map((d) => d.id)})`);
     assert(frame.getBoundingClientRect().bottom <= innerHeight + 1, 'the card ends inside the window');
     if (scroll) {
-      assert(getComputedStyle(scroll).overflowY === 'auto', 'the card body is the scroller');
+      // The split card's evidence column is its first child. It must scroll with the card body.
+      const evidence = scroll.classList.contains('split') && scroll.firstElementChild;
+      assert(
+        !evidence || getComputedStyle(evidence).overflowY === 'visible',
+        'the evidence scrolls with the card body, not in a box of its own',
+      );
       if (scroll.scrollHeight > scroll.clientHeight + 1) {
         const before = scroll.scrollTop;
         scroll.scrollTop = before + 40;
@@ -1233,6 +1238,47 @@
       }
     }
     return { scenario: 'page', passed: true, frame: frame.className };
+  };
+  // Touch tablets use a tighter frame. Each fact keeps its label beside its value.
+  // The card body scrolls, except for code and tables. Split cards show their first option without scrolling.
+  const checkTablet = async () => {
+    assert(
+      matchMedia('(pointer: coarse)').matches && innerWidth >= 640 && innerHeight > 480,
+      'tablet scenario needs a touch viewport at least 640px wide and more than 480px tall',
+    );
+    await waitFor(() => document.querySelector('main > .card'), 'a card');
+    const card = document.querySelector('main > .card'),
+      scroll = card.querySelector('.card-scroll'),
+      option = card.querySelector('.option'),
+      boxed = [...scroll.querySelectorAll('*')].filter(
+        (e) =>
+          !e.closest('pre, .md-table') &&
+          ['auto', 'scroll'].includes(getComputedStyle(e).overflowY) &&
+          e.scrollHeight > e.clientHeight + 1,
+      );
+    assert(document.scrollingElement.scrollHeight <= innerHeight, 'the page does not scroll');
+    assert(!boxed.length, `only the card body scrolls (${boxed.map((e) => e.className)})`);
+    for (const fact of card.querySelectorAll('.fact')) {
+      const label = fact.querySelector('dt').getBoundingClientRect(),
+        value = fact.querySelector('dd').getBoundingClientRect();
+      assert(label.top < value.bottom && value.top < label.bottom, `${fact.className} reads on one line`);
+    }
+    for (const button of card.querySelectorAll('header button, .card button, .card input')) {
+      if (!visible(button)) continue;
+      const bounds = button.getBoundingClientRect();
+      assert(bounds.width >= 44 && bounds.height >= 44, `${button.id || button.className} keeps a 44px touch target`);
+    }
+    if (option && scroll.classList.contains('split')) {
+      const bounds = option.getBoundingClientRect(),
+        bottom = bounds.bottom - scroll.getBoundingClientRect().top + scroll.scrollTop;
+      assert(bottom <= scroll.clientHeight, 'the first option shows beside the evidence without scrolling');
+    }
+    return {
+      scenario: 'tablet',
+      passed: true,
+      head: Math.round(card.querySelector('.card-head').getBoundingClientRect().height),
+      body: scroll.clientHeight,
+    };
   };
 
   const checkPwa = async () => {
@@ -1255,7 +1301,7 @@
     assert(visible(document.querySelector('#btn-settings')), 'the Settings button is visible');
     assert(document.documentElement.scrollWidth <= innerWidth, 'the page does not scroll sideways');
     assert(bar.scrollWidth <= bar.clientWidth, 'the header bar does not overflow');
-    // Visually hidden labels are 1px wide on purpose; every other header item must show its whole content.
+    // Visually hidden labels are 1px wide on purpose. Every other header item must show its whole content.
     for (const item of document.querySelectorAll('.bar > *, .top-actions > *')) {
       if (!visible(item) || item.getBoundingClientRect().width <= 1) continue;
       assert(
@@ -1266,9 +1312,8 @@
     return { scenario: 'header', passed: true };
   };
 
-  // A card shortcut names an action, not a button slot: every dock button shows the key its
-  // aria names, the same label keeps that key in whichever slot it sits, and the primary runs on
-  // Enter beside its own key.
+  // Each dock button shows the key its aria names. The same label keeps that key in every slot.
+  // Enter runs the primary action beside its key.
   const checkCardKeys = async () => {
     await waitFor(() => document.querySelector('.dock button'), 'a card with a dock');
     const fixed = {
@@ -1461,6 +1506,7 @@
     if (scenario === 'mobile-card') return checkMobileCard();
     if (scenario === 'long-title') return checkLongTitle();
     if (scenario === 'card-status') return checkCardStatus();
+    if (scenario === 'tablet') return checkTablet();
     if (scenario === 'page') return checkPage();
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();

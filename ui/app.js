@@ -1527,7 +1527,7 @@ const S = {
       el(
         'div',
         split ? 'card-scroll split' : 'card-scroll',
-        split ? el('div', 'context', evidence) : evidence,
+        split ? el('div', 'evidence', evidence) : evidence,
         action,
       ),
       dock(c),
