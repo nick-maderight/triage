@@ -1113,9 +1113,9 @@
         'the page has no horizontal overflow',
       );
       assert(
-        getComputedStyle(scroll).overflowY === 'visible' ||
-          scroll.scrollHeight <= scroll.clientHeight + 1,
-        'the card body scrolls with the page, not in a nested scroller',
+        getComputedStyle(scroll).overflowY === 'auto' &&
+          document.scrollingElement.scrollHeight <= innerHeight,
+        'the card body scrolls inside the card and the page stays still',
       );
       assert(
         top(card.querySelector('.option')) <= innerHeight * 1.5,
@@ -1206,6 +1206,33 @@
       'the status line causes no horizontal overflow',
     );
     return { scenario: 'card-status', passed: true, status: label, title };
+  };
+
+  // The page never scrolls at any size. The card or the empty inbox ends inside the window.
+  // Closed dialogs take no room. Only the card body scrolls.
+  const checkPage = async () => {
+    await waitFor(() => document.querySelector('main > .card, main > .empty'), 'a card or the empty inbox');
+    const root = document.scrollingElement,
+      frame = document.querySelector('main > .card, main > .empty'),
+      scroll = frame.querySelector('.card-scroll'),
+      rendered = [...document.querySelectorAll('dialog:not([open])')].filter((d) => d.getClientRects().length);
+    assert(
+      root.scrollHeight <= innerHeight && root.scrollWidth <= innerWidth,
+      `the page does not scroll (${root.scrollWidth}x${root.scrollHeight} in ${innerWidth}x${innerHeight})`,
+    );
+    assert(!rendered.length, `closed dialogs take no room (${rendered.map((d) => d.id)})`);
+    assert(frame.getBoundingClientRect().bottom <= innerHeight + 1, 'the card ends inside the window');
+    if (scroll) {
+      assert(getComputedStyle(scroll).overflowY === 'auto', 'the card body is the scroller');
+      if (scroll.scrollHeight > scroll.clientHeight + 1) {
+        const before = scroll.scrollTop;
+        scroll.scrollTop = before + 40;
+        const moved = scroll.scrollTop !== before;
+        scroll.scrollTop = before;
+        assert(moved && root.scrollTop === 0, 'a long card body scrolls inside the card');
+      }
+    }
+    return { scenario: 'page', passed: true, frame: frame.className };
   };
 
   const checkPwa = async () => {
@@ -1434,6 +1461,7 @@
     if (scenario === 'mobile-card') return checkMobileCard();
     if (scenario === 'long-title') return checkLongTitle();
     if (scenario === 'card-status') return checkCardStatus();
+    if (scenario === 'page') return checkPage();
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();
     if (scenario === 'header') return checkHeader();

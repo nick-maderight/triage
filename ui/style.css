@@ -92,13 +92,21 @@
   box-sizing: border-box;
   min-width: 0;
 }
+/* The page fills the window and never scrolls. Only the card body scrolls. */
 html,
 body {
-  overflow-x: clip;
+  overflow: clip;
+}
+html {
+  overscroll-behavior: none;
 }
 body {
+  /* A positioned body clips absolute descendants too, which keeps a stray box from making the page scroll. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 320px;
-  min-height: 100dvh;
+  height: 100dvh;
   margin: 0;
   background: var(--ground);
   color: var(--fg);
@@ -209,24 +217,7 @@ kbd {
 
 /* The top bar sits on the page ground, in the same column as the card. */
 .top {
-  position: sticky;
-  z-index: 5;
-  top: 0;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
-  background: var(--ground);
-}
-/* A rule appears under the bar once the page scrolls beneath it. Phones scroll the page instead of the card. */
-@supports (animation-timeline: scroll()) {
-  .top {
-    animation: bar-rule linear both;
-    animation-timeline: scroll(root);
-    animation-range: 0 16px;
-  }
-}
-@keyframes bar-rule {
-  to {
-    box-shadow: 0 1px 0 var(--border);
-  }
 }
 .bar {
   position: relative;
@@ -395,9 +386,11 @@ kbd {
 
 /* stage */
 main {
-  display: block;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   width: min(100% - 2 * var(--gutter), var(--col));
-  min-height: calc(100dvh - var(--bar) - env(safe-area-inset-top));
+  min-height: 0;
   margin: 0 auto;
   padding: 0 0 24px;
 }
@@ -407,7 +400,7 @@ main {
   position: relative;
   display: flex;
   flex-direction: column;
-  max-height: calc(100dvh - var(--bar) - env(safe-area-inset-top) - 24px);
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-panel);
   background: var(--surface);
@@ -1076,11 +1069,12 @@ textarea.field {
   display: grid;
   align-content: start;
   gap: 6px;
-  min-height: min(560px, calc(100dvh - var(--bar) - 48px));
+  min-height: min(560px, 100%);
   padding: 28px 28px 32px;
   border: 1px solid var(--border);
   border-radius: var(--r-panel);
   background: var(--surface);
+  overflow-y: auto;
 }
 .empty h2 {
   margin-bottom: 4px;
@@ -1373,9 +1367,11 @@ dialog.sheet[open] {
   margin: 12px 0 20px;
 }
 dialog.modal:has(.compose) {
-  display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+dialog.modal[open]:has(.compose) {
+  display: flex;
 }
 .compose {
   flex: 1;
@@ -1778,8 +1774,7 @@ dialog.picker::backdrop {
     padding: 0;
   }
   .card {
-    min-height: calc(100dvh - var(--bar) - env(safe-area-inset-top));
-    max-height: none;
+    min-height: 100%;
     border-bottom: 0;
     border-radius: var(--r-panel) var(--r-panel) 0 0;
   }
@@ -1803,8 +1798,6 @@ dialog.picker::backdrop {
     padding-bottom: 14px;
   }
   .card-scroll {
-    flex: 1 0 auto;
-    overflow: visible;
     padding: 0 16px 8px;
   }
   .block {
@@ -1860,9 +1853,6 @@ dialog.picker::backdrop {
     justify-self: start;
   }
   .dock {
-    position: sticky;
-    bottom: 0;
-    z-index: 3;
     flex-wrap: wrap;
     gap: 6px 0;
     padding: 6px 8px max(6px, env(safe-area-inset-bottom));
@@ -1899,7 +1889,7 @@ dialog.picker::backdrop {
     text-align: center;
   }
   .empty {
-    min-height: calc(100dvh - var(--bar) - env(safe-area-inset-top));
+    min-height: 100%;
     padding: 20px 16px 24px;
     border-bottom: 0;
     border-radius: var(--r-panel) var(--r-panel) 0 0;
@@ -1913,7 +1903,7 @@ dialog.picker::backdrop {
   }
   /* Offline on a phone is a status line, not a page: no frame, centered, with the header's amber square. */
   .empty.offline {
-    min-height: min(420px, calc(100dvh - var(--bar) - env(safe-area-inset-top)));
+    min-height: min(420px, 100%);
     align-content: center;
     justify-items: center;
     padding: 24px 16px;
@@ -2082,13 +2072,10 @@ dialog.picker::backdrop {
 /* Phones held sideways get the same split as wide screens, packed tighter. */
 @media (min-width: 640px) and (max-height: 480px) and (orientation: landscape) {
   main {
-    height: calc(100dvh - var(--bar));
-    min-height: 0;
     padding: 0 0 8px;
   }
   .card {
-    height: 100%;
-    max-height: 100%;
+    min-height: 100%;
   }
   .card-head {
     padding: 2px 20px 0;

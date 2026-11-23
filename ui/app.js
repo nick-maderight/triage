@@ -375,11 +375,6 @@ const S = {
     setConnection(S.connection);
     document.title = S.cards.length ? `(${S.cards.length}) triage` : 'triage — decision inbox';
   }
-  // Desktop scrolls inside .card-scroll; narrow screens scroll the page instead.
-  function scroller() {
-    const s = $('.card-scroll');
-    return s && getComputedStyle(s).overflowY !== 'visible' ? s : document.scrollingElement;
-  }
   function snapshot() {
     const d = S.shownId && S.drafts.get(S.shownId),
       other = $('#other-text'),
@@ -393,13 +388,13 @@ const S = {
     return {
       id: inside ? active.id || null : null,
       selection,
-      scroll: scroller()?.scrollTop || 0,
+      scroll: $('.card-scroll')?.scrollTop || 0,
       report: $('.report-wrap .body')?.scrollTop || 0,
       inside,
     };
   }
   function restore(v, changed) {
-    const scroll = scroller(),
+    const scroll = $('.card-scroll'),
       body = $('.report-wrap .body');
     if (scroll) scroll.scrollTop = changed ? 0 : v.scroll || 0;
     if (body) body.scrollTop = changed ? 0 : v.report || 0;
