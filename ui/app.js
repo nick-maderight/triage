@@ -814,7 +814,12 @@ const S = {
       dir && fact('Directory', h('code', { title: s.cwd }, dir)),
       s.target && fact('Pane', h('code', { title: s.pane ? `Pane ${s.pane}` : null }, s.target)),
       fact('Kind', chip(c.kind), c.level === 'error' && chip('error')),
-      fact('Priority', h('span', { title: 'Priority, 1 is most urgent' }, `P${p}`)),
+      fact(
+        'Priority',
+        p === 5
+          ? h('span', { title: 'Priority 5, the lowest' }, 'Reading list')
+          : h('span', { title: 'Priority, 1 is most urgent' }, `P${p}`),
+      ),
       fact(
         'Waiting',
         h(

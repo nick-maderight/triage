@@ -249,7 +249,8 @@ QUESTION is the current question and STATUS is the `triage-card-status' plist."
                            (cons "Directory" (triage-card-directory cwd)))
                       (and target (cons "Pane" target))
                       (cons "Kind" kind)
-                      (cons nil (format "P%s" (alist-get 'priority card)))
+                      (cons nil (let ((priority (alist-get 'priority card)))
+                                  (if (eql priority 5) "Reading list" (format "P%s" priority))))
                       (and created
                            (cons "Created" (triage-card-clock created (float-time))))))))
     (dolist (fact facts)

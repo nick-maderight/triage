@@ -1,6 +1,6 @@
 # Triage
 
-Triage is one decision inbox for scheduled jobs and for omp and dsh sessions. It shows one card at a time in priority order. Ask cards show the STAR situation, task, action, and result with options suited to the situation. Skip and later are built in.
+Triage is one decision inbox for scheduled jobs and for omp and dsh sessions. It shows one card at a time in priority order. Priority 1 is the most urgent. Priority 5, the lowest, is the Reading list, which holds cards to read when there is time, such as material for a later improvement or an audit. The inbox shows Reading list in place of P5 on those cards. Ask cards show the STAR situation, task, action, and result with options suited to the situation. Skip and later are built in.
 
 ## Agent sessions
 
