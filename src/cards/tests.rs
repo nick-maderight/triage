@@ -9758,3 +9758,342 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     assert!(brief.find("## Working directory") < brief.find("## References"), "{brief}");
 }
 
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+
+// acp engine. A fake ompsdk daemon on a unix socket answers the calls triage makes.
+
+static ACP_TESTS: Mutex<()> = Mutex::new(());
+
+fn acp_lock() -> std::sync::MutexGuard<'static, ()> {
+    ACP_TESTS.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// A fake daemon. It logs every line it reads and answers each call as the daemon does.
+struct FakeAcp {
+    socket: PathBuf,
+    log: Arc<Mutex<Vec<Value>>>,
+}
+
+impl FakeAcp {
+    fn start(root: &Path) -> Self {
+        let socket = root.join("ompsdk.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let served = Arc::clone(&log);
+        thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                fake_acp_serve(stream, &served);
+            }
+        });
+        Self { socket, log }
+    }
+
+    fn sent(&self) -> Vec<Value> {
+        self.log.lock().unwrap().clone()
+    }
+
+    fn find(&self, matches: impl Fn(&Value) -> bool) -> Option<Value> {
+        self.sent().into_iter().find(|message| matches(message))
+    }
+}
+
+fn fake_acp_serve(stream: UnixStream, log: &Mutex<Vec<Value>>) {
+    let mut writer = stream.try_clone().unwrap();
+    let mut send = |value: Value| {
+        let mut line = value.to_string();
+        line.push('\n');
+        writer.write_all(line.as_bytes()).unwrap();
+    };
+    // The prompt id and the elicitation id that the turn waits on.
+    let mut waiting: Option<(Value, String)> = None;
+    for line in BufReader::new(stream).lines() {
+        let Ok(line) = line else { break };
+        let message: Value = serde_json::from_str(&line).unwrap();
+        log.lock().unwrap().push(message.clone());
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            // An answer to an elicitation releases the turn that asked it.
+            match waiting.take() {
+                Some((prompt, key)) if id.as_str() == Some(key.as_str()) => {
+                    send(json!({"jsonrpc": "2.0", "id": prompt, "result": {"stopReason": "end_turn"}}));
+                }
+                other => waiting = other,
+            }
+            continue;
+        };
+        let result = match method {
+            "session/prompt" => {
+                let text = message["params"]["prompt"][0]["text"].as_str().unwrap_or_default();
+                let asked = match fake_scenario(text) {
+                    "ask" => Some(("ask-1", "Which colour?", ask_schema())),
+                    "confirm" => Some(("confirm-1", "Keep it?", json!({"type": "object", "properties": {"value": {"type": "boolean"}}}))),
+                    "plan" => Some(("plan-1", "Approve plan and start implementation?", plan_schema())),
+                    _ => None,
+                };
+                match asked {
+                    Some((key, question, schema)) => {
+                        send(json!({"jsonrpc": "2.0", "id": key, "method": "elicitation/create",
+                            "params": {"mode": "form", "sessionId": ACP_SID, "message": question, "requestedSchema": schema}}));
+                        waiting = Some((id, key.to_owned()));
+                        continue;
+                    }
+                    None => json!({"stopReason": "end_turn"}),
+                }
+            }
+            "session/new" => json!({"sessionId": ACP_SID, "configOptions": fake_options()}),
+            "session/resume" => json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": false}}}),
+            "session/set_config_option" => json!({"configOptions": fake_options()}),
+            "_session/steering" => json!({"outcome": "promptRequired", "queue": 0}),
+            _ => json!({}),
+        };
+        send(json!({"jsonrpc": "2.0", "id": id, "result": result}));
+    }
+}
+
+const ACP_SID: &str = "sid-1";
+
+fn fake_options() -> Value {
+    json!([
+        {"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "default",
+         "options": [{"value": "default", "name": "Default"}, {"value": "plan", "name": "Plan"}]},
+        {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "openai/gpt-x",
+         "options": [{"value": "openai/gpt-x", "name": "GPT X"}, {"value": "anthropic/claude-smol", "name": "Smol"}]},
+        {"id": "thinking", "name": "Thinking", "category": "thought_level", "type": "select", "currentValue": "off",
+         "options": [{"value": "off", "name": "Off"}, {"value": "low", "name": "Low"}, {"value": "medium", "name": "Medium"}, {"value": "high", "name": "High"}]}
+    ])
+}
+
+fn ask_schema() -> Value {
+    json!({"type": "object", "properties": {
+        "q0": {"type": "string", "title": "Which colour?", "oneOf": [{"const": "red", "title": "Red"}, {"const": "blue", "title": "Blue"}]},
+        "q0__other": {"type": "string", "title": "Other"}
+    }, "required": ["q0"]})
+}
+
+fn plan_schema() -> Value {
+    json!({"type": "object", "properties": {"value": {"type": "string", "enum": ["Approve and execute", "Refine plan"]}}, "required": ["value"]})
+}
+
+/// The scenario a prompt names: the word after `SCENARIO`, which a brief heading or brief file name carries.
+fn fake_scenario(text: &str) -> &str {
+    let Some((_, rest)) = text.split_once("SCENARIO") else {
+        return "plain";
+    };
+    let rest = rest.trim_start_matches([' ', '-']);
+    &rest[..rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len())]
+}
+
+fn acp_brief(root: &Path, name: &str, heading: &str) -> PathBuf {
+    let path = root.join(name);
+    fs::write(&path, format!("{heading}\n\nReply with the report.\n")).unwrap();
+    path
+}
+
+fn acp_launch(fake: &FakeAcp) -> Launch {
+    Launch { engine: Engine::Acp, acp_socket: Some(fake.socket.clone()), ..Launch::default() }
+}
+
+/// Poll the acp tracker until `done` holds. A reply reaches the connection a moment after its call.
+fn acp_poll_until(tracker: &mut Tracker, db: &Db, launch: &Launch, done: impl Fn(&Db) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done(db) {
+        assert!(Instant::now() < deadline, "acp poll never reached the expected state");
+        tracker.acp_tick(db, launch);
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Wait until the fake logs a message that `found` picks.
+fn wait_for(fake: &FakeAcp, found: impl Fn(&Value) -> bool) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(message) = fake.find(&found) {
+            return message;
+        }
+        assert!(Instant::now() < deadline, "the fake daemon never logged the expected message");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn acp_launch_sets_mode_model_and_thinking_then_prompts() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = Launch {
+        model: Some("openai/gpt-x".to_owned()),
+        thinking: Some("high".to_owned()),
+        ..acp_launch(&fake)
+    };
+    let brief = acp_brief(scratch.path(), "brief.md", "Plan the change");
+    let pane = acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    assert_eq!(pane, "acp:sid-1");
+    let set = |config: &str, value: &str| {
+        fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == config && m["params"]["value"] == value)
+            .is_some()
+    };
+    assert!(set("mode", "plan"));
+    assert!(set("model", "openai/gpt-x"));
+    assert!(set("thinking", "high"));
+    let prompt = wait_for(&fake, |m| m["method"] == "session/prompt");
+    assert!(prompt["params"]["prompt"][0]["text"].as_str().unwrap().contains(&brief.display().to_string()));
+}
+
+#[test]
+fn acp_ask_question_becomes_a_card_and_answers_back() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO ask");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:acp:sid-1:ask-1").unwrap().is_some());
+    let (card, swipe) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
+    assert_eq!(card.kind, Kind::Ask);
+    assert!(card.answerable);
+    assert_eq!(card.source.uri, "acp://session/sid-1");
+    assert_eq!(card.engine.as_deref(), Some("acp"));
+    let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
+    assert_eq!(labels, ["red", "blue"]);
+    assert!(swipe.is_none());
+    let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
+    acp_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
+    let accepted = wait_for(&fake, |m| m["id"] == "ask-1" && m.get("result").is_some());
+    assert_eq!(accepted["result"], json!({"action": "accept", "content": {"q0": "blue"}}));
+    let (_, swipe) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
+    assert_eq!(swipe.unwrap().reason.as_deref(), Some("sent to acp"));
+}
+
+#[test]
+fn acp_confirm_is_declined_without_a_card() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO confirm");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Confirm it").unwrap();
+    let declined = wait_for(&fake, |m| m["id"] == "confirm-1" && m["result"]["action"] == "decline");
+    assert_eq!(declined["result"], json!({"action": "decline"}));
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    tracker.acp_tick(&db, &launch);
+    tracker.acp_tick(&db, &launch);
+    assert!(db.card("ask:acp:sid-1:confirm-1").unwrap().is_none());
+}
+
+#[test]
+fn acp_plan_approval_sets_the_executor_before_accepting() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("plan:acp:sid-1:plan-1").unwrap().is_some());
+    let (card, _) = db.card("plan:acp:sid-1:plan-1").unwrap().unwrap();
+    assert_eq!(card.kind, Kind::Plan);
+    acp_track::answer_plan(&db, &card, "sid-1", &AnswerReq::default(), Some(0), None, Some("anthropic/claude-smol"), Some("medium"), &launch).unwrap();
+    wait_for(&fake, |m| m["id"] == "plan-1" && m.get("result").is_some());
+    let log = fake.sent();
+    let accept = log.iter().position(|m| m["id"] == "plan-1" && m.get("result").is_some()).unwrap();
+    let before_accept = |config: &str, value: &str| {
+        log.iter().position(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == config && m["params"]["value"] == value)
+            .is_some_and(|at| at < accept)
+    };
+    assert!(before_accept("model", "anthropic/claude-smol"));
+    assert!(before_accept("thinking", "medium"));
+    assert_eq!(log[accept]["result"]["content"]["value"], "Approve and execute");
+}
+
+#[test]
+fn acp_plan_into_approves_the_first_plan_without_a_card() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
+    let start = Start::PlanInto(Some("anthropic/claude-smol"), Some("low"));
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |_| {
+        fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_some()
+    });
+    assert!(db.card("plan:acp:sid-1:plan-1").unwrap().is_none());
+    assert!(fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["value"] == "anthropic/claude-smol").is_some());
+}
+
+/// Write the transcript the fake session's turn leaves in `home`, where omp keeps it.
+fn write_acp_transcript(home: &Path, lines: &[Value]) {
+    let dir = home.join(".omp/agent/sessions/-work-project");
+    fs::create_dir_all(&dir).unwrap();
+    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    fs::write(dir.join("2026-01-01T00-00-00Z_sid-1.jsonl"), text).unwrap();
+}
+
+fn acp_entry(id: &str, text: &str) -> Value {
+    json!({"type": "message", "id": id, "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": text}]}})
+}
+
+// omp reads the transcript from $HOME, so these run in a child process with its own HOME.
+
+#[test]
+fn acp_status_reply_reports_and_closes_the_session() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    run_child("acp_status_reply_child", scratch.path(), Some(&scratch.path().join("home")), None);
+}
+
+#[test]
+fn acp_status_reply_child() {
+    let Some(root) = child_root("acp_status_reply_child") else {
+        return;
+    };
+    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeAcp::start(&root);
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(&root, "brief.md", "SCENARIO plain");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Finish it").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("done:acp:sid-1:e1").unwrap().is_some());
+    let (card, _) = db.card("done:acp:sid-1:e1").unwrap().unwrap();
+    assert_eq!(card.kind, Kind::Info);
+    assert_eq!(card.engine.as_deref(), Some("acp"));
+    wait_for(&fake, |m| m["method"] == "session/close");
+}
+
+#[test]
+fn acp_reply_without_status_continues_five_times_then_reports() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    run_child("acp_continuation_child", scratch.path(), Some(&scratch.path().join("home")), None);
+}
+
+#[test]
+fn acp_continuation_child() {
+    let Some(root) = child_root("acp_continuation_child") else {
+        return;
+    };
+    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "Done, with no status line.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeAcp::start(&root);
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(&root, "brief.md", "SCENARIO plain");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Continue it").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("done:acp:sid-1:e1").unwrap().is_some());
+    let continuations = fake
+        .sent()
+        .iter()
+        .filter(|m| m["method"] == "session/prompt" && m["params"]["prompt"][0]["text"].as_str().is_some_and(|text| text.starts_with("Continue the triage brief at")))
+        .count();
+    assert_eq!(continuations, 5);
+}

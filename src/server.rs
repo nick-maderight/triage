@@ -181,6 +181,7 @@ fn router(state: Arc<AppState>, port: Option<u16>) -> axum::Router {
         .route("/v1/cards/{id}/dispatch", axum::routing::post(dispatch))
         .route("/v1/cards/{id}/report", axum::routing::post(request_report))
         .route("/v1/cards/{id}/restore", axum::routing::post(restore))
+        .route("/v1/cards/{id}/cli", axum::routing::post(open_cli))
         .route("/v1/cards/{id}/close", axum::routing::post(close))
         .route("/v1/cards/{id}/reload", axum::routing::post(reload))
         .route("/v1/sessions", axum::routing::post(start_session))
@@ -452,7 +453,7 @@ async fn answer(
     .await
 }
 
-/// A new engine drops the daemon's model and thinking level, which belong to the old engine.
+/// A new engine drops the daemon's model and thinking level, unless the old and new engines share their selectors.
 fn apply_launch_choices(
     launch: &mut crate::cards::Launch,
     engine: Option<&str>,
@@ -462,9 +463,13 @@ fn apply_launch_choices(
     if let Some(engine) = engine.map(str::trim).filter(|engine| !engine.is_empty()) {
         let engine = crate::cards::Engine::parse(engine).ok_or_else(|| format!("unknown engine {engine}"))?;
         if engine != launch.engine {
+            // omp and acp take the same selectors and levels, so a switch between them keeps the choice.
+            let shared = launch.engine != crate::cards::Engine::Dsh && engine != crate::cards::Engine::Dsh;
             launch.engine = engine;
-            launch.model = None;
-            launch.thinking = None;
+            if !shared {
+                launch.model = None;
+                launch.thinking = None;
+            }
         }
     }
     if let Some(model) = crate::cards::engine_selector(launch.engine, model)? {
@@ -702,6 +707,14 @@ async fn restore(
 ) -> axum::response::Response {
     let launch = state.launch.clone();
     card_action(state, id, move |db, card| crate::cards::restore(db, &card, &launch)).await
+}
+
+async fn open_cli(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let launch = state.launch.clone();
+    card_action(state, id, move |db, card| crate::cards::open_cli(db, &card, &launch)).await
 }
 
 /// Puts a fresh copy of a handled card back in the queue. The original and its swipes stay as they are.
@@ -1745,7 +1758,8 @@ pub async fn serve(
                 let mut tracker = state.tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut written = tracker.tick(&state.db).written
                     + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written
-                    + tracker.chase_missing_reports(&state.db, &state.launch).written;
+                    + tracker.chase_missing_reports(&state.db, &state.launch).written
+                    + tracker.acp_tick(&state.db, &state.launch).written;
                 drop(tracker);
                 // shortcut: the poll waits while a Plan into plan starts its dsh session, up to
                 // dsh::LAUNCH_TIMEOUT. Move it to a task of its own if those waits slow the inbox.

@@ -1,6 +1,7 @@
 //! CLI entry: `triage serve`, `triage emit` and `triage finding`. README.md documents the
 //! flags, the default database path and `TRIAGE_URL`.
 
+mod acp;
 mod cards;
 mod client;
 mod db;
@@ -55,6 +56,9 @@ enum Commands {
         /// Host name the inbox accepts besides loopback, such as a tailnet name; repeatable
         #[arg(long = "allow-host", value_name = "HOST")]
         allow_hosts: Vec<String>,
+        /// ompsdk socket the acp engine's sessions run through [default: $XDG_RUNTIME_DIR/ompsdk/sock]
+        #[arg(long)]
+        acp_socket: Option<PathBuf>,
     },
     Emit {
         #[arg(default_value = "-")]
@@ -98,7 +102,7 @@ fn main() {
 #[tokio::main]
 async fn run() -> Result<(), String> {
     match Cli::parse().command {
-        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, dsh_ignore_workspaces, dsh_workspaces, allow_hosts } => {
+        Commands::Serve { listen, db, session, engine, model, thinking, dsh_workspace, dsh_ignore_workspaces, dsh_workspaces, allow_hosts, acp_socket } => {
             // Validate before opening the DB so a bad flag exits 1 before anything is created.
             cards::engine_flags(engine, model.as_deref(), thinking.as_deref())?;
             let dsh_workspace = dsh::workspace_name(Some(&dsh_workspace))?.map(str::to_owned);
@@ -144,6 +148,7 @@ async fn run() -> Result<(), String> {
                     dsh_workspace,
                     dsh_workspaces: workspaces,
                     dsh_into: None,
+                    acp_socket: Some(acp_socket.unwrap_or_else(acp::default_socket)),
                 },
                 allowed_hosts: allow_hosts,
             });

@@ -1,6 +1,7 @@
 //! Pane tracker and card actions. Owner: tmux worker (after tmux.rs and omp.rs).
 //! Binds pane snapshots to the store and executes the user's answers.
 
+use crate::acp;
 use crate::db::Db;
 use crate::dsh;
 use crate::events::{self, AnswerReq, Card, CardOption, CardQuestion, Kind, Source, Star, Swipe};
@@ -15,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 mod dsh_track;
+mod acp_track;
 
 /// Remembers each pane's last state so only transitions produce cards.
 #[derive(Default)]
@@ -58,6 +60,8 @@ pub struct Tracker {
     startup_panes: HashMap<String, String>,
     /// The host pid, retry time and per-session change marks of the dsh bridge poll.
     dsh: dsh_track::Memo,
+    /// Retry state for the acp sessions triage holds.
+    acp: acp_track::Memo,
     /// The dsh workspaces whose sessions triage does not track.
     dsh_ignore: crate::dsh::Ignore,
     #[cfg(test)]
@@ -152,6 +156,7 @@ impl Tracker {
             startup: HashMap::new(),
             startup_panes: HashMap::new(),
             dsh: dsh_track::Memo::default(),
+            acp: acp_track::Memo::default(),
             dsh_ignore: crate::dsh::Ignore::default(),
             #[cfg(test)]
             pending_ask_reads: 0,
@@ -822,10 +827,13 @@ fn pane_lock(db: &Db, pane: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     db.answer_lock(&format!("pane:{pane}"))
 }
 
-/// The lock a card action takes first, keyed by the card's dsh session or else its pane.
+/// The lock a card action takes first, keyed by the card's dsh or acp session or else its pane.
 fn target_lock(db: &Db, card: &Card) -> Option<std::sync::Arc<std::sync::Mutex<()>>> {
-    match dsh::session_id(card) {
-        Some(sid) => Some(db.answer_lock(&format!("dsh:{sid}"))),
+    let session = dsh::session_id(card)
+        .map(|sid| format!("dsh:{sid}"))
+        .or_else(|| acp::session_id(card).map(|sid| format!("acp:{sid}")));
+    match session {
+        Some(key) => Some(db.answer_lock(&key)),
         None => card.source.pane.as_deref().map(|pane| pane_lock(db, pane)),
     }
 }
@@ -1029,7 +1037,7 @@ pub fn dispatch(
         db,
         dispatch_brief(card, start, task, note, workspace_workdir(launch, &card_workdir(card))),
     )?;
-    let pane = launch_brief(card, launch, &path, start, image, new_window)?;
+    let pane = launch_brief(db, card, launch, &path, start, image, new_window)?;
     let label = launch_label(start, task);
     let recorded = if matches!(card.kind, Kind::Ask | Kind::Plan) {
         let doing = match start {
@@ -1087,6 +1095,9 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>, launch: &Launch) -> Resul
     if let Some(sid) = dsh::session_id(card) {
         return dsh_track::close(db, card, sid, note, launch);
     }
+    if let Some(sid) = acp::session_id(card) {
+        return acp_track::close(db, card, sid, note, launch);
+    }
     let reason = match card.source.pane.as_deref() {
         None => None,
         Some(pane) => match tmux::kill_pane(pane) {
@@ -1133,7 +1144,7 @@ fn report_request(db: &Db) -> Result<String, String> {
 /// Type the request for the final report into the card's waiting pane and resolve the card.
 /// A dsh card asks its session instead. Only an idle session takes the request.
 pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
-    if dsh::session_id(card).is_none() && card.source.pane.is_none() {
+    if dsh::session_id(card).is_none() && acp::session_id(card).is_none() && card.source.pane.is_none() {
         return Err("card has no pane".to_owned());
     }
     let target_mutex = target_lock(db, card);
@@ -1150,6 +1161,9 @@ pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), Strin
     if let Some(sid) = dsh::session_id(card) {
         return dsh_track::request_report(db, card, sid, launch);
     }
+    if let Some(sid) = acp::session_id(card) {
+        return acp_track::request_report(db, card, sid, launch);
+    }
     ask_for_report(db, card, launch)?;
     let pane = card.source.pane.as_deref().unwrap_or_default();
     if record_swipe(db, &card.id, "done", None, Some("Request final report".to_owned()), None, Some(format!("report requested {pane}"))) {
@@ -1157,6 +1171,20 @@ pub fn request_report(db: &Db, card: &Card, launch: &Launch) -> Result<(), Strin
     } else {
         Err("could not record swipe".to_owned())
     }
+}
+
+/// Hand an acp card's session to an omp window. Only a queued card takes it.
+pub fn open_cli(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
+    let target_mutex = target_lock(db, card);
+    let _target_guard = target_mutex.as_ref().map(|mutex| mutex.lock().unwrap());
+    let answer_lock = db.answer_lock(&card.id);
+    let _answer_guard = answer_lock.lock().unwrap();
+    let swipe = db.card(&card.id).map_err(|error| error.to_string())?.and_then(|(_, swipe)| swipe);
+    if !queued_for_answer(swipe.as_ref()) {
+        return Err("card is not queued".to_owned());
+    }
+    let sid = acp::session_id(card).ok_or_else(|| "card has no acp session".to_owned())?;
+    acp_track::open_cli(db, card, sid, launch)
 }
 
 /// How long after its card appears a session can still be asked for the status line it left
@@ -1316,6 +1344,15 @@ fn launch_text(
         let title = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
         return dsh_track::launch_new(launch, cwd, &path, title, image);
     }
+    if launch.engine == Engine::Acp {
+        launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
+        if let Start::PlanInto(executor, effort) = start {
+            plan_into_choices(executor, effort)?;
+        }
+        let path = write_brief(db, brief(None))?;
+        let title = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
+        return acp_track::launch_new(db, launch, cwd, &path, start, image, title);
+    }
     // Validate before writing the brief so a bad choice leaves nothing behind.
     launch_flags(launch.model.as_deref(), launch.thinking.as_deref())?;
     if let Start::PlanInto(executor, effort) = start {
@@ -1348,6 +1385,7 @@ fn dispatch_prompt(brief: &Path) -> String {
 /// always opens a new window, because only launch flags turn plan-yolo on. A caller that asks
 /// for `new_window` opens a window of its own instead.
 fn launch_brief(
+    db: &Db,
     card: &Card,
     launch: &Launch,
     brief: &Path,
@@ -1360,6 +1398,9 @@ fn launch_brief(
             return Err("a dsh session starts in goal mode".to_owned());
         }
         return dsh_track::launch_brief(card, launch, brief, image);
+    }
+    if acp::session_id(card).is_some() || launch.engine == Engine::Acp {
+        return acp_track::launch_brief(db, card, launch, brief, start, image);
     }
     // Only a pane that finished its turn takes typed text. A plan review also reads as waiting,
     // where a typed brief would run as overlay keys. An ask or a plan card opens a window for
@@ -2659,6 +2700,9 @@ fn answer_ask(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result<
     if let Some(sid) = dsh::session_id(card) {
         return dsh_track::answer_ask(db, card, sid, req, launch);
     }
+    if let Some(sid) = acp::session_id(card) {
+        return acp_track::answer_ask(db, card, sid, req, launch);
+    }
     let pane = card
         .source
         .pane
@@ -3073,14 +3117,14 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
     let dsh_card = dsh::session_id(card).is_some();
     // A plan omp wrote for dsh: the card names dsh and still sits on the planner's pane.
     let for_dsh = !dsh_card && card.engine.as_deref() == Some("dsh");
-    let engine = if dsh_card || for_dsh { Engine::Dsh } else { Engine::Omp };
+    let engine = if dsh_card || for_dsh { Engine::Dsh } else if acp::session_id(card).is_some() { Engine::Acp } else { Engine::Omp };
     // omp's Plan Review slider lists roles only, so its execution model keeps the role's level.
     if engine == Engine::Omp && req.executor_thinking.is_some() {
         return Err("an omp plan review keeps the role's own thinking level".to_owned());
     }
     let executor = match engine {
         Engine::Dsh => dsh_selector(req.executor.as_deref())?,
-        Engine::Omp => model_selector(req.executor.as_deref())?,
+        Engine::Omp | Engine::Acp => model_selector(req.executor.as_deref())?,
     };
     // An effort belongs to the executor model, which must be named with it.
     let executor_effort = executor_effort(engine, req.executor_thinking.as_deref())?;
@@ -3105,6 +3149,11 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
     if dsh_card {
         return dsh_track::answer_plan(
             db, card, req, option, refinement, executor, executor_effort, launch,
+        );
+    }
+    if let Some(sid) = acp::session_id(card) {
+        return acp_track::answer_plan(
+            db, card, sid, req, option, refinement, executor, executor_effort, launch,
         );
     }
     let pane = card
@@ -3384,9 +3433,9 @@ fn finding_pane_for_answer(
     (option, note, label): (usize, Option<&str>, &str),
     brief: impl FnOnce() -> String,
 ) -> Result<String, String> {
-    // dsh sessions have no tmux pane to find or tag.
-    let is_dsh = launch.engine == Engine::Dsh;
-    let tagged_pane = if is_dsh {
+    // dsh and acp sessions have no tmux pane to find or tag.
+    let no_pane = launch.engine != Engine::Omp;
+    let tagged_pane = if no_pane {
         None
     } else {
         tmux::finding_pane(&card.id, option, note, label).map_err(|error| error.to_string())?
@@ -3402,16 +3451,16 @@ fn finding_pane_for_answer(
         (pane, true)
     } else {
         let path = write_brief(db, brief())?;
-        let pane = launch_brief(card, launch, &path, start, image, false)?;
+        let pane = launch_brief(db, card, launch, &path, start, image, false)?;
         let pending = record_pending_finding_pane(db, &card.id, option, note, &pane, label);
-        if !is_dsh {
+        if !no_pane {
             tmux::tag_finding_pane(&pane, &card.id, option, note, label)
                 .map_err(|error| error.to_string())?;
         }
         pending?;
         (pane, false)
     };
-    if needs_tag && !is_dsh {
+    if needs_tag && !no_pane {
         tmux::tag_finding_pane(&pane, &card.id, option, note, label)
             .map_err(|error| error.to_string())?;
     }
@@ -4005,12 +4054,14 @@ pub const THINKING_LEVELS: &[&str] = &["auto", "off", "minimal", "low", "medium"
 /// tmux session new windows open in when neither the request nor `serve --session` names one.
 pub const DEFAULT_SESSION: &str = "triage";
 
-/// The harness a launched session runs in, either omp in a tmux window or dsh through its web host.
+/// The harness a launched session runs in. It is omp in a tmux window, dsh through its web host, or acp through ompsdk.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Engine {
     #[default]
     Omp,
     Dsh,
+    /// An omp session the ompsdk daemon runs, driven over ACP.
+    Acp,
 }
 
 impl Engine {
@@ -4018,6 +4069,7 @@ impl Engine {
         match name {
             "omp" => Some(Self::Omp),
             "dsh" => Some(Self::Dsh),
+            "acp" => Some(Self::Acp),
             _ => None,
         }
     }
@@ -4026,6 +4078,7 @@ impl Engine {
         match self {
             Self::Omp => "omp",
             Self::Dsh => "dsh",
+            Self::Acp => "acp",
         }
     }
 }
@@ -4047,6 +4100,8 @@ pub struct Launch {
     /// Set on the omp planner launch of a dsh plan to the JSON array `[model, effort, auto]`
     /// that `tmux::set_dsh_into` describes.
     pub dsh_into: Option<String>,
+    /// The ompsdk daemon's socket, which the acp engine's sessions run through.
+    pub acp_socket: Option<PathBuf>,
 }
 
 /// The omp model and thinking level that plan for dsh.
@@ -4147,7 +4202,7 @@ pub fn dsh_selector(model: Option<&str>) -> Result<Option<&str>, String> {
 /// Trim and check `model` for `engine`, as an omp selector or a dsh model.
 pub fn engine_selector(engine: Engine, model: Option<&str>) -> Result<Option<&str>, String> {
     match engine {
-        Engine::Omp => model_selector(model),
+        Engine::Omp | Engine::Acp => model_selector(model),
         Engine::Dsh => dsh_selector(model),
     }
 }
@@ -4163,8 +4218,8 @@ pub fn executor_effort(engine: Engine, effort: Option<&str>) -> Result<Option<&s
         // dsh reports each model's effort ids, which are the shared level names.
         Engine::Dsh if THINKING_LEVELS.contains(&effort) => Ok(Some(effort)),
         Engine::Dsh => Err(format!("unknown execution effort {effort}")),
-        Engine::Omp if THINKING_LEVELS.contains(&effort) => Ok(Some(effort)),
-        Engine::Omp => Err(format!("unknown execution thinking level {effort}")),
+        Engine::Omp | Engine::Acp if THINKING_LEVELS.contains(&effort) => Ok(Some(effort)),
+        Engine::Omp | Engine::Acp => Err(format!("unknown execution thinking level {effort}")),
     }
 }
 
@@ -4198,7 +4253,7 @@ fn omp_execution_model(executor: Option<&str>, effort: Option<&str>) -> Result<O
 /// Check the launch model and thinking level for `engine` without rendering omp flags.
 pub fn engine_flags(engine: Engine, model: Option<&str>, thinking: Option<&str>) -> Result<(), String> {
     match engine {
-        Engine::Omp => launch_flags(model, thinking).map(|_| ()),
+        Engine::Omp | Engine::Acp => launch_flags(model, thinking).map(|_| ()),
         Engine::Dsh => {
             dsh_selector(model)?;
             thinking_level(thinking).map(|_| ())
