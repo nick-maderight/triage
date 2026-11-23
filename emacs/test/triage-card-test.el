@@ -145,11 +145,16 @@
                  (source . ((uri . "dsh://session/abc")))))))
 
 (ert-deftest triage-card-test-acp-session-id ()
-  "An acp card takes its session id from its uri and offers Open in CLI."
+  "An acp card offers Close, Request report and Open in CLI, not Peek or Jump."
   (let ((card '((id . "a1") (kind . "info") (title . "Plain") (engine . "acp")
                 (source . ((uri . "acp://session/abc"))))))
     (should (equal (triage-card-acp-id card) "abc"))
-    (should (triage-card-offers-p card 'cli 0)))
+    (should (equal (triage-card-pane card) "acp:abc"))
+    (should (triage-card-offers-p card 'cli 0))
+    (should (triage-card-offers-p card 'close 0))
+    (should (triage-card-offers-p (cons '(report_due . t) card) 'request 0))
+    (should-not (triage-card-offers-p card 'peek 0))
+    (should-not (triage-card-offers-p card 'jump 0)))
   (should-not (triage-card-acp-id
                '((id . "a2") (kind . "info") (engine . "omp")
                  (source . ((uri . "acp://session/abc")))))))

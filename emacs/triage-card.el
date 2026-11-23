@@ -184,10 +184,17 @@ Port of cardStatus and legacyStatus in ui/app.js."
 
 (defun triage-card-pane (card)
   "Return the pane that CARD came from, or nil.
-A dsh card names its pane as dsh:ID."
+A dsh card names its pane as dsh:ID, and an acp card as acp:ID."
   (or (alist-get 'pane (alist-get 'source card))
       (let ((id (triage-card-dsh-id card)))
-        (and id (concat "dsh:" id)))))
+        (and id (concat "dsh:" id)))
+      (let ((id (triage-card-acp-id card)))
+        (and id (concat "acp:" id)))))
+
+(defun triage-card-shown-pane (card)
+  "Return the pane of CARD that Peek and Jump can show, or nil.
+An acp session runs inside the ompsdk daemon, so it has no pane to show."
+  (and (not (triage-card-acp-id card)) (triage-card-pane card)))
 
 (defun triage-card-answerable-p (card)
   "Return non-nil when CARD can be answered in this client.
@@ -466,11 +473,11 @@ Port resultMessage from ui/app.js."
    (list 'context :key "t" :label "Context" :command 'triage-inbox-context)
    (list 'later :key "l" :label "Later" :command 'triage-inbox-later)
    (list 'peek :key "v" :label "Peek"
-         :offered (lambda (card _step) (triage-card-pane card))
+         :offered (lambda (card _step) (triage-card-shown-pane card))
          :command 'triage-inbox-peek)
    (list 'jump :key "J"
          :label (lambda (card) (if (triage-card-dsh-id card) "Open" "Jump"))
-         :offered (lambda (card _step) (triage-card-pane card))
+         :offered (lambda (card _step) (triage-card-shown-pane card))
          :command 'triage-inbox-jump)
    (list 'note :key "n" :command 'triage-inbox-note)
    (list 'other :key "o" :offered #'triage-card-other-allowed-p
