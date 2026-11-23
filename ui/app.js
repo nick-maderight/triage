@@ -151,7 +151,10 @@ const S = {
   };
   const answerable = (c) => (c.kind !== 'ask' && c.kind !== 'plan') || c.answerable !== false,
     dshOf = (c) => (c.engine === 'dsh' && c.source?.uri?.startsWith('dsh://session/') ? c.source.uri.slice(14) : null),
-    paneOf = (c) => c.source?.pane || (dshOf(c) ? `dsh:${dshOf(c)}` : null),
+    acpOf = (c) => (c.engine === 'acp' && c.source?.uri?.startsWith('acp://session/') ? c.source.uri.slice(14) : null),
+    paneOf = (c) => c.source?.pane || (dshOf(c) ? `dsh:${dshOf(c)}` : null) || (acpOf(c) ? `acp:${acpOf(c)}` : null),
+    // An acp session has no tmux pane or dsh page, so Peek and Jump are not offered for it.
+    shownPane = (c) => (acpOf(c) ? null : paneOf(c)),
     paneApi = (pane) => (pane.startsWith('dsh:') ? `/v1/dsh/${enc(pane.slice(4))}` : `/v1/panes/${enc(pane)}`),
     restorable = (c) => c.kind === 'info' && /^(exited|reload:exited):/.test(c.id),
     // The step a report left open, named by its `Recommended action:` line.
@@ -227,6 +230,7 @@ const S = {
       offered: restorable,
       run: (c) => act(c, 'restore', {}, 'restore'),
     },
+    cli: { key: 'O', label: 'Open in CLI', offered: acpOf, run: (c) => act(c, 'cli', {}, 'cli') },
     ack: {
       key: 'a',
       label: 'Acknowledge',
@@ -236,12 +240,12 @@ const S = {
     skip: { key: 's', label: 'Skip', run: (c) => act(c, 'skip', {}, 'skip') },
     context: { key: 't', label: 'Context', run: (c) => openContext(c.id) },
     later: { key: 'l', label: 'Later', run: (c) => act(c, 'later', { minutes: 60 }, 'later') },
-    peek: { key: 'v', label: 'Peek', offered: paneOf, run: (c) => openPeek(c) },
+    peek: { key: 'v', label: 'Peek', offered: shownPane, run: (c) => openPeek(c) },
     // A dsh session has no tmux pane to jump to. Its card opens the dsh web UI instead.
     jump: {
       key: 'J',
       label: (c) => (dshOf(c) ? 'Open' : 'Jump'),
-      offered: paneOf,
+      offered: shownPane,
       run: (c) => (dshOf(c) ? openDsh() : jump(c)),
     },
     note: { key: 'n', run: () => $('#note')?.focus() },
@@ -1198,7 +1202,7 @@ const S = {
           el(
             'p',
             null,
-            el('strong', null, c.engine === 'dsh' ? 'Answer in the dsh web UI. ' : 'Answer in the pane. '),
+            el('strong', null, c.engine === 'dsh' ? 'Answer in the dsh web UI. ' : c.engine === 'acp' ? 'Answer in the CLI. ' : 'Answer in the pane. '),
             'This prompt is read only here.',
           ),
         ),
@@ -1641,6 +1645,7 @@ const S = {
     if (verb === 'close') return `Closed · ${c.title}`;
     if (verb === 'report') return `Requested report · ${c.title}`;
     if (verb === 'restore') return `Restoring run · ${c.title}`;
+    if (verb === 'cli') return `Opened in CLI · ${c.title}`;
     if (c.kind === 'info') return `Acknowledged · ${c.title}`;
     if (body.answers)
       return `Sent ${body.answers
@@ -2317,7 +2322,7 @@ const S = {
   const PICKERS = {
     'compose-cwd': { title: 'Working directory', placeholder: 'Search or type a path', free: true, fallback: 'Home directory', options: [] },
     'compose-session': { title: 'tmux session', placeholder: 'Search sessions', free: false, fallback: 'Daemon default', options: [] },
-    'compose-engine': { title: 'Engine', placeholder: 'Search engines', free: false, fallback: 'Daemon default', options: [pickerOption('omp'), pickerOption('dsh')] },
+    'compose-engine': { title: 'Engine', placeholder: 'Search engines', free: false, fallback: 'Daemon default', options: [pickerOption('omp'), pickerOption('dsh'), pickerOption('acp')] },
     'compose-model': { title: 'Model', placeholder: 'Search or type a selector', free: true, fallback: 'Daemon default', options: [] },
     'compose-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
@@ -2566,7 +2571,7 @@ const S = {
         : `${engine} default`;
       thinking.fallback = data.default_thinking ?? `${engine} default`;
       executor.fallback = engine === 'dsh' ? 'planner model' : 'omp smol role';
-      $('#compose-session-pair').hidden = engine === 'dsh';
+      $('#compose-session-pair').hidden = engine === 'dsh' || engine === 'acp';
       refreshEfforts('compose');
       for (const id of ['engine', 'model', 'thinking', 'executor', 'executor-effort'])
         refreshPicker(`compose-${id}`);
@@ -2907,7 +2912,7 @@ const S = {
       const d = draft(c),
         // A card with a session of its own preselects that session's engine, which lets the brief
         // continue there. Every other card keeps the engine last picked in the sheet.
-        engine = dshOf(c) ? 'dsh' : c.source?.pane ? 'omp' : S.sheetEngine,
+        engine = dshOf(c) ? 'dsh' : acpOf(c) ? 'acp' : c.source?.pane ? 'omp' : S.sheetEngine,
         // Default names the daemon's engine. A move between those two keeps the model list.
         daemon = PICKERS['compose-engine'].fallback,
         same = (field.value || daemon) === (engine || daemon);
@@ -2936,7 +2941,7 @@ const S = {
       ? 'Optional direction for the session'
       : 'Ask a question, give a task, or start a chat';
     $('#compose-target').hidden = Boolean(c);
-    $('#compose-session-pair').hidden = field.value === 'dsh';
+    $('#compose-session-pair').hidden = field.value === 'dsh' || field.value === 'acp';
     setSheetMode(mode, c);
     setSheetTask(task, c);
     $('#compose-hint').textContent = '';
@@ -2961,7 +2966,7 @@ const S = {
     $('#compose-target').hidden = false;
     if (field.value !== S.sheetEngine) setPickerValue('compose-engine', S.sheetEngine);
     if (!same) clearModels('compose');
-    $('#compose-session-pair').hidden = field.value === 'dsh';
+    $('#compose-session-pair').hidden = field.value === 'dsh' || field.value === 'acp';
     setSheetMode(S.composeMode, null);
     setSheetTask(S.composeTask, null);
     $('#compose-hint').textContent = '';

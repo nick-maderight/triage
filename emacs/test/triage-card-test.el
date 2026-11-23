@@ -144,6 +144,16 @@
                '((id . "d2") (kind . "info") (engine . "omp")
                  (source . ((uri . "dsh://session/abc")))))))
 
+(ert-deftest triage-card-test-acp-session-id ()
+  "An acp card takes its session id from its uri and offers Open in CLI."
+  (let ((card '((id . "a1") (kind . "info") (title . "Plain") (engine . "acp")
+                (source . ((uri . "acp://session/abc"))))))
+    (should (equal (triage-card-acp-id card) "abc"))
+    (should (triage-card-offers-p card 'cli 0)))
+  (should-not (triage-card-acp-id
+               '((id . "a2") (kind . "info") (engine . "omp")
+                 (source . ((uri . "acp://session/abc")))))))
+
 (ert-deftest triage-card-test-restorable ()
   "Only exited info cards are restorable."
   (should (triage-card-restorable-p '((id . "exited:%3:x") (kind . "info"))))
@@ -282,6 +292,8 @@
                    "Requested report · T"))
     (should (equal (triage-card-result-message finding "restore" nil)
                    "Restoring run · T"))
+    (should (equal (triage-card-result-message finding "cli" nil)
+                   "Opened in CLI · T"))
     (should (equal (triage-card-result-message finding "later" '((minutes . 60)))
                    "Later 1 hour · T"))
     (should (equal (triage-card-result-message
@@ -326,8 +338,8 @@
                  '(?g ?p ?P)))
   (should (equal (triage-card-choice-keys (mapcar #'cadr triage-card-tasks))
                  '(?i ?f ?a ?v ?s)))
-  (should (equal (triage-card-choice-keys '("Default" "omp" "dsh"))
-                 '(?d ?o ?D)))
+  (should (equal (triage-card-choice-keys '("Default" "omp" "dsh" "acp"))
+                 '(?d ?o ?D ?a)))
   (should (equal (triage-card-choice-keys
                   '("Default (omp default)" "auto" "off" "minimal"
                     "low" "medium" "high" "xhigh" "max"))

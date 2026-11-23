@@ -629,6 +629,11 @@ The session opens in its own window."
   (interactive)
   (triage-inbox--act (triage-inbox--card 'restore) "restore" nil))
 
+(defun triage-inbox-open-cli ()
+  "Open the acp session behind the shown card in an omp window."
+  (interactive)
+  (triage-inbox--act (triage-inbox--card 'cli) "cli" nil))
+
 (defun triage-inbox-skip ()
   "Skip the shown card."
   (interactive)
@@ -794,7 +799,9 @@ Signal a `user-error' until an execution model is chosen."
     ("r" "Request final report" triage-inbox-request-report
      :inapt-if-not (lambda () (triage-inbox--offers-p 'request)))
     ("R" "Restore run" triage-inbox-restore
-     :inapt-if-not (lambda () (triage-inbox--offers-p 'restore)))]
+     :inapt-if-not (lambda () (triage-inbox--offers-p 'restore)))
+    ("O" "Open in CLI" triage-inbox-open-cli
+     :inapt-if-not (lambda () (triage-inbox--offers-p 'cli)))]
    ["Inbox"
     ("j" "Next card" triage-inbox-next)
     ("k" "Previous card" triage-inbox-previous)

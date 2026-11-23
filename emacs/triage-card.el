@@ -36,6 +36,9 @@ A status without a tone is stored as (LABEL), so its tone is nil.")
 (defconst triage-card--dsh-uri-prefix "dsh://session/"
   "URI prefix of a card that belongs to a dsh session.")
 
+(defconst triage-card--acp-uri-prefix "acp://session/"
+  "URI prefix of a card that belongs to an acp session.")
+
 (defun triage-card--nonempty-p (value)
   "Return non-nil when VALUE is a non-empty string."
   (and (stringp value) (not (string-empty-p value))))
@@ -162,14 +165,22 @@ Port of cardStatus and legacyStatus in ui/app.js."
                          heading))
                    (triage-card-title-of card)))))
 
+(defun triage-card--session-id (card engine prefix)
+  "Return the id after PREFIX in the uri of CARD, when its engine is ENGINE."
+  (let ((uri (alist-get 'uri (alist-get 'source card))))
+    (when (and (equal (alist-get 'engine card) engine)
+               (stringp uri)
+               (string-prefix-p prefix uri))
+      (let ((id (substring uri (length prefix))))
+        (and (not (string-empty-p id)) id)))))
+
 (defun triage-card-dsh-id (card)
   "Return the dsh session id of CARD, or nil when it has none."
-  (let ((uri (alist-get 'uri (alist-get 'source card))))
-    (when (and (equal (alist-get 'engine card) "dsh")
-               (stringp uri)
-               (string-prefix-p triage-card--dsh-uri-prefix uri))
-      (let ((id (substring uri (length triage-card--dsh-uri-prefix))))
-        (and (not (string-empty-p id)) id)))))
+  (triage-card--session-id card "dsh" triage-card--dsh-uri-prefix))
+
+(defun triage-card-acp-id (card)
+  "Return the acp session id of CARD, or nil when it has none."
+  (triage-card--session-id card "acp" triage-card--acp-uri-prefix))
 
 (defun triage-card-pane (card)
   "Return the pane that CARD came from, or nil.
@@ -401,6 +412,7 @@ Port resultMessage from ui/app.js."
      ((equal verb "close") (format "Closed · %s" title))
      ((equal verb "report") (format "Requested report · %s" title))
      ((equal verb "restore") (format "Restoring run · %s" title))
+     ((equal verb "cli") (format "Opened in CLI · %s" title))
      ((equal kind "info") (format "Acknowledged · %s" title))
      (answers
       (format "Sent %s · %s"
@@ -444,6 +456,9 @@ Port resultMessage from ui/app.js."
    (list 'restore :key "R" :label "Restore run"
          :offered (lambda (card _step) (triage-card-restorable-p card))
          :command 'triage-inbox-restore)
+   (list 'cli :key "O" :label "Open in CLI"
+         :offered (lambda (card _step) (triage-card-acp-id card))
+         :command 'triage-inbox-open-cli)
    (list 'ack :key "a" :label "Acknowledge"
          :offered (lambda (card _step) (equal (alist-get 'kind card) "info"))
          :command 'triage-inbox-acknowledge)

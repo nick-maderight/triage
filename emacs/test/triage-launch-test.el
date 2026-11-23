@@ -122,7 +122,7 @@
                 ((symbol-function 'read-multiple-choice)
                  (lambda (_prompt choices)
                    (setq used-multiple-choice t)
-                   (should (equal (mapcar #'car choices) '(?d ?o ?D)))
+                   (should (equal (mapcar #'car choices) '(?d ?o ?D ?a)))
                    (nth 1 choices)))
                 ((symbol-function 'completing-read)
                  (lambda (&rest _args) "omp")))
