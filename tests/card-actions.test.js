@@ -170,6 +170,7 @@ const KEYS = {
   close: 'C',
   request: 'r',
   restore: 'R',
+  cli: 'O',
   ack: 'a',
   skip: 's',
   context: 't',
