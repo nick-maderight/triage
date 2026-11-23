@@ -10309,3 +10309,41 @@ fn form_fields_read_as_answerable_questions() {
     let labels: Vec<&str> = asked[0].options.iter().map(|(label, _)| label.as_str()).collect();
     assert_eq!(labels, ["Continue", "Stop"]);
 }
+
+#[test]
+fn acp_request_report_prompts_an_idle_session() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO plain");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Report it").unwrap();
+    wait_until("the turn to end", || {
+        matches!(crate::acp::client(&fake.socket).unwrap().turn(ACP_SID), crate::acp::Turn::Ended(_))
+    });
+    let card = Card { report_due: true, ..acp_card(&db, "done:acp:sid-1:e1", Kind::Info) };
+    assert_eq!(request_report(&db, &card, &launch), Ok(()));
+    wait_for(&fake, |m| {
+        m["method"] == "session/prompt"
+            && m["params"]["prompt"][0]["text"].as_str().is_some_and(|text| text.contains("report-format.md"))
+    });
+    let (_, swipe) = db.card(&card.id).unwrap().unwrap();
+    assert_eq!(swipe.unwrap().text.as_deref(), Some("Request final report"));
+}
+
+#[test]
+fn acp_request_report_refuses_a_session_waiting_on_an_answer() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeAcp::start(scratch.path());
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO ask");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    wait_until("the question to arrive", || {
+        !crate::acp::client(&fake.socket).unwrap().elicitations(ACP_SID).is_empty()
+    });
+    let card = Card { report_due: true, ..acp_card(&db, "done:acp:sid-1:e0", Kind::Info) };
+    assert_eq!(request_report(&db, &card, &launch), Err("session is busy".to_owned()));
+}
