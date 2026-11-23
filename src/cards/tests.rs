@@ -10286,3 +10286,26 @@ fn acp_open_cli_idle_child() {
     let (_, swipe) = db.card(&card.id).unwrap().unwrap();
     assert_eq!(swipe.unwrap().text.as_deref(), Some("Open in CLI"));
 }
+
+#[test]
+fn lease_report_holds_only_the_session_it_names() {
+    let sid = "01a20a9f-4921-77b7-aa76-719bc592d7a5";
+    assert!(!acp_track::held_by(&json!({"held": [], "unknown": []}), sid));
+    assert!(!acp_track::held_by(&json!({"held": ["01a20a9f-46c9-77e0-bb2e-3f4e43d6bcc1"]}), sid));
+    assert!(acp_track::held_by(&json!({"held": [sid]}), sid));
+}
+
+#[test]
+fn form_fields_read_as_answerable_questions() {
+    let schema = json!({"properties": {
+        "choice": {"oneOf": [{"const": "Continue"}, {"const": "Stop"}]},
+        "choice__other": {"type": "string"},
+    }});
+    let asked = acp_track::questions(&schema);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].key, "choice");
+    assert!(!asked[0].multi);
+    assert_eq!(asked[0].other.as_deref(), Some("choice__other"));
+    let labels: Vec<&str> = asked[0].options.iter().map(|(label, _)| label.as_str()).collect();
+    assert_eq!(labels, ["Continue", "Stop"]);
+}

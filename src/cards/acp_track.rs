@@ -184,22 +184,22 @@ fn prompt_blocks(text: &str, image: Option<&Upload>) -> Value {
 }
 
 /// One question an ask elicitation carries, read from its schema the way `acp-agent.ts` writes it.
-struct Question {
-    key: String,
-    text: String,
-    multi: bool,
+pub(super) struct Question {
+    pub(super) key: String,
+    pub(super) text: String,
+    pub(super) multi: bool,
     /// Each option's label and description.
-    options: Vec<(String, Option<String>)>,
+    pub(super) options: Vec<(String, Option<String>)>,
     /// The custom-text field, present when the dialog offers Other.
-    other: Option<String>,
+    pub(super) other: Option<String>,
 }
 
-fn questions(schema: &Value) -> Vec<Question> {
+pub(super) fn questions(schema: &Value) -> Vec<Question> {
     let Some(properties) = schema["properties"].as_object() else {
         return Vec::new();
     };
-    let mut keys: Vec<&String> = properties.keys().filter(|key| is_question_key(key)).collect();
-    keys.sort_by_key(|key| key[1..].parse::<u32>().unwrap_or(u32::MAX));
+    let mut keys: Vec<&String> = properties.keys().filter(|key| !key.ends_with("__other")).collect();
+    keys.sort_by_key(|key| (question_rank(key), key.to_string()));
     keys.into_iter()
         .map(|key| {
             let property = &properties[key];
@@ -228,9 +228,9 @@ fn questions(schema: &Value) -> Vec<Question> {
         .collect()
 }
 
-fn is_question_key(key: &str) -> bool {
-    key.strip_prefix('q')
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+/// Ask-tool questions sort by their `q<N>` number; form fields follow by name.
+fn question_rank(key: &str) -> u32 {
+    key.strip_prefix('q').and_then(|rest| rest.parse().ok()).unwrap_or(u32::MAX)
 }
 
 /// Whether an elicitation is a plan review, the select that offers Approve and execute.
@@ -994,7 +994,13 @@ fn lease_held(sid: &str) -> Result<bool, String> {
     }
     let lease: Value =
         serde_json::from_slice(&output.stdout).map_err(|error| format!("omp session lease: {error}"))?;
-    Ok(lease
+    Ok(held_by(&lease, sid))
+}
+
+/// Whether omp's lease report lists `sid` as held. An empty `held` list means nothing holds it.
+pub(super) fn held_by(lease: &Value, sid: &str) -> bool {
+    lease
         .get("held")
-        .is_some_and(|held| !held.is_null() && held != &json!(false)))
+        .and_then(Value::as_array)
+        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(sid)))
 }
