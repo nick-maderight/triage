@@ -1282,18 +1282,19 @@
   };
 
   // The session sheet's text field keeps its four rows on every screen, even when the sheet
-  // scrolls. A touch tablet fills the window with the sheet and gives the field the height the
-  // options leave. A window at least 700px tall then shows every option without scrolling and at
-  // least 12 lines of text. A tablet held sideways at least 960px wide shows the options beside
-  // the text. A card's Dispatch is checked too when the inbox shows a card.
+  // scrolls. A window at least 640px wide and 481px tall fills the window with the sheet and
+  // gives the field the height the options leave. Past 700px tall, the sheet shows every option
+  // without scrolling and at least 12 lines of text. At 960px wide and wider than it is tall,
+  // the options sit beside the text. A card's Dispatch is checked too when the inbox shows a card.
   const checkSheetText = async () => {
     await waitFor(() => document.querySelector('main > .card, main > .empty'), 'a card or the empty inbox');
     const dialog = document.querySelector('#compose'),
       form = document.querySelector('#compose-form'),
       prompt = document.querySelector('#compose-prompt'),
       launch = document.querySelector('#compose-launch'),
-      tablet = matchMedia('(pointer: coarse) and (min-width: 640px) and (min-height: 481px)').matches,
-      split = tablet && matchMedia('(min-width: 960px) and (orientation: landscape)').matches,
+      filled = matchMedia('(min-width: 640px) and (min-height: 481px)').matches,
+      split = filled && matchMedia('(min-width: 960px) and (orientation: landscape)').matches,
+      touch = matchMedia('(pointer: coarse)').matches,
       lines = {};
     const measure = async (name) => {
       await waitFor(() => dialog.open, `the ${name} sheet`);
@@ -1307,7 +1308,7 @@
         options = launch.getBoundingClientRect();
       assert(shown >= 3.9, `${name}: the text field keeps its four rows (${shown.toFixed(1)})`);
       assert(box.top >= 0 && box.bottom <= innerHeight + 1, `${name}: the sheet ends inside the window`);
-      if (tablet) {
+      if (filled) {
         assert(
           box.height >= innerHeight - 80,
           `${name}: the sheet fills the window height (${Math.round(box.height)} of ${innerHeight})`,
@@ -1320,6 +1321,8 @@
           split ? options.left >= text.right : options.top >= text.bottom,
           `${name}: the options sit ${split ? 'beside' : 'under'} the text`,
         );
+      }
+      if (touch) {
         for (const button of dialog.querySelectorAll('button')) {
           if (!visible(button)) continue;
           const bounds = button.getBoundingClientRect();
@@ -1346,7 +1349,7 @@
         dispatch.click();
         await measure('dispatch');
       }
-      return { scenario: 'sheet-text', passed: true, tablet, split, lines };
+      return { scenario: 'sheet-text', passed: true, filled, split, lines };
     } finally {
       if (dialog.open) dialog.close();
     }

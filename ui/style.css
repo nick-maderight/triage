@@ -2024,7 +2024,7 @@ dialog.picker::backdrop {
     margin-top: 14px;
   }
 }
-/* Touch tablets use tighter spacing to give the card body more height. Facts keep labels beside values. The final reply scrolls with the card. The session sheet fills the window height. Its text field takes the height the options leave. */
+/* Touch tablets use tighter spacing to give the card body more height. Facts keep labels beside values. The final reply scrolls with the card. */
 @media (pointer: coarse) and (min-width: 640px) and (min-height: 481px) {
   main {
     padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -2063,6 +2063,9 @@ dialog.picker::backdrop {
   .dock {
     padding: 6px 8px 6px 12px;
   }
+}
+/* A window at least 640px wide and 481px tall fills the sheet to the window height. Its text field takes the height the options leave and never shrinks below its four rows. */
+@media (min-width: 640px) and (min-height: 481px) {
   #compose {
     width: min(720px, calc(100vw - 40px));
     height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
@@ -2102,8 +2105,8 @@ dialog.picker::backdrop {
     padding: 0;
   }
 }
-/* A touch tablet held sideways puts the session sheet's text on the left and its options on the right. */
-@media (pointer: coarse) and (min-width: 960px) and (min-height: 481px) and (orientation: landscape) {
+/* A window at least 960px wide and wider than it is tall puts the session sheet's text on the left and its options on the right. */
+@media (min-width: 960px) and (min-height: 481px) and (orientation: landscape) {
   #compose {
     width: min(1200px, calc(100vw - 40px));
   }
