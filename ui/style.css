@@ -2328,3 +2328,24 @@ dialog.picker::backdrop {
   justify-content: flex-end;
   margin: 12px 0 20px;
 }
+
+/* The on-screen keyboard shrinks the visual viewport without resizing the page. Pin an open sheet
+   to that shorter viewport, so its last row of buttons stays above the keyboard. */
+.compact-viewport body {
+  height: var(--vvh, 100dvh);
+}
+.compact-viewport dialog.modal[open] {
+  position: fixed;
+  inset: auto 0 12px;
+  margin: 0 auto calc(100dvh - var(--vvt, 0px) - var(--vvh, 100dvh));
+  max-height: calc(var(--vvh, 100dvh) - 24px);
+}
+.compact-viewport #compose {
+  height: calc(var(--vvh, 100dvh) - 24px);
+  max-height: calc(var(--vvh, 100dvh) - 24px);
+}
+.compact-viewport dialog.sheet[open] {
+  top: var(--vvt, 0px);
+  bottom: auto;
+  height: var(--vvh, 100dvh);
+}

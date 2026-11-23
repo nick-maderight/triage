@@ -1355,6 +1355,67 @@
     }
   };
 
+  // The on-screen keyboard shrinks the visual viewport without resizing the page. The sheet and
+  // the page follow that shorter viewport. The bottom row of buttons stays above the keyboard and
+  // Start stays reachable.
+  const checkSheetKeyboard = async () => {
+    assert(innerHeight >= 700, 'the keyboard scenario needs a window at least 700px tall');
+    await waitFor(() => document.querySelector('main > .card, main > .empty'), 'a card or the empty inbox');
+    const dialog = document.querySelector('#compose'),
+      form = document.querySelector('#compose-form'),
+      prompt = document.querySelector('#compose-prompt'),
+      vv = window.visualViewport,
+      typed = Math.round(innerHeight * 0.45),
+      original = Object.getOwnPropertyDescriptor(vv, 'height'),
+      restore = () => {
+        if (original) Object.defineProperty(vv, 'height', original);
+        else delete vv.height;
+        vv.dispatchEvent(new Event('resize'));
+      };
+    try {
+      assert(vv, 'the browser exposes a visual viewport');
+      Object.defineProperty(vv, 'height', { configurable: true, get: () => typed });
+      vv.dispatchEvent(new Event('resize'));
+      document.querySelector('#btn-compose').click();
+      await waitFor(
+        () => dialog.open && document.documentElement.classList.contains('compact-viewport'),
+        'the compact sheet',
+      );
+      await Promise.allSettled(dialog.getAnimations({ subtree: true }).map((a) => a.finished));
+      const style = getComputedStyle(prompt),
+        shown =
+          (prompt.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) /
+          parseFloat(style.lineHeight),
+        box = dialog.getBoundingClientRect(),
+        body = document.body.getBoundingClientRect();
+      assert(box.top >= 0 && box.bottom <= typed + 1, `the sheet ends above the keyboard (${Math.round(box.bottom)} of ${typed})`);
+      assert(body.height <= typed + 1, `the page ends above the keyboard (${Math.round(body.height)} of ${typed})`);
+      assert(shown >= 3.9, `the text field keeps its four rows above the keyboard (${shown.toFixed(1)})`);
+      assert(form.scrollHeight > form.clientHeight, 'the sheet scrolls above the keyboard');
+      form.scrollTop = form.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const start = document.querySelector('#compose-start').getBoundingClientRect();
+      assert(
+        start.top >= 0 && start.bottom <= typed + 1,
+        `Start stays reachable above the keyboard (${Math.round(start.bottom)} of ${typed})`,
+      );
+      for (const button of dialog.querySelectorAll('button')) {
+        if (!visible(button)) continue;
+        const bounds = button.getBoundingClientRect();
+        assert(bounds.bottom <= typed + 1, `${button.id || button.className} stays above the keyboard`);
+      }
+      restore();
+      await waitFor(
+        () => !document.documentElement.classList.contains('compact-viewport'),
+        'the full viewport to return',
+      );
+      return { scenario: 'sheet-keyboard', passed: true, typed, shown: Math.round(shown * 10) / 10 };
+    } finally {
+      restore();
+      if (dialog.open) dialog.close();
+    }
+  };
+
   const checkPwa = async () => {
     await waitFor(() => document.querySelector('link[rel="manifest"]'), 'manifest link');
     assert(
@@ -1582,6 +1643,7 @@
     if (scenario === 'card-status') return checkCardStatus();
     if (scenario === 'tablet') return checkTablet();
     if (scenario === 'sheet-text') return checkSheetText();
+    if (scenario === 'sheet-keyboard') return checkSheetKeyboard();
     if (scenario === 'page') return checkPage();
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();

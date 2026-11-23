@@ -3504,6 +3504,24 @@ const S = {
   window.addEventListener('resize', placePicker);
   window.visualViewport?.addEventListener('resize', placePicker);
   window.visualViewport?.addEventListener('scroll', placePicker);
+  // The on-screen keyboard shrinks the visual viewport without resizing the page. A sheet sized to
+  // the page keeps its bottom rows behind the keyboard. Mirror the shorter viewport into CSS so an
+  // open sheet and the card dock end above the keyboard.
+  function syncViewport() {
+    const vv = window.visualViewport,
+      style = document.documentElement.style,
+      compact = Boolean(vv && vv.scale < 1.05 && vv.height > 0 && vv.height < innerHeight * 0.75),
+      height = compact ? vv.height : innerHeight,
+      top = compact ? vv.offsetTop : 0;
+    if (!height) return;
+    style.setProperty('--vvh', `${Math.round(height)}px`);
+    style.setProperty('--vvt', `${Math.round(top)}px`);
+    document.documentElement.classList.toggle('compact-viewport', compact);
+  }
+  window.addEventListener('resize', syncViewport);
+  window.visualViewport?.addEventListener('resize', syncViewport);
+  window.visualViewport?.addEventListener('scroll', syncViewport);
+  syncViewport();
   $('#peek-form').addEventListener('submit', sendPeek);
   $('#announcer')?.setAttribute('aria-live', 'polite');
   $('#announcer')?.setAttribute('aria-atomic', 'true');
