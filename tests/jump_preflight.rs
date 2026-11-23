@@ -93,7 +93,39 @@ fn start_server(database: &Path, directory: &TestDir, path: &Path) -> (SocketAdd
     (address, server)
 }
 
+/// Send one request, retrying a transient failure such as a refused connection or a read that
+/// times out. Both clear on the next attempt.
 fn request(address: SocketAddr, method: &str, path: &str, body: &str) -> std::io::Result<Response> {
+    let mut last = None;
+    for _ in 0..10 {
+        match request_once(address, method, path, body) {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let transient = matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::Interrupted
+                );
+                if !transient {
+                    return Err(error);
+                }
+                last = Some(error);
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    Err(last.unwrap())
+}
+
+fn request_once(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> std::io::Result<Response> {
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
