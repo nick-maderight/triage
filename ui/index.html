@@ -92,6 +92,7 @@ try {
 <span class="sheet-context-source" id="compose-context-source" data-od-id="compose-context-source"></span>
 <button type="button" class="btn ghost" id="compose-context-clear" data-od-id="compose-context-clear">Clear</button>
 </div>
+<div class="compose-text" data-od-id="compose-text">
 <label for="compose-prompt" id="compose-prompt-label" data-od-id="compose-prompt-label">What should the session do?</label>
 <textarea class="field" id="compose-prompt" rows="4" autocomplete="off" placeholder="Ask a question, give a task, or start a chat" data-od-id="compose-prompt"></textarea>
 <div class="attach" data-od-id="compose-attach">
@@ -104,6 +105,8 @@ try {
 <button type="button" class="btn ghost" id="compose-image-remove" aria-label="Remove the attached image" aria-keyshortcuts="D">Remove <kbd class="hint" aria-hidden="true">D</kbd></button>
 </div>
 </div>
+</div>
+<div class="compose-options" data-od-id="compose-options">
 <div class="compose-grid" id="compose-target" data-od-id="compose-target">
 <div class="pair"><label id="compose-cwd-label" for="compose-cwd">Working directory <kbd class="hint" aria-hidden="true">d</kbd></label>
 <button type="button" class="field picker-field" id="compose-cwd" value="" aria-keyshortcuts="d" aria-labelledby="compose-cwd-label compose-cwd" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-cwd"></button></div>
@@ -141,6 +144,7 @@ try {
 <button type="button" class="field picker-field" id="compose-executor-effort" value="" aria-keyshortcuts="X" aria-labelledby="compose-executor-effort-label compose-executor-effort" aria-haspopup="dialog" aria-expanded="false" aria-controls="picker" data-od-id="compose-executor-effort"></button></div>
 </div>
 <button type="submit" class="btn primary" id="compose-start" data-od-id="compose-start">Start</button>
+</div>
 </form>
 <p class="send-hint" id="compose-hint" aria-live="polite" data-od-id="compose-hint"></p>
 </dialog>

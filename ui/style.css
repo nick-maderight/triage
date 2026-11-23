@@ -1318,8 +1318,13 @@ dialog.sheet[open] {
   font-size: 13px;
   font-weight: 500;
 }
-.compose > :is(.compose-grid, #compose-mode-label, #compose-task-label) {
+.compose-options > :is(.compose-grid, #compose-mode-label, #compose-task-label) {
   margin-top: 12px;
+}
+/* The text and the options group the sheet for the sideways tablet layout. Elsewhere their children lay out as the form's own rows. */
+.compose-text,
+.compose-options {
+  display: contents;
 }
 /* The card the sheet was opened for. Clear drops it and leaves a plain session. */
 .sheet-context {
@@ -1373,10 +1378,12 @@ dialog.modal:has(.compose) {
 dialog.modal[open]:has(.compose) {
   display: flex;
 }
+/* Rows keep their content height so the text field holds its rows while the form scrolls. Auto rows let it shrink to its padding. */
 .compose {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  grid-auto-rows: max-content;
 }
 .segmented {
   display: grid;
@@ -2017,7 +2024,7 @@ dialog.picker::backdrop {
     margin-top: 14px;
   }
 }
-/* Touch tablets use tighter spacing to give the card body more height. Facts keep labels beside values. The final reply scrolls with the card. */
+/* Touch tablets use tighter spacing to give the card body more height. Facts keep labels beside values. The final reply scrolls with the card. The session sheet fills the window height. Its text field takes the height the options leave. */
 @media (pointer: coarse) and (min-width: 640px) and (min-height: 481px) {
   main {
     padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -2055,6 +2062,77 @@ dialog.picker::backdrop {
   }
   .dock {
     padding: 6px 8px 6px 12px;
+  }
+  #compose {
+    width: min(720px, calc(100vw - 40px));
+    height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: none;
+  }
+  #compose .sheet-head {
+    min-height: 0;
+    padding: 4px 8px 4px 20px;
+  }
+  #compose-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 20px 0;
+  }
+  #compose-context {
+    padding: 2px 2px 2px 12px;
+  }
+  #compose-prompt {
+    flex: 1 0 auto;
+    resize: none;
+  }
+  .compose-options > :is(.compose-grid, #compose-mode-label, #compose-task-label) {
+    margin-top: 6px;
+  }
+  #compose-launch {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  #compose-start {
+    align-self: flex-end;
+    margin: 6px 0 12px;
+  }
+  #compose-hint {
+    padding: 0 20px 12px;
+  }
+  #compose-hint:empty {
+    padding: 0;
+  }
+}
+/* A touch tablet held sideways puts the session sheet's text on the left and its options on the right. */
+@media (pointer: coarse) and (min-width: 960px) and (min-height: 481px) and (orientation: landscape) {
+  #compose {
+    width: min(1200px, calc(100vw - 40px));
+  }
+  #compose-form {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 4fr);
+    grid-template-rows: auto 1fr;
+    gap: 0 24px;
+    padding-bottom: 12px;
+  }
+  #compose-context {
+    grid-column: 1 / -1;
+    margin-bottom: 12px;
+  }
+  .compose-text,
+  .compose-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    grid-row: 2;
+  }
+  .compose-options > :is(#compose-target, #compose-target[hidden] + #compose-launch) {
+    margin-top: 0;
+  }
+  #compose-launch {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #compose-start {
+    margin: auto 0 0;
   }
 }
 @media (max-width: 439px) {

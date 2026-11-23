@@ -1281,6 +1281,77 @@
     };
   };
 
+  // The session sheet's text field keeps its four rows on every screen, even when the sheet
+  // scrolls. A touch tablet fills the window with the sheet and gives the field the height the
+  // options leave. A window at least 700px tall then shows every option without scrolling and at
+  // least 12 lines of text. A tablet held sideways at least 960px wide shows the options beside
+  // the text. A card's Dispatch is checked too when the inbox shows a card.
+  const checkSheetText = async () => {
+    await waitFor(() => document.querySelector('main > .card, main > .empty'), 'a card or the empty inbox');
+    const dialog = document.querySelector('#compose'),
+      form = document.querySelector('#compose-form'),
+      prompt = document.querySelector('#compose-prompt'),
+      launch = document.querySelector('#compose-launch'),
+      tablet = matchMedia('(pointer: coarse) and (min-width: 640px) and (min-height: 481px)').matches,
+      split = tablet && matchMedia('(min-width: 960px) and (orientation: landscape)').matches,
+      lines = {};
+    const measure = async (name) => {
+      await waitFor(() => dialog.open, `the ${name} sheet`);
+      await Promise.allSettled(dialog.getAnimations({ subtree: true }).map((a) => a.finished));
+      const style = getComputedStyle(prompt),
+        shown =
+          (prompt.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) /
+          parseFloat(style.lineHeight),
+        box = dialog.getBoundingClientRect(),
+        text = prompt.getBoundingClientRect(),
+        options = launch.getBoundingClientRect();
+      assert(shown >= 3.9, `${name}: the text field keeps its four rows (${shown.toFixed(1)})`);
+      assert(box.top >= 0 && box.bottom <= innerHeight + 1, `${name}: the sheet ends inside the window`);
+      if (tablet) {
+        assert(
+          box.height >= innerHeight - 80,
+          `${name}: the sheet fills the window height (${Math.round(box.height)} of ${innerHeight})`,
+        );
+        if (innerHeight >= 700) {
+          assert(form.scrollHeight <= form.clientHeight + 1, `${name}: every option shows without scrolling`);
+          assert(shown >= 12, `${name}: the text field takes the spare height (${shown.toFixed(1)} lines)`);
+        }
+        assert(
+          split ? options.left >= text.right : options.top >= text.bottom,
+          `${name}: the options sit ${split ? 'beside' : 'under'} the text`,
+        );
+        for (const button of dialog.querySelectorAll('button')) {
+          if (!visible(button)) continue;
+          const bounds = button.getBoundingClientRect();
+          assert(
+            bounds.width >= 44 && bounds.height >= 44,
+            `${name}: ${button.id || button.className} keeps a 44px touch target`,
+          );
+        }
+      }
+      lines[name] = Math.round(shown * 10) / 10;
+    };
+    try {
+      document.querySelector('#btn-compose').click();
+      await measure('new session');
+      const mode = [...document.querySelectorAll('#compose-mode .seg')].find(
+        (b) => b.getAttribute('aria-checked') === 'true',
+      );
+      document.querySelector('#compose-mode-plan-into').click();
+      await measure('plan into');
+      mode.click();
+      dialog.close();
+      const dispatch = document.querySelector('main > .card #dispatch-btn');
+      if (dispatch) {
+        dispatch.click();
+        await measure('dispatch');
+      }
+      return { scenario: 'sheet-text', passed: true, tablet, split, lines };
+    } finally {
+      if (dialog.open) dialog.close();
+    }
+  };
+
   const checkPwa = async () => {
     await waitFor(() => document.querySelector('link[rel="manifest"]'), 'manifest link');
     assert(
@@ -1507,6 +1578,7 @@
     if (scenario === 'long-title') return checkLongTitle();
     if (scenario === 'card-status') return checkCardStatus();
     if (scenario === 'tablet') return checkTablet();
+    if (scenario === 'sheet-text') return checkSheetText();
     if (scenario === 'page') return checkPage();
     if (scenario === 'plan-into') return checkPlanInto();
     if (scenario === 'plan-approval') return checkPlanApproval();
