@@ -3213,3 +3213,50 @@ async fn dsh_open_without_a_host_says_dsh_is_not_running() {
     assert_eq!(response.body["error"], "dsh is not running");
     server.abort();
 }
+
+#[tokio::test]
+async fn cli_route_refuses_cards_without_a_tracked_acp_session() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let mut omp = card_from_event(&event(crate::events::T_INFO, "urn:test:cli-omp", serde_json::json!({"title": "Report"}))).unwrap();
+    omp.source.uri = "omp://session/x".to_owned();
+    db.insert_card(&omp).unwrap();
+    let mut acp = card_from_event(&event(crate::events::T_INFO, "urn:test:cli-acp", serde_json::json!({"title": "Report"}))).unwrap();
+    acp.engine = Some("acp".to_owned());
+    acp.source.uri = "acp://session/sid-9".to_owned();
+    db.insert_card(&acp).unwrap();
+    let state = state(db, None);
+    let (address, server) = start_http_server(state.clone()).await;
+    let plain = http_request(address, "POST", &format!("/v1/cards/{}/cli", omp.id), "{}").await;
+    assert_eq!(plain.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(plain.body["error"], "card has no acp session");
+    let untracked = http_request(address, "POST", &format!("/v1/cards/{}/cli", acp.id), "{}").await;
+    assert_eq!(untracked.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(untracked.body["error"], "acp session is no longer tracked");
+    assert!(state.db.card(&acp.id).unwrap().unwrap().1.is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn models_serve_the_omp_catalog_for_the_acp_engine() {
+    if run_with_fake_tmux_child("server::tests::models_serve_the_omp_catalog_for_the_acp_engine") {
+        return;
+    }
+    {
+        let mut catalog = super::MODELS.write().unwrap();
+        let one = super::Model { selector: "provider/one".to_owned(), name: "One".to_owned() };
+        catalog.models = vec![one.clone()];
+        catalog.execution_models = vec![one];
+    }
+    let response = super::models(
+        axum::extract::State(state(Db::open(Path::new(":memory:")).unwrap(), None)),
+        axum::extract::Query(super::ModelsQuery { engine: Some("acp".to_owned()) }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["engine"], "acp");
+    assert_eq!(body["models"][0]["selector"], "provider/one");
+    assert_eq!(body["execution_models"][0]["selector"], "provider/one");
+    assert_eq!(body["thinking"], serde_json::json!(crate::cards::THINKING_LEVELS));
+}

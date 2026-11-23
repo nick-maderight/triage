@@ -162,10 +162,9 @@ impl Client {
         self.store_options(sid, &result);
         let running = result["_meta"]["ompsdk"]["running"].as_bool().unwrap_or(false);
         self.with(sid, |session| {
-            session.turn = if running {
-                Turn::Running
-            } else {
-                Turn::Ended("resumed".to_owned())
+            // A turn end that arrived before this reply is already recorded, and the reply must not undo it.
+            if !matches!(session.turn, Turn::Ended(_)) {
+                session.turn = if running { Turn::Running } else { Turn::Ended("resumed".to_owned()) };
             }
         });
         Ok(running)

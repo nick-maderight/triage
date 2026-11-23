@@ -9770,10 +9770,12 @@ fn acp_lock() -> std::sync::MutexGuard<'static, ()> {
     ACP_TESTS.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// A fake daemon. It logs every line it reads and answers each call as the daemon does.
+/// A fake daemon. It logs every line it reads and answers each call as the daemon does. Each
+/// connection gets its own thread. Triage can then reconnect after the daemon drops one.
 struct FakeAcp {
     socket: PathBuf,
     log: Arc<Mutex<Vec<Value>>>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FakeAcp {
@@ -9781,13 +9783,21 @@ impl FakeAcp {
         let socket = root.join("ompsdk.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let served = Arc::clone(&log);
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (served, gone) = (Arc::clone(&log), Arc::clone(&dropped));
         thread::spawn(move || {
-            if let Ok((stream, _)) = listener.accept() {
-                fake_acp_serve(stream, &served);
+            for (connection, stream) in listener.incoming().enumerate() {
+                let Ok(stream) = stream else { break };
+                let (served, gone) = (Arc::clone(&served), Arc::clone(&gone));
+                thread::spawn(move || fake_acp_serve(stream, connection + 1, &served, &gone));
             }
         });
-        Self { socket, log }
+        Self { socket, log, dropped }
+    }
+
+    /// Whether the fake dropped its first connection, as the `away` scenario does.
+    fn dropped(&self) -> bool {
+        self.dropped.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn sent(&self) -> Vec<Value> {
@@ -9799,7 +9809,7 @@ impl FakeAcp {
     }
 }
 
-fn fake_acp_serve(stream: UnixStream, log: &Mutex<Vec<Value>>) {
+fn fake_acp_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Value>>, dropped: &std::sync::atomic::AtomicBool) {
     let mut writer = stream.try_clone().unwrap();
     let mut send = |value: Value| {
         let mut line = value.to_string();
@@ -9826,6 +9836,11 @@ fn fake_acp_serve(stream: UnixStream, log: &Mutex<Vec<Value>>) {
         let result = match method {
             "session/prompt" => {
                 let text = message["params"]["prompt"][0]["text"].as_str().unwrap_or_default();
+                if fake_scenario(text) == "away" && connection == 1 {
+                    // The daemon loses the client mid-turn, and the turn ends while the client is away.
+                    dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                }
                 let asked = match fake_scenario(text) {
                     "ask" => Some(("ask-1", "Which colour?", ask_schema())),
                     "confirm" => Some(("confirm-1", "Keep it?", json!({"type": "object", "properties": {"value": {"type": "boolean"}}}))),
@@ -9843,7 +9858,13 @@ fn fake_acp_serve(stream: UnixStream, log: &Mutex<Vec<Value>>) {
                 }
             }
             "session/new" => json!({"sessionId": ACP_SID, "configOptions": fake_options()}),
-            "session/resume" => json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": false}}}),
+            "session/resume" if connection > 1 => {
+                // The turn end reaches the new connection before the reply that still reports a run.
+                send(json!({"jsonrpc": "2.0", "method": "_ompsdk/turn_end", "params": {"sessionId": ACP_SID, "stopReason": "end_turn"}}));
+                json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": true}}})
+            }
+            // A turn that waits on an elicitation is still running, as the daemon reports it.
+            "session/resume" => json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": waiting.is_some()}}}),
             "session/set_config_option" => json!({"configOptions": fake_options()}),
             "_session/steering" => json!({"outcome": "promptRequired", "queue": 0}),
             _ => json!({}),
@@ -10096,4 +10117,172 @@ fn acp_continuation_child() {
         .filter(|m| m["method"] == "session/prompt" && m["params"]["prompt"][0]["text"].as_str().is_some_and(|text| text.starts_with("Continue the triage brief at")))
         .count();
     assert_eq!(continuations, 5);
+}
+
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// An acp card for the fake's session, queued and unanswered.
+fn acp_card(db: &Db, id: &str, kind: Kind) -> Card {
+    let card = Card {
+        id: id.to_owned(),
+        kind,
+        priority: 1,
+        created_ms: events::now_ms(),
+        source: Source {
+            uri: format!("acp://session/{ACP_SID}"),
+            label: "acp Gate fix".to_owned(),
+            cwd: "/work/project".to_owned(),
+            pane: None,
+            target: None,
+        },
+        title: "Open it".to_owned(),
+        star: Star::default(),
+        options: Vec::new(),
+        answerable: false,
+        allow_other: false,
+        questions: Vec::new(),
+        body: None,
+        refs: Vec::new(),
+        level: Some("info".to_owned()),
+        tool_call_id: None,
+        report_due: false,
+        engine: Some("acp".to_owned()),
+        status: None,
+    };
+    db.insert_card(&card).unwrap();
+    card
+}
+
+/// A bin directory with the fake tmux and an `omp` whose session lease holds nothing.
+#[cfg(unix)]
+fn acp_cli_bin(root: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = fake_tmux(root);
+    let omp = bin.join("omp");
+    fs::write(&omp, "#!/bin/sh\necho '{\"held\": false}'\n").unwrap();
+    fs::set_permissions(&omp, fs::Permissions::from_mode(0o700)).unwrap();
+    bin
+}
+
+// The daemon ends the turn while triage is away. The end reaches the new connection and the
+// session settles once. No second prompt or cut follows.
+
+#[test]
+fn acp_turn_ended_while_away_is_settled_once_on_resume() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let home = scratch.path().join("home");
+    run_child("acp_away_child", scratch.path(), Some(home.as_path()), None);
+}
+
+#[test]
+fn acp_away_child() {
+    let Some(root) = child_root("acp_away_child") else {
+        return;
+    };
+    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeAcp::start(&root);
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(&root, "brief.md", "SCENARIO away");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Away").unwrap();
+    wait_until("the daemon to drop the client", || fake.dropped());
+    // The reader notices the closed socket a moment after the daemon drops it.
+    thread::sleep(Duration::from_millis(100));
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("done:acp:sid-1:e1").unwrap().is_some());
+    wait_for(&fake, |m| m["method"] == "session/close");
+    let sent = fake.sent();
+    let count = |method: &str| sent.iter().filter(|m| m["method"] == method).count();
+    assert_eq!(count("session/resume"), 1, "the session resumed more than once");
+    assert_eq!(count("session/prompt"), 1, "the turn was driven again");
+    assert_eq!(count("session/close"), 1, "the session closed more than once");
+    let (card, _) = db.card("done:acp:sid-1:e1").unwrap().unwrap();
+    assert_eq!(card.engine.as_deref(), Some("acp"));
+}
+
+// Open in CLI hands the session to a tmux window. The fake tmux logs the window's command.
+
+#[test]
+fn acp_open_cli_resumes_a_running_turn_with_the_cut_prompt() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let bin = acp_cli_bin(scratch.path());
+    let home = scratch.path().join("home");
+    run_child("acp_open_cli_running_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
+}
+
+#[test]
+fn acp_open_cli_running_child() {
+    let Some(root) = child_root("acp_open_cli_running_child") else {
+        return;
+    };
+    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "Still going.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeAcp::start(&root);
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(&root, "brief.md", "SCENARIO ask");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:acp:sid-1:ask-1").unwrap().is_some());
+    acp_card(&db, "info:acp:sid-1:e1", Kind::Info);
+    let (ask, _) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
+    acp_track::open_cli(&db, &ask, "sid-1", &launch).unwrap();
+
+    let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
+    let window = log.lines().find(|line| line.starts_with("new-window ")).unwrap();
+    assert!(window.contains("omp --resume='"), "{window}");
+    assert!(window.contains("2026-01-01T00-00-00Z_sid-1.jsonl"), "{window}");
+    assert!(window.contains("'Continue where you stopped.'"), "{window}");
+    assert_eq!(fake.sent().iter().filter(|m| m["method"] == "session/close").count(), 1);
+    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("acp-sessions.json")).unwrap()).unwrap();
+    assert_eq!(state["sessions"], json!([]), "the entry is dropped");
+    let (_, swipe) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
+    let swipe = swipe.unwrap();
+    assert_eq!(swipe.action, "done");
+    assert_eq!(swipe.text.as_deref(), Some("Open in CLI"));
+    assert_eq!(swipe.reason.as_deref(), Some("opened in cli %42"));
+    let (_, other) = db.card("info:acp:sid-1:e1").unwrap().unwrap();
+    assert_eq!(other.unwrap().reason.as_deref(), Some("opened in cli %42"));
+}
+
+#[test]
+fn acp_open_cli_hands_an_idle_session_over_without_a_cut_prompt() {
+    let _lock = acp_lock();
+    let scratch = Scratch::new();
+    let bin = acp_cli_bin(scratch.path());
+    let home = scratch.path().join("home");
+    run_child("acp_open_cli_idle_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
+}
+
+#[test]
+fn acp_open_cli_idle_child() {
+    let Some(root) = child_root("acp_open_cli_idle_child") else {
+        return;
+    };
+    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "Done.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeAcp::start(&root);
+    let launch = acp_launch(&fake);
+    let brief = acp_brief(&root, "brief.md", "SCENARIO plain");
+    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
+    wait_until("the turn to end", || {
+        matches!(crate::acp::client(&fake.socket).unwrap().turn("sid-1"), crate::acp::Turn::Ended(_))
+    });
+    let card = acp_card(&db, "ask:acp:sid-1:ask-1", Kind::Ask);
+    acp_track::open_cli(&db, &card, "sid-1", &launch).unwrap();
+
+    let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
+    let window = log.lines().find(|line| line.starts_with("new-window ")).unwrap();
+    assert!(window.contains("omp --resume='"), "{window}");
+    assert!(!window.contains("Continue where you stopped."), "{window}");
+    let (_, swipe) = db.card(&card.id).unwrap().unwrap();
+    assert_eq!(swipe.unwrap().text.as_deref(), Some("Open in CLI"));
 }
