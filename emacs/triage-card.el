@@ -314,25 +314,6 @@ MS is milliseconds since the epoch.  NOW is a float time."
                          (format-time-string "%F" now))))
     (format-time-string (if today "%H:%M" "%a %H:%M") time)))
 
-(defun triage-card-later-choices (now)
-  "Return the Later choices for NOW, a float time.
-Each choice is a plist with :label, :minutes and :at, where :at is
-a float time.  Port of laterChoices in ui/app.js."
-  (let* ((decoded (decode-time now))
-         (tomorrow-nine
-          (let ((local (copy-sequence decoded)))
-            (setf (nth 0 local) 0
-                  (nth 1 local) 0
-                  (nth 2 local) 9
-                  (nth 3 local) (1+ (nth 3 local))
-                  (nth 7 local) -1
-                  (nth 8 local) nil)
-            (float-time (encode-time local))))
-         (minutes (max 1 (ceiling (/ (- tomorrow-nine now) 60.0)))))
-    (list (list :label "1 hour" :minutes 60 :at (+ now 3600.0))
-          (list :label "4 hours" :minutes 240 :at (+ now 14400.0))
-          (list :label "Tomorrow" :minutes minutes :at tomorrow-nine))))
-
 (defun triage-card--word-keys (word)
   "Return WORD's key candidates: downcase then upcase of each character."
   (mapcan (lambda (char) (list (downcase char) (upcase char)))
@@ -403,16 +384,15 @@ from that label, and the note.  An empty string means none."
                             (format "Note: %s" note))))
      " · ")))
 
-(defun triage-card-result-message (card verb body choice)
+(defun triage-card-result-message (card verb body)
   "Return the status line for VERB on CARD with BODY.
-CHOICE is the Later plist when VERB is later.
 Port resultMessage from ui/app.js."
   (let ((title (alist-get 'title card))
         (kind (alist-get 'kind card))
         (answers (alist-get 'answers body)))
     (cond
      ((equal verb "skip") (format "Skipped · %s" title))
-     ((equal verb "later") (format "Later %s · %s" (plist-get choice :label) title))
+     ((equal verb "later") (format "Later 1 hour · %s" title))
      ((or (equal verb "dispatch")
           (and (equal verb "answer") answers (equal kind "finding")))
       (format "%s · %s"

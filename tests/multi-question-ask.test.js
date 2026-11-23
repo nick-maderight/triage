@@ -83,7 +83,6 @@ test('multi-question asks are answered step by step and sent from the review', a
       streamOpen: false,
       openBlocks: new Set(),
       shakeId: null,
-      laterOpen: false,
     },
     requests = [],
     toasts = [],

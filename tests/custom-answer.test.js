@@ -191,7 +191,6 @@ test('plan cards from the queue render and answer through the answer route', asy
       streamOpen: false,
       openBlocks: new Set(),
       shakeId: null,
-      laterOpen: false,
     },
     requests = [],
     toasts = [],

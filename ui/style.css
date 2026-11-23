@@ -1070,45 +1070,6 @@ textarea.field {
 .dock-group .pane-actions {
   display: contents;
 }
-.later {
-  position: relative;
-}
-.menu {
-  position: absolute;
-  z-index: 20;
-  right: 0;
-  bottom: calc(100% + 6px);
-  display: grid;
-  gap: 2px;
-  width: min(260px, calc(100vw - 32px));
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-panel);
-  background: var(--surface);
-  box-shadow: var(--float);
-}
-.menu button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 0 10px;
-  border-radius: var(--r-control);
-  background: var(--clear);
-  font-size: 13px;
-  text-align: left;
-}
-.menu button:hover:not(:disabled) {
-  background: var(--raised);
-}
-.menu .later-label {
-  flex: 1;
-}
-.menu .later-time {
-  color: var(--muted);
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-}
 
 /* With no cards waiting, the card frame stays and reports inbox zero. */
 .empty {
@@ -1916,7 +1877,6 @@ dialog.picker::backdrop {
     margin: 0;
   }
   .dock-group {
-    position: relative;
     display: grid;
     flex: 1 0 100%;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1933,13 +1893,10 @@ dialog.picker::backdrop {
   .dock-group .btn {
     width: 100%;
   }
-  .dock-group .btn:not([role='menuitem']) {
+  .dock-group .btn {
     padding: 4px 6px;
     white-space: normal;
     text-align: center;
-  }
-  .later {
-    position: static;
   }
   .empty {
     min-height: calc(100dvh - var(--bar) - env(safe-area-inset-top));

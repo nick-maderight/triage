@@ -1282,14 +1282,6 @@
     }
     if (innerWidth > 639 && matchMedia('(pointer: fine)').matches)
       assert(shown.length > 0, 'a dock button shows its action key on a pointer screen');
-    if (document.querySelector('#later-btn')) {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
-      await waitFor(() => document.querySelector('#later-menu'), 'the Later menu');
-      const laterKeys = [...document.querySelectorAll('#later-menu kbd')].map((k) => k.textContent).join(' ');
-      assert(laterKeys === '1 4 t', `Later takes the Emacs keys (${laterKeys})`);
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
-      await waitFor(() => !document.querySelector('#later-menu'), 'the Later menu closes');
-    }
     return { scenario: 'card-keys', passed: true, keys: shown };
   };
 

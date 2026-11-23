@@ -26,5 +26,21 @@
         (triage-inbox--apply))
       (should (= triage-inbox--idx 1)))))
 
+(ert-deftest triage-inbox-test-later-defers-an-hour-without-asking ()
+  "Later defers the shown card for 60 minutes and asks nothing."
+  (with-temp-buffer
+    (triage-inbox-mode)
+    (let ((card '((id . "c1") (kind . "info") (title . "First")))
+          sent)
+      (setq triage-inbox--shown-card card)
+      (cl-letf (((symbol-function 'read-multiple-choice)
+                 (lambda (&rest _) (error "Later asked for a choice")))
+                ((symbol-function 'triage-queue-act)
+                 (lambda (shown verb body)
+                   (setq sent (list (alist-get 'id shown) verb body))
+                   t)))
+        (triage-inbox-later))
+      (should (equal sent '("c1" "later" ((minutes . 60))))))))
+
 (provide 'triage-inbox-test)
 ;;; triage-inbox-test.el ends here

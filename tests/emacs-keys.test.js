@@ -54,7 +54,6 @@ test('a choice takes the mnemonic key the Emacs client gives it', () => {
       ['Default (omp default)', 'auto', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
       'd a o m l M h x A',
     ],
-    [['1 hour', '4 hours', 'Tomorrow'], '1 4 t'],
   ];
   for (const [labels, keys] of cases)
     assert.equal(context.choiceKeys(labels).join(' '), keys, labels.join(' / '));

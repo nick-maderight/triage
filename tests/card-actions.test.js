@@ -41,7 +41,7 @@ function findNodes(value, predicate, found = []) {
 // lands in `calls`.
 const calls = [],
   context = vm.createContext({
-    S: { pending: null, laterOpen: false, remoteSwapUntil: 0 },
+    S: { pending: null, remoteSwapUntil: 0 },
     Date: { now: () => 1000 },
     enc: encodeURIComponent,
     h: node,
@@ -53,10 +53,8 @@ const calls = [],
     $: (selector) => (selector === '#note' ? { focus: () => calls.push(['focus note']) } : null),
     openSheet: (card, mode, task, { newWindow = false } = {}) =>
       calls.push(['dispatch', card.id, mode, task, newWindow ? 'own session' : 'card session']),
-    act: (card, verb) => calls.push([verb, card.id]),
+    act: (card, verb, body) => calls.push([verb, card.id, ...(body?.minutes ? [body.minutes] : [])]),
     openContext: (id) => calls.push(['context', id]),
-    toggleLater: () => calls.push(['later']),
-    later() {},
     openPeek: (card) => calls.push(['peek', card.id]),
     jump: (card) => calls.push(['jump', card.id]),
     openDsh: () => calls.push(['open dsh']),
@@ -250,7 +248,7 @@ test('each key keeps one meaning on every card', () => {
   assert.deepEqual(press(SHAPES['ended session'], 'R'), ['restore exited:%8:-']);
   assert.deepEqual(press(finding, 's'), ['skip finding']);
   assert.deepEqual(press(finding, 't'), ['context finding']);
-  assert.deepEqual(press(finding, 'l'), ['later']);
+  assert.deepEqual(press(finding, 'l'), ['later finding 60'], 'l defers the card one hour at once');
   assert.deepEqual(press(finding, 'n'), ['focus note']);
   assert.deepEqual(press(ask, 'o'), ['other ask']);
   assert.deepEqual(press(ask, 'v'), ['peek ask']);
@@ -277,9 +275,9 @@ test('Dispatch advertises the mode keys that have no button of their own', () =>
 test('an action announces the same result on every kind of card', () => {
   for (const kind of ['ask', 'plan', 'finding', 'info']) {
     const card = { id: kind, kind, title: 'Title', options: [{ label: 'Yes' }] },
-      said = (verb, body = {}, choice) => context.resultMessage(card, verb, body, choice);
+      said = (verb, body = {}) => context.resultMessage(card, verb, body);
     assert.equal(said('skip'), 'Skipped · Title', kind);
-    assert.equal(said('later', { minutes: 60 }, { label: '1 hour' }), 'Later 1 hour · Title', kind);
+    assert.equal(said('later', { minutes: 60 }), 'Later 1 hour · Title', kind);
     assert.equal(said('close'), 'Closed · Title', kind);
     assert.equal(said('dispatch', { mode: 'goal', task: 'investigate' }), 'Investigating · Title', kind);
     assert.equal(said('dispatch', { mode: 'goal', task: 'fix' }), 'Fixing · Title', kind);

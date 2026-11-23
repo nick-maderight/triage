@@ -30,7 +30,6 @@ function harness({ cards, inflight = [], api = async () => ({}), idx = 0 }) {
       actionRevision: 0,
       dirty: false,
       direction: 1,
-      laterOpen: false,
     },
     calls = { toasts: [], announcements: [], refreshes: 0, renders: 0, headers: 0, queueLines: 0 },
     context = vm.createContext({

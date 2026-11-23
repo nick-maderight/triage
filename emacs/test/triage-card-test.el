@@ -22,10 +22,6 @@
   "Return the ids of CARDS in order."
   (mapcar (lambda (card) (alist-get 'id card)) cards))
 
-(defun triage-card-test--local (year month day hour minute)
-  "Return the local time YEAR MONTH DAY HOUR MINUTE as a float time."
-  (float-time (encode-time (list 0 minute hour day month year nil nil nil))))
-
 (defconst triage-card-test--catalog
   '((engine . "dsh")
     (thinking . ("low" "high"))
@@ -206,23 +202,6 @@
       (should (equal (alist-get 'label (cdr (car sorted))) "B"))))
   (should (= (triage-card-rec-index '(((label . "A")) ((label . "B")))) 0)))
 
-(ert-deftest triage-card-test-later-choices-tomorrow ()
-  "Later offers 1 hour, 4 hours and Tomorrow, which runs to 09:00."
-  (let* ((now (triage-card-test--local 2026 11 17 23 30))
-         (choices (triage-card-later-choices now)))
-    (should (equal (mapcar (lambda (choice) (plist-get choice :label)) choices)
-                   '("1 hour" "4 hours" "Tomorrow")))
-    (should (equal (mapcar (lambda (choice) (plist-get choice :minutes)) choices)
-                   '(60 240 570)))))
-
-(ert-deftest triage-card-test-later-tomorrow-crosses-month ()
-  "Tomorrow from the 30th lands on 09:00 on the first of next month."
-  (let* ((now (triage-card-test--local 2026 11 30 10 0))
-         (tomorrow (nth 2 (triage-card-later-choices now))))
-    (should (equal (format-time-string "%F %R" (plist-get tomorrow :at))
-                   "2026-12-01 09:00"))
-    (should (= (plist-get tomorrow :minutes) 1380))))
-
 (ert-deftest triage-card-test-source-name ()
   "The source name drops the window prefix and the leading emoji."
   (should (equal (triage-card-source-name
@@ -285,30 +264,28 @@
   (let ((finding '((id . "f") (kind . "finding") (title . "T")))
         (info '((id . "i") (kind . "info") (title . "T"))))
     (should (equal (triage-card-result-message
-                    finding "dispatch" '((mode . "goal") (task . "fix")) nil)
+                    finding "dispatch" '((mode . "goal") (task . "fix")))
                    "Fixing · T"))
     (should (equal (triage-card-result-message
-                    finding "dispatch" '((mode . "goal") (task . "act")) nil)
+                    finding "dispatch" '((mode . "goal") (task . "act")))
                    "Acting · T"))
     (should (equal (triage-card-result-message
-                    finding "dispatch" '((mode . "goal") (task . "investigate")) nil)
+                    finding "dispatch" '((mode . "goal") (task . "investigate")))
                    "Investigating · T"))
     (should (equal (triage-card-result-message
-                    finding "dispatch" '((mode . "plan") (task . "act")) nil)
+                    finding "dispatch" '((mode . "plan") (task . "act")))
                    "Planning · T"))
-    (should (equal (triage-card-result-message finding "skip" nil nil) "Skipped · T"))
-    (should (equal (triage-card-result-message finding "close" '((note . :null)) nil)
+    (should (equal (triage-card-result-message finding "skip" nil) "Skipped · T"))
+    (should (equal (triage-card-result-message finding "close" '((note . :null)))
                    "Closed · T"))
-    (should (equal (triage-card-result-message finding "report" nil nil)
+    (should (equal (triage-card-result-message finding "report" nil)
                    "Requested report · T"))
-    (should (equal (triage-card-result-message finding "restore" nil nil)
+    (should (equal (triage-card-result-message finding "restore" nil)
                    "Restoring run · T"))
-    (should (equal (triage-card-result-message
-                    finding "later" '((minutes . 60))
-                    '(:label "1 hour" :minutes 60 :at nil))
+    (should (equal (triage-card-result-message finding "later" '((minutes . 60)))
                    "Later 1 hour · T"))
     (should (equal (triage-card-result-message
-                    info "answer" '((option . :null) (text . :null) (note . :null)) nil)
+                    info "answer" '((option . :null) (text . :null) (note . :null)))
                    "Acknowledged · T"))))
 
 (ert-deftest triage-card-test-sort-priority-then-created ()
@@ -354,9 +331,7 @@
   (should (equal (triage-card-choice-keys
                   '("Default (omp default)" "auto" "off" "minimal"
                     "low" "medium" "high" "xhigh" "max"))
-                 '(?d ?a ?o ?m ?l ?M ?h ?x ?A)))
-  (should (equal (triage-card-choice-keys '("1 hour" "4 hours" "Tomorrow"))
-                 '(?1 ?4 ?t))))
+                 '(?d ?a ?o ?m ?l ?M ?h ?x ?A))))
 
 (provide 'triage-card-test)
 ;;; triage-card-test.el ends here

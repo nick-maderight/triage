@@ -16,7 +16,6 @@ const S = {
   inflight: new Set(),
   shakeId: null,
   shakeTimer: 0,
-  laterOpen: false,
   remoteSwapUntil: 0,
   countsExpanded: false,
   openBlocks: new Set(),
@@ -236,7 +235,7 @@ const S = {
     },
     skip: { key: 's', label: 'Skip', run: (c) => act(c, 'skip', {}, 'skip') },
     context: { key: 't', label: 'Context', run: (c) => openContext(c.id) },
-    later: { key: 'l', label: 'Later', run: () => toggleLater() },
+    later: { key: 'l', label: 'Later', run: (c) => act(c, 'later', { minutes: 60 }, 'later') },
     peek: { key: 'v', label: 'Peek', offered: paneOf, run: (c) => openPeek(c) },
     // A dsh session has no tmux pane to jump to. Its card opens the dsh web UI instead.
     jump: {
@@ -467,7 +466,6 @@ const S = {
           lead &&
           byPriority(lead, oldTop) < 0 &&
           !S.pending &&
-          !S.laterOpen &&
           !(shownDraft && (shownDraft.open || shownDraft.note.trim() || shownDraft.other.trim())),
       );
     S.counts = countsFrom(S.cards);
@@ -1437,23 +1435,6 @@ const S = {
       ),
     );
   }
-  function laterChoices() {
-    const now = Date.now(),
-      tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(9, 0, 0, 0);
-    const choices = [
-        { label: '1 hour', minutes: 60, at: now + 3600000 },
-        { label: '4 hours', minutes: 240, at: now + 14400000 },
-        {
-          label: 'Tomorrow',
-          minutes: Math.max(1, Math.ceil((tomorrow - now) / 60000)),
-          at: tomorrow.getTime(),
-        },
-      ],
-      keys = choiceKeys(choices.map((x) => x.label));
-    return choices.map((x, i) => ({ ...x, key: keys[i], local: local(x.at) }));
-  }
   // Each label takes the first free letter its words offer, lower case before upper, then a
   // digit. Port of triage-card-choice-keys in emacs/triage-card.el.
   function choiceKeys(labels) {
@@ -1471,7 +1452,7 @@ const S = {
   function dock(c) {
     const lead = leadOf(c),
       hint = (text) => h('kbd', { class: 'hint', 'aria-hidden': 'true' }, text),
-      control = (id, attrs = {}) => {
+      control = (id) => {
         const { key, run, also = [] } = ACTIONS[id],
           primary = id === lead,
           keys = [key, ...also.filter((other) => !labelOf(c, other)).map((other) => ACTIONS[other].key)];
@@ -1483,37 +1464,12 @@ const S = {
             id: `${id}-btn`,
             'data-primary': primary ? 'true' : null,
             'aria-keyshortcuts': (primary ? [...keys, 'Enter'] : keys).join(' '),
-            ...attrs,
           },
           () => run(c),
           labelOf(c, id),
           hint(key),
         );
       },
-      menu =
-        S.laterOpen &&
-        h(
-          'div',
-          {
-            id: 'later-menu',
-            class: 'menu',
-            role: 'menu',
-            'aria-label': 'Later options',
-            'data-od-id': ident('later-menu', c),
-          },
-          ...laterChoices().map((x, i) =>
-            button(
-              c,
-              `later-${i}`,
-              'btn',
-              { id: `later-${i}`, role: 'menuitem' },
-              () => later(c, x),
-              h('span', { class: 'later-label' }, x.label),
-              h('span', { class: 'later-time' }, x.local),
-              hint(x.key),
-            ),
-          ),
-        ),
       group = Object.keys(ACTIONS).filter((id) => id !== lead && labelOf(c, id)),
       pane = group.filter((id) => id === 'peek' || id === 'jump');
     return el(
@@ -1523,22 +1479,7 @@ const S = {
       el(
         'div',
         'dock-group',
-        group
-          .filter((id) => !pane.includes(id))
-          .map((id) =>
-            id === 'later'
-              ? el(
-                  'div',
-                  'later',
-                  control(id, {
-                    'aria-expanded': String(S.laterOpen),
-                    'aria-controls': S.laterOpen ? 'later-menu' : null,
-                    'aria-haspopup': 'menu',
-                  }),
-                  menu,
-                )
-              : control(id),
-          ),
+        group.filter((id) => !pane.includes(id)).map((id) => control(id)),
         pane.length > 0 && el('div', 'pane-actions', pane.map((id) => control(id))),
       ),
     );
@@ -1643,7 +1584,6 @@ const S = {
     const c = current(),
       changed = (c?.id || null) !== S.shownId;
     if (changed && S.picker?.id === 'plan-executor') $('#picker').close();
-    if (changed) S.laterOpen = false;
     updateHeader();
     // The first paint shows the card in place. Only a card that replaces another view slides in.
     if (c) $('#main').replaceChildren(cardView(c, changed && S.shownId !== undefined));
@@ -1674,7 +1614,6 @@ const S = {
   function begin(c, control) {
     const v = snapshot();
     S.pending = { id: c.id, control };
-    S.laterOpen = false;
     render(v);
     return v;
   }
@@ -1692,9 +1631,9 @@ const S = {
     }, 180);
     if (S.dirty) void refresh();
   }
-  function resultMessage(c, verb, body, choice) {
+  function resultMessage(c, verb, body) {
     if (verb === 'skip') return `Skipped · ${c.title}`;
-    if (verb === 'later') return `Later ${choice.label} · ${c.title}`;
+    if (verb === 'later') return `Later 1 hour · ${c.title}`;
     if (verb === 'dispatch' || (verb === 'answer' && body.answers && c.kind === 'finding'))
       return `${
         body.mode === 'plan' || body.mode === 'plan-into' ? 'Planning' : TASKS[body.task]?.doing ?? 'Launching'
@@ -1709,16 +1648,15 @@ const S = {
         .join(', ')} · ${c.title}`;
     return `${c.kind === 'finding' ? 'Launched' : 'Sent'} ${body.text || c.options?.[body.option]?.label || 'Custom answer'} · ${c.title}`;
   }
-  async function act(c, verb, body, control, choice = null) {
+  async function act(c, verb, body, control) {
     if (Date.now() < S.remoteSwapUntil || S.pending || !S.cards.some((x) => x.id === c.id)) return;
     S.pending = { id: c.id, control };
-    S.laterOpen = false;
     S.inflight.add(c.id);
     // The card leaves now; settle reports the daemon's result, which can take seconds of tmux typing.
     const request = api(`/v1/cards/${enc(c.id)}/${verb}`, body);
     request.catch(() => {});
     const dir = verb === 'skip' ? 'left' : verb === 'later' ? 'down' : 'right',
-      text = resultMessage(c, verb, body, choice);
+      text = resultMessage(c, verb, body);
     $('.card')?.classList.add(`leaving-${dir}`);
     if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
       await new Promise((r) => setTimeout(r, 180));
@@ -1814,7 +1752,6 @@ const S = {
     if (c.questions?.length) answerStep(c, { text });
     else act(c, 'answer', { option: null, text, note: noteValue(c) }, 'other');
   }
-  const later = (c, x) => act(c, 'later', { minutes: x.minutes }, 'later', x);
   // Enter runs the card's primary. That is the action its dock leads with, else the recommended
   // option.
   function primary(c) {
@@ -1823,18 +1760,6 @@ const S = {
     if (lead) ACTIONS[lead].run(c);
     else if (c.questions?.length && answerable(c)) primaryStep(c);
     else pick(c, recIndex(c));
-  }
-  function toggleLater() {
-    if (S.pending) return;
-    const view = snapshot();
-    S.laterOpen = !S.laterOpen;
-    render({ ...view, id: S.laterOpen ? 'later-0' : 'later-btn' });
-  }
-  function closeLater(focus = false) {
-    if (!S.laterOpen) return;
-    S.laterOpen = false;
-    render();
-    if (focus) $('#later-btn')?.focus({ preventScroll: true });
   }
   async function jump(c) {
     const pane = paneOf(c);
@@ -3265,42 +3190,6 @@ const S = {
     t instanceof HTMLTextAreaElement ||
     t instanceof HTMLSelectElement ||
     t.isContentEditable;
-  function menuKey(e) {
-    const bs = [...$('#later-menu').querySelectorAll('button:not(:disabled)')],
-      i = bs.indexOf(document.activeElement),
-      focus = (n) => {
-        e.preventDefault();
-        bs[Math.max(0, Math.min(bs.length - 1, n))]?.focus();
-      };
-    if (e.key === 'Escape' || e.key === 'l') {
-      e.preventDefault();
-      closeLater(true);
-      return true;
-    }
-    if (e.key === 'ArrowDown') {
-      focus(i < 0 ? 0 : i + 1);
-      return true;
-    }
-    if (e.key === 'ArrowUp') {
-      focus(i < 0 ? bs.length - 1 : i - 1);
-      return true;
-    }
-    if (e.key === 'Home') {
-      focus(0);
-      return true;
-    }
-    if (e.key === 'End') {
-      focus(bs.length - 1);
-      return true;
-    }
-    const n = laterChoices().findIndex((x) => x.key === e.key);
-    if (n >= 0) {
-      e.preventDefault();
-      bs[n]?.click();
-      return true;
-    }
-    return false;
-  }
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
     const t = e.target,
@@ -3353,10 +3242,6 @@ const S = {
       e.preventDefault();
       return;
     }
-    if (S.laterOpen) {
-      if (menuKey(e) || key === 'Enter') return;
-      return;
-    }
     if (key === 'Escape' && S.countsExpanded)
       return run(() => {
         closeCounts();
@@ -3380,7 +3265,6 @@ const S = {
     switch (key) {
       case 'Escape':
         if (otherAllowed(c) && draft(c).open) toggleOther(c);
-        else closeLater(true);
         break;
       case 'j':
       case 'ArrowDown':
@@ -3406,15 +3290,10 @@ const S = {
       e.target.close();
       return;
     }
-    if (S.laterOpen && !e.target.closest?.('.later')) closeLater(false);
     const mic = e.target.closest?.('[data-dictate]');
     if (mic) void toggleDictation(mic.dataset.dictate);
   });
   document.addEventListener('focusin', (e) => {
-    const menu = $('#later-menu');
-    // Safari does not focus a pressed button, so the press focuses the card around the menu.
-    // Closing the menu on that focus would rebuild the card before the click reaches the button.
-    if (S.laterOpen && !menu?.contains(e.target) && !e.target.contains?.(menu)) closeLater(false);
     if (S.countsExpanded && !e.target.closest?.('#count-toggle, #counts')) closeCounts();
   });
   // Closing the sheet that holds the field being dictated stops listening and drops the words.

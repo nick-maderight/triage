@@ -16,7 +16,7 @@ const comparatorStart = source.indexOf('  const byPriority ='),
     `(() => { ${source.slice(comparatorStart, comparatorEnd)} return byPriority; })()`,
   );
 
-function queueHarness({ cards, shownId, idx = 0, drafts = new Map(), laterOpen = false, pending = null }) {
+function queueHarness({ cards, shownId, idx = 0, drafts = new Map(), pending = null }) {
   const state = {
       cards,
       counts: {},
@@ -25,7 +25,6 @@ function queueHarness({ cards, shownId, idx = 0, drafts = new Map(), laterOpen =
       shownId,
       drafts,
       pending,
-      laterOpen,
       initialized: true,
       history: { loaded: true, error: null },
       remoteSwapUntil: 0,
@@ -104,14 +103,6 @@ test('an open Other row blocks a leader jump', () => {
     idx: 1,
     drafts: new Map([['low2', { note: '', other: '', open: true }]]),
   });
-
-  update(harness, [low1, low2, urgent]);
-
-  assert.equal(harness.state.idx, 2);
-});
-
-test('the later menu blocks a leader jump', () => {
-  const harness = queueHarness({ cards: [low1, low2], shownId: 'low2', idx: 1, laterOpen: true });
 
   update(harness, [low1, low2, urgent]);
 

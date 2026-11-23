@@ -139,11 +139,10 @@ Signal `user-error' when no card is shown or ID is not offered."
     (and (string-empty-p (string-trim (triage-draft-note draft)))
          (string-empty-p (string-trim (triage-draft-other draft))))))
 
-(defun triage-inbox--act (card verb body &optional choice)
+(defun triage-inbox--act (card verb body)
   "Send VERB with BODY for CARD through the optimistic queue action.
-CHOICE is passed on to `triage-queue-act'.  Signal a `user-error' when
-CARD is no longer in the queue."
-  (or (triage-queue-act card verb body choice)
+Signal a `user-error' when CARD is no longer in the queue."
+  (or (triage-queue-act card verb body)
       (user-error "This card is no longer in the queue")))
 
 (defun triage-inbox--read-only-notice (card)
@@ -636,23 +635,9 @@ The session opens in its own window."
   (triage-inbox--act (triage-inbox--card 'skip) "skip" nil))
 
 (defun triage-inbox-later ()
-  "Defer the shown card to one of the later times."
+  "Defer the shown card for one hour."
   (interactive)
-  (let* ((card (triage-inbox--card 'later))
-         (choices (triage-card-later-choices (float-time)))
-         (keys (triage-card-choice-keys
-                (mapcar (lambda (choice) (plist-get choice :label)) choices)))
-         (picked (read-multiple-choice
-                  "Later"
-                  (cl-mapcar (lambda (key choice)
-                               (list key (plist-get choice :label)
-                                     (format-time-string "%a %H:%M"
-                                                         (plist-get choice :at))))
-                             keys choices)))
-         (choice (nth (cl-position (car picked) keys) choices)))
-    (triage-inbox--act card "later"
-                       `((minutes . ,(plist-get choice :minutes)))
-                       choice)))
+  (triage-inbox--act (triage-inbox--card 'later) "later" '((minutes . 60))))
 
 (defun triage-inbox-note ()
   "Edit the draft note of the shown card."

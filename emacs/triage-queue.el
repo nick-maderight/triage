@@ -214,17 +214,16 @@ A refresh requested while one is in flight runs again once it finishes."
   (remhash id triage-queue--inflight)
   (triage-queue-refresh))
 
-(defun triage-queue-act (card verb body &optional choice)
+(defun triage-queue-act (card verb body)
   "Run VERB with BODY on CARD, removing it until the daemon responds.
-CHOICE is the chosen Later option for the result message.  Return nil if
-CARD is absent from the queue, else t."
+Return nil if CARD is absent from the queue, else t."
   (let* ((id (alist-get 'id card))
          (queued (triage-queue-find id)))
     (when queued
       (puthash id t triage-queue--inflight)
       (setq triage-queue-cards (delq queued triage-queue-cards)
             triage-queue-counts (triage-card-counts triage-queue-cards))
-      (message "%s" (triage-card-result-message queued verb body choice))
+      (message "%s" (triage-card-result-message queued verb body))
       (run-hooks 'triage-queue-update-hook)
       (triage-api-request
        'post (triage-api-card-path id verb)
