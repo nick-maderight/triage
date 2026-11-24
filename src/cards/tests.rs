@@ -9857,6 +9857,12 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
                     None => json!({"stopReason": "end_turn"}),
                 }
             }
+            // Mirror omp ACP's relative-cwd error response.
+            "session/new" if !message["params"]["cwd"].as_str().is_some_and(|cwd| cwd.starts_with('/')) => {
+                let details = format!("ACP cwd must be absolute: {}", message["params"]["cwd"].as_str().unwrap_or_default());
+                send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "Internal error", "data": {"details": details}}}));
+                continue;
+            }
             "session/new" => json!({"sessionId": OMPSDK_SID, "configOptions": fake_options()}),
             "session/resume" if connection > 1 => {
                 // The turn end reaches the new connection before the reply that still reports a run.
@@ -9961,6 +9967,40 @@ fn ompsdk_launch_sets_mode_model_and_thinking_then_prompts() {
     assert!(set("thinking", "high"));
     let prompt = wait_for(&fake, |m| m["method"] == "session/prompt");
     assert!(prompt["params"]["prompt"][0]["text"].as_str().unwrap().contains(&brief.display().to_string()));
+}
+
+#[test]
+fn launch_directory_expands_home_and_refuses_relative_paths() {
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(workdir("").unwrap(), home);
+    assert_eq!(workdir("~").unwrap(), home);
+    assert_eq!(workdir("~/").unwrap(), home);
+    assert_eq!(workdir("~/a/b/").unwrap(), format!("{home}/a/b"));
+    assert_eq!(workdir("/abs/x/").unwrap(), "/abs/x");
+    assert_eq!(workdir("notes").unwrap_err(), "working directory must be absolute: notes");
+    assert_eq!(workdir("~other/x").unwrap_err(), "working directory must be absolute: ~other/x");
+}
+
+// A worktree directory may not exist when an autorules card is dispatched later.
+#[test]
+fn launch_directory_does_not_require_the_directory_to_exist() {
+    assert_eq!(workdir("/path/that/does/not/exist").unwrap(), "/path/that/does/not/exist");
+}
+
+#[test]
+fn launch_directory_rejects_tilde_for_another_user() {
+    assert_eq!(workdir("~someone/project").unwrap_err(), "working directory must be absolute: ~someone/project");
+}
+
+#[test]
+fn ompsdk_launch_error_carries_the_agent_details() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "Fix it");
+    let error = ompsdk_track::launch_new(&db, &ompsdk_launch(&fake), "~/", &brief, Start::Goal, None, "Fix it").unwrap_err();
+    assert_eq!(error, "Internal error: ACP cwd must be absolute: ~/" );
 }
 
 #[test]

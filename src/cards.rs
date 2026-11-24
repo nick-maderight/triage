@@ -1037,7 +1037,7 @@ pub fn dispatch(
     }
     let path = write_brief(
         db,
-        dispatch_brief(card, start, task, note, workspace_workdir(launch, &card_workdir(card))),
+        dispatch_brief(card, start, task, note, workspace_workdir(launch, &workdir(&card.source.cwd)?)),
     )?;
     let pane = launch_brief(db, card, launch, &path, start, image, new_window)?;
     let label = launch_label(start, task);
@@ -1259,7 +1259,7 @@ pub fn restore(db: &Db, card: &Card, launch: &Launch) -> Result<(), String> {
     let id = session_id(transcript).ok_or_else(|| "no session id in transcript name".to_owned())?;
     let session = launch.session.as_deref().unwrap_or(DEFAULT_SESSION);
     let command = format!("omp --restore {}", shell_quote(&id));
-    let pane = tmux::new_window(session, &card.source.cwd, &command).map_err(|error| error.to_string())?;
+    let pane = tmux::new_window(session, &workdir(&card.source.cwd)?, &command).map_err(|error| error.to_string())?;
     if record_swipe(db, &card.id, "done", None, Some("Restore run".to_owned()), None, Some(format!("restored {pane}"))) {
         Ok(())
     } else {
@@ -1433,7 +1433,7 @@ fn launch_brief(
         omp_start(launch, start),
         image,
     )?;
-    open_window(launch, &card.source.cwd, &command)
+    open_window(launch, &workdir(&card.source.cwd)?, &command)
 }
 
 /// Open an omp window on `command`. A dsh plan's planner window carries the dsh choice on its
@@ -3312,7 +3312,7 @@ fn hand_plan_to_dsh(
     let path = card.refs.first().ok_or_else(|| "plan card names no plan file".to_owned())?;
     let plan = fs::read_to_string(path).map_err(|error| format!("could not read plan: {error}"))?;
     let launch = Launch { engine: Engine::Dsh, model, thinking, dsh_into: None, ..launch.clone() };
-    let cwd = card_workdir(card);
+    let cwd = workdir(&card.source.cwd)?;
     let brief = write_brief(db, plan_brief(&plan, workspace_workdir(&launch, &cwd)))?;
     let title = card.title.strip_prefix("Plan ready: ").unwrap_or(card.title.as_str());
     let session = dsh_track::launch_new(&launch, &cwd, &brief, title, None)?;
@@ -3902,12 +3902,22 @@ fn workspace_workdir(launch: &Launch, cwd: &str) -> Option<String> {
         .then(|| cwd.to_owned())
 }
 
-fn card_workdir(card: &Card) -> String {
-    if card.source.cwd.is_empty() {
-        std::env::var("HOME").unwrap_or_else(|_| "/".to_owned())
-    } else {
-        card.source.cwd.clone()
+/// The absolute directory a launch starts in. Empty means the home directory and a leading `~`
+/// stands for it, as in the `~/` that Emacs keeps in `default-directory`.
+pub fn workdir(cwd: &str) -> Result<String, String> {
+    let cwd = cwd.trim();
+    let home = || PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_owned()));
+    let path = match cwd.strip_prefix('~') {
+        _ if cwd.is_empty() => home(),
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => home().join(rest.trim_start_matches('/')),
+        _ if cwd.starts_with('/') => PathBuf::from(cwd),
+        _ => return Err(format!("working directory must be absolute: {cwd}")),
+    };
+    if !path.is_absolute() {
+        return Err(format!("working directory must be absolute: {cwd}"));
     }
+    Ok(path.components().collect::<PathBuf>().display().to_string())
+
 }
 
 fn workdir_note(cwd: &str) -> String {

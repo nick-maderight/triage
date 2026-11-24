@@ -1097,11 +1097,10 @@ async fn start_session(
     State(state): State<Arc<AppState>>,
     axum::Json(mut request): axum::Json<SessionRequest>,
 ) -> axum::response::Response {
-    let cwd = request
-        .cwd
-        .filter(|cwd| !cwd.trim().is_empty())
-        .or_else(|| std::env::var("HOME").ok())
-        .unwrap_or_else(|| "/".to_owned());
+    let cwd = match crate::cards::workdir(request.cwd.as_deref().unwrap_or_default()) {
+        Ok(cwd) => cwd,
+        Err(error) => return error_response(axum::http::StatusCode::BAD_REQUEST, &error),
+    };
     let mut launch = state.launch.clone();
     if let Some(session) = request.session.filter(|session| !session.trim().is_empty()) {
         launch.session = Some(session);

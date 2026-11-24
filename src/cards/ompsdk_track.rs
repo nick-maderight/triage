@@ -3,7 +3,7 @@
 //! cards, and keeps what the poll loop needs in `ompsdk-sessions.json` beside the database.
 
 use super::{
-    DEFAULT_SESSION, Launch, Start, TickReport, Tracker, brief_heading, dispatch_prompt, finish_cards,
+    DEFAULT_SESSION, Launch, Start, TickReport, Tracker, brief_heading, dispatch_prompt, finish_cards, workdir,
     record_swipe, reply_turn, report_request, shell_quote, supersede_info_cards, trail, turn_card,
 };
 use crate::db::Db;
@@ -755,7 +755,7 @@ pub(super) fn launch_brief(
     image: Option<&Upload>,
 ) -> Result<String, String> {
     let Some(sid) = ompsdk::session_id(card) else {
-        return launch_new(db, launch, &card.source.cwd, brief, start, image, &card.title);
+        return launch_new(db, launch, &workdir(&card.source.cwd)?, brief, start, image, &card.title);
     };
     let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
     let client = ompsdk::client(socket(launch)?)?;

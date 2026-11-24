@@ -533,6 +533,46 @@ async fn new_session_with_a_note_dispatches_its_prompt_as_context() {
     );
 }
 
+// Emacs sends `default-directory`, which it keeps as `~/`.
+#[cfg(unix)]
+#[tokio::test]
+async fn new_session_expands_a_tilde_directory_and_refuses_a_relative_one() {
+    if run_with_fake_tmux_child(
+        "server::tests::new_session_expands_a_tilde_directory_and_refuses_a_relative_one",
+    ) {
+        return;
+    }
+    let directory = TestDir::new("triage-session-tilde");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let state = state(db, None);
+    let request = serde_json::from_value(serde_json::json!({
+        "prompt": "Email: Pong\n\nCURRENT THREAD\nPing?",
+        "cwd": "~/",
+        "note": "Draft a reply.",
+    }))
+    .unwrap();
+    let response = super::start_session(axum::extract::State(state.clone()), axum::Json(request)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
+    args.push(".args");
+    let launch = std::fs::read_to_string(&args)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("new-window"))
+        .last()
+        .unwrap()
+        .to_owned();
+    let home = std::env::var("HOME").unwrap();
+    assert!(launch.contains(&format!(" -c {home} -P ")), "{launch}");
+
+    let request = serde_json::from_value(serde_json::json!({"prompt": "Reply pong.", "cwd": "notes"})).unwrap();
+    let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"], "working directory must be absolute: notes");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn new_plan_session_keeps_daemon_default_model_in_plan_mode() {

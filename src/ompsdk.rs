@@ -386,7 +386,7 @@ impl Link {
         match waiting {
             Some(Waiting::Call(reply)) => {
                 let result = match message.get("error") {
-                    Some(error) => Err(error["message"].as_str().unwrap_or("ompsdk error").to_owned()),
+                    Some(error) => Err(rpc_error(error)),
                     None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
                 };
                 let _ = reply.send(result);
@@ -429,6 +429,15 @@ fn read_loop(link: &Link, stream: UnixStream) {
         if let Waiting::Call(reply) = waiting {
             let _ = reply.send(Err("ompsdk connection closed".to_owned()));
         }
+    }
+}
+
+/// Read the JSON-RPC message and its underlying agent detail, when present.
+fn rpc_error(error: &Value) -> String {
+    let message = error["message"].as_str().unwrap_or("ompsdk error");
+    match error["data"]["details"].as_str() {
+        Some(details) => format!("{message}: {details}"),
+        None => message.to_owned(),
     }
 }
 

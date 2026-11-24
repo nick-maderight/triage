@@ -1,7 +1,7 @@
 //! Bridge poll and card actions for dsh sessions.
 
 use super::{
-    GOAL_CONTINUATION_GRACE, Launch, TickReport, Tracker, dispatch_prompt, finish_cards,
+    GOAL_CONTINUATION_GRACE, Launch, TickReport, Tracker, dispatch_prompt, finish_cards, workdir,
     headline_of, record_swipe, reply_turn, report_request, supersede_info_cards, trail,
     truncate_chars, turn_card,
 };
@@ -926,15 +926,6 @@ fn title_words(text: &str, chars: usize, bytes: usize) -> String {
     cut
 }
 
-/// Working directory for a dsh launch of `card`. The card's own, else the home directory.
-fn card_cwd(card: &Card) -> String {
-    if card.source.cwd.is_empty() {
-        std::env::var("HOME").unwrap_or_else(|_| "/".to_owned())
-    } else {
-        card.source.cwd.clone()
-    }
-}
-
 /// Answer a dsh question with the picked option or the typed text. Multi-question asks take one
 /// answer per question.
 pub(super) fn answer_ask(
@@ -1194,7 +1185,7 @@ pub(super) fn launch_brief(
             Err(error) => return Err(error),
         }
     }
-    launch_new(launch, &card_cwd(card), brief, &card.title, image)
+    launch_new(launch, &workdir(&card.source.cwd)?, brief, &card.title, image)
 }
 
 /// Whether the bridge refused a prompt without taking it. A timeout or an unreachable host is
