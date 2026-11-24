@@ -18,9 +18,7 @@
 <link rel="stylesheet" href="style.css">
 <script>
 try {
-  var t = localStorage.getItem('triage-theme');
-  if (t !== 'light' && t !== 'dark')
-    t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  var t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
   if (t === 'dark') document.querySelector('meta[name="theme-color"]').content = '#0a0a0a';
 } catch {}

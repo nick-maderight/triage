@@ -3325,7 +3325,6 @@ const S = {
   $('#count-toggle')?.addEventListener('click', countToggle);
   $('#btn-settings').addEventListener('click', openSettings);
   $('#dictation-form').addEventListener('submit', saveDictation);
-  // Theme: the inline head script sets data-theme first; the toggle swaps and persists it.
   const icon = (d) =>
       `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`,
     SUN = icon(
@@ -3343,13 +3342,12 @@ const S = {
     }
   }
   applyTheme(document.documentElement.dataset.theme || 'light');
-  $('#btn-theme')?.addEventListener('click', () => {
-    const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    applyTheme(theme);
-    try {
-      localStorage.setItem('triage-theme', theme);
-    } catch {}
-  });
+  window
+    .matchMedia?.('(prefers-color-scheme: dark)')
+    .addEventListener('change', (e) => applyTheme(e.matches ? 'dark' : 'light'));
+  $('#btn-theme')?.addEventListener('click', () =>
+    applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'),
+  );
   $('#peek-mode').addEventListener('click', togglePeekMode);
   $('#peek-text').addEventListener(
     'scroll',
