@@ -10020,7 +10020,20 @@ fn acp_plan_approval_sets_the_executor_before_accepting() {
     acp_poll_until(&mut tracker, &db, &launch, |db| db.card("plan:acp:sid-1:plan-1").unwrap().is_some());
     let (card, _) = db.card("plan:acp:sid-1:plan-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Plan);
-    acp_track::answer_plan(&db, &card, "sid-1", &AnswerReq::default(), Some(0), None, Some("anthropic/claude-smol"), Some("medium"), &launch).unwrap();
+    acp_track::answer_plan(
+        &db,
+        &card,
+        "sid-1",
+        &AnswerReq::default(),
+        dsh_track::PlanChoice {
+            option: Some(0),
+            refinement: None,
+            executor: Some("anthropic/claude-smol"),
+            executor_effort: Some("medium"),
+        },
+        &launch,
+    )
+    .unwrap();
     wait_for(&fake, |m| m["id"] == "plan-1" && m.get("result").is_some());
     let log = fake.sent();
     let accept = log.iter().position(|m| m["id"] == "plan-1" && m.get("result").is_some()).unwrap();

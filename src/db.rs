@@ -10,6 +10,8 @@ use rusqlite::{OptionalExtension, params, types::Type};
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
+type HistoryPage = (Vec<(Card, Swipe)>, Option<i64>);
+
 fn to_json<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }
@@ -472,10 +474,10 @@ impl Db {
         let Some(anchor) = card_on(&conn, id)? else { return Ok(None) };
         let mut cards: HashMap<String, Card> = HashMap::from([(anchor.id.clone(), anchor.clone())]);
         // The copy's origin: a reload id is `reload:<original id>:<uuid>`.
-        if let Some((original, _)) = anchor.id.strip_prefix("reload:").and_then(|rest| rest.rsplit_once(':')) {
-            if let Some(card) = card_on(&conn, original)? {
-                cards.entry(card.id.clone()).or_insert(card);
-            }
+        if let Some((original, _)) = anchor.id.strip_prefix("reload:").and_then(|rest| rest.rsplit_once(':'))
+            && let Some(card) = card_on(&conn, original)?
+        {
+            cards.entry(card.id.clone()).or_insert(card);
         }
         // Transcript family first, then the pane families, to a fixed point: a report's
         // launcher joins through its pane, and that launcher's own swipes can name more panes.
@@ -639,7 +641,7 @@ impl Db {
         &self,
         limit: usize,
         count_range: Option<(i64, i64)>,
-    ) -> Result<(Vec<(Card, Swipe)>, Option<i64>)> {
+    ) -> Result<HistoryPage> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let cards = Self::history_on(&tx, limit)?;
@@ -682,7 +684,7 @@ impl Db {
     /// close of an earlier tmux server's pane with the same id from matching.
     pub(crate) fn pane_closed_since(&self, pane: &str, since_ms: i64) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        Ok(conn.query_row(
+        conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM events WHERE type = ?1 AND ts_ms >= ?2
              AND (json_extract(data, '$.reason') = ?3
                   OR (card_id GLOB ?4 AND json_extract(data, '$.reason') GLOB 'launched dsh:*')))",
@@ -693,7 +695,7 @@ impl Db {
                 format!("plan:{pane}:*"),
             ],
             |row| row.get(0),
-        )?)
+        )
     }
 
     /// The card whose answer last sent a brief into `pane` at or after `since_ms`, with that

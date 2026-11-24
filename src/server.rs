@@ -376,20 +376,18 @@ async fn ingest(
                     && queued.title == card.title
             }));
         let stored = db.db.insert_event(&event, card.as_ref())?;
-        if stored {
-            if let Some(target) = &fold_target {
-                let card_id = card.as_ref().expect("fold target requires card").id.clone();
-                db.db.swipe(&crate::events::Swipe {
-                    card: card_id,
-                    action: "done".to_owned(),
-                    option: None,
-                    text: None,
-                    note: None,
-                    until_ms: None,
-                    reason: Some(format!("duplicate of {}", target.id)),
-                    at_ms: crate::events::now_ms(),
-                }).map_err(crate::db::InsertEventError::Database)?;
-            }
+        if stored && let Some(target) = &fold_target {
+            let card_id = card.as_ref().expect("fold target requires card").id.clone();
+            db.db.swipe(&crate::events::Swipe {
+                card: card_id,
+                action: "done".to_owned(),
+                option: None,
+                text: None,
+                note: None,
+                until_ms: None,
+                reason: Some(format!("duplicate of {}", target.id)),
+                at_ms: crate::events::now_ms(),
+            }).map_err(crate::db::InsertEventError::Database)?;
         }
         Ok::<_, crate::db::InsertEventError>(stored)
     }).await;
@@ -435,17 +433,17 @@ async fn answer(
         &mut answer.executor,
         &mut answer.executor_thinking,
     );
-    if answer.mode.as_deref() == Some("plan-into") {
-        if let Err(error) = crate::cards::plan_into_choices(
+    if answer.mode.as_deref() == Some("plan-into")
+        && let Err(error) = crate::cards::plan_into_choices(
             answer.executor.as_deref(),
             answer.executor_thinking.as_deref(),
-        ) {
-            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-        }
+        )
+    {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     let image = match store_image(state.db.path(), request.image).await {
         Ok(image) => image,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     card_action(state, id, move |db, card| {
         crate::cards::answer(db, &card, &answer, &launch, image.as_ref())
@@ -626,13 +624,13 @@ async fn dispatch(
         &mut request.executor,
         &mut request.executor_thinking,
     );
-    if request.mode.as_deref() == Some("plan-into") {
-        if let Err(error) = crate::cards::plan_into_choices(
+    if request.mode.as_deref() == Some("plan-into")
+        && let Err(error) = crate::cards::plan_into_choices(
             request.executor.as_deref(),
             request.executor_thinking.as_deref(),
-        ) {
-            return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-        }
+        )
+    {
+        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
     let new_window = request.new_window;
@@ -641,7 +639,7 @@ async fn dispatch(
     let executor_thinking = request.executor_thinking;
     let image = match store_image(state.db.path(), request.image).await {
         Ok(image) => image,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     card_action(state, id, move |db, card| {
         // `Start` borrows its fields, so the closure parses the owned values again.
@@ -668,7 +666,7 @@ async fn dispatch(
 async fn store_image(
     db_file: &std::path::Path,
     image: Option<ImageRequest>,
-) -> Result<Option<crate::uploads::Upload>, axum::response::Response> {
+) -> Result<Option<crate::uploads::Upload>, Box<axum::response::Response>> {
     let Some(image) = image else {
         return Ok(None);
     };
@@ -679,8 +677,8 @@ async fn store_image(
     .await
     {
         Ok(Ok(upload)) => Ok(Some(upload)),
-        Ok(Err(error)) => Err(error_response(axum::http::StatusCode::BAD_REQUEST, &error)),
-        Err(error) => Err(internal_error(error)),
+        Ok(Err(error)) => Err(Box::new(error_response(axum::http::StatusCode::BAD_REQUEST, &error))),
+        Err(error) => Err(Box::new(internal_error(error))),
     }
 }
 
@@ -1091,7 +1089,7 @@ fn pane_directories<'a>(cwds: impl IntoIterator<Item = &'a str>) -> Vec<String> 
         *counts.entry(cwd).or_default() += 1;
     }
     let mut directories: Vec<_> = counts.into_iter().collect();
-    directories.sort_by(|a, b| b.1.cmp(&a.1));
+    directories.sort_by_key(|directory| std::cmp::Reverse(directory.1));
     directories.into_iter().map(|(cwd, _)| cwd.to_owned()).collect()
 }
 
@@ -1154,7 +1152,7 @@ async fn start_session(
             )?;
             let image = match request.image.as_ref() {
                 Some(image) => Some(crate::uploads::store(
-                    &action_state.db.path(),
+                    action_state.db.path(),
                     &image.media_type,
                     &image.data,
                     image.name.as_deref(),
@@ -1263,15 +1261,15 @@ struct LaterRequest {
     minutes: Option<i64>,
 }
 
-fn later_until(request: Option<axum::Json<LaterRequest>>) -> Result<i64, axum::response::Response> {
+fn later_until(request: Option<axum::Json<LaterRequest>>) -> Result<i64, Box<axum::response::Response>> {
     let minutes = request.and_then(|request| request.0.minutes).unwrap_or(60);
     if minutes < 0 {
-        return Err(error_response(axum::http::StatusCode::BAD_REQUEST, "invalid minutes"));
+        return Err(Box::new(error_response(axum::http::StatusCode::BAD_REQUEST, "invalid minutes")));
     }
     minutes
         .checked_mul(60_000)
         .and_then(|delay| crate::events::now_ms().checked_add(delay))
-        .ok_or_else(|| error_response(axum::http::StatusCode::BAD_REQUEST, "invalid minutes"))
+        .ok_or_else(|| Box::new(error_response(axum::http::StatusCode::BAD_REQUEST, "invalid minutes")))
 }
 
 async fn later(
@@ -1281,7 +1279,7 @@ async fn later(
 ) -> axum::response::Response {
     let until_ms = match later_until(request) {
         Ok(until_ms) => until_ms,
-        Err(error) => return error,
+        Err(error) => return *error,
     };
     #[cfg(test)]
     let result = write_swipe(&state, id, "later", Some(until_ms), None).await;
@@ -1299,14 +1297,14 @@ async fn later_with_prewrite_gate(
 ) -> axum::response::Response {
     let until_ms = match later_until(request) {
         Ok(until_ms) => until_ms,
-        Err(error) => return error,
+        Err(error) => return *error,
     };
     let result = write_swipe(&state, id, "later", Some(until_ms), Some(gate)).await;
     swipe_response(result)
 }
 
-fn swipe_response(result: Result<(), axum::response::Response>) -> axum::response::Response {
-    result.map_or_else(|error| error, |_| axum::Json(serde_json::json!({"ok": true})).into_response())
+fn swipe_response(result: Result<(), Box<axum::response::Response>>) -> axum::response::Response {
+    result.map_or_else(|error| *error, |_| axum::Json(serde_json::json!({"ok": true})).into_response())
 }
 
 async fn write_swipe(
@@ -1315,7 +1313,7 @@ async fn write_swipe(
     action: &str,
     until_ms: Option<i64>,
     #[cfg(test)] prewrite_gate: Option<Arc<PreWriteGate>>,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), Box<axum::response::Response>> {
     let write_state = Arc::clone(state);
     let action = action.to_owned();
     let result = tokio::task::spawn_blocking(move || {
@@ -1351,9 +1349,9 @@ async fn write_swipe(
             broadcast(state).await;
             Ok(())
         }
-        Ok(Ok(Err((status, message)))) => Err(error_response(status, message)),
-        Ok(Err(error)) => Err(internal_error(error)),
-        Err(error) => Err(internal_error(error)),
+        Ok(Ok(Err((status, message)))) => Err(Box::new(error_response(status, message))),
+        Ok(Err(error)) => Err(Box::new(internal_error(error))),
+        Err(error) => Err(Box::new(internal_error(error))),
     }
 }
 
@@ -1660,10 +1658,10 @@ fn card_from_event(ev: &crate::events::CloudEvent) -> Option<crate::events::Card
                     recommended: true,
                     ..CardOption::default()
                 }]);
-            if !options.iter().any(|option| option.recommended) {
-                if let Some(first) = options.first_mut() {
-                    first.recommended = true;
-                }
+            if !options.iter().any(|option| option.recommended)
+                && let Some(first) = options.first_mut()
+            {
+                first.recommended = true;
             }
             (
                 Kind::Finding,

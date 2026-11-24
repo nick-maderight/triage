@@ -667,13 +667,13 @@ pub fn last_assistant_text(transcript: &std::path::Path) -> std::io::Result<Opti
         let Some(message) = message(&value) else {
             return true;
         };
-        if message.get("role").and_then(Value::as_str) == Some("assistant") {
-            if let (Some(id), Some(text)) = (
+        if message.get("role").and_then(Value::as_str) == Some("assistant")
+            && let (Some(id), Some(text)) = (
                 value.get("id").and_then(Value::as_str),
                 text_blocks(message),
-            ) {
-                last = Some((id.to_owned(), text));
-            }
+            )
+        {
+            last = Some((id.to_owned(), text));
         }
         true
     })?;
@@ -706,7 +706,8 @@ pub enum TurnEnd {
 /// writes its next message.
 pub fn turn_end(transcript: &Path) -> io::Result<Option<TurnEnd>> {
     // (entry id, stopReason, errorMessage, non-blank text)
-    let mut last: Option<(String, Option<String>, Option<String>, Option<String>)> = None;
+    type Last = (String, Option<String>, Option<String>, Option<String>);
+    let mut last: Option<Last> = None;
     let mut report: Option<String> = None;
     let mut reported = false;
     let mut woken = false;
@@ -958,10 +959,11 @@ pub fn review_answers(screen: &str) -> Option<Vec<String>> {
             .unwrap_or_default();
         if !divider {
             review |= content == "Review answers";
-        } else if let Some((number, rest)) = content.split_once(". ") {
-            if !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) {
-                rows.push(rest.to_owned());
-            }
+        } else if let Some((number, rest)) = content.split_once(". ")
+            && !number.is_empty()
+            && number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            rows.push(rest.to_owned());
         }
     }
     (review && closed).then_some(rows)

@@ -128,17 +128,14 @@ impl Tracker {
             .iter()
             .map(|item| item.session_id.as_str())
             .collect();
-        if let Err(error) = report_sessions(
-            &mut self.dsh,
-            db,
-            &client,
-            &sessions,
-            &waiting,
-            &ignored,
+        let snapshot = Snapshot {
+            sessions: &sessions,
+            waiting: &waiting,
+            ignored: &ignored,
             plan_decisions,
             now,
-            &mut written,
-        ) {
+        };
+        if let Err(error) = report_sessions(&mut self.dsh, db, &client, snapshot, &mut written) {
             backoff(&mut self.dsh, now, &error);
         }
         TickReport { written }
@@ -491,6 +488,14 @@ fn finish_prompts(
     finish_cards(db, cards, reason, written)
 }
 
+struct Snapshot<'a> {
+    sessions: &'a [dsh::Session],
+    waiting: &'a HashSet<&'a str>,
+    ignored: &'a HashSet<String>,
+    plan_decisions: bool,
+    now: i64,
+}
+
 /// Queue a report card for the newest finished turn of each idle dsh session. A turn that wrote
 /// no reply of its own earns no card unless it failed. A session is read only when its cursor
 /// moved. A poll reads at most `REPORT_READS` sessions. An event read that fails stops the poll.
@@ -498,13 +503,10 @@ fn report_sessions(
     memo: &mut Memo,
     db: &Db,
     client: &dsh::Client,
-    sessions: &[dsh::Session],
-    waiting: &HashSet<&str>,
-    ignored: &HashSet<String>,
-    plan_decisions: bool,
-    now: i64,
+    snapshot: Snapshot<'_>,
     written: &mut usize,
 ) -> Result<(), String> {
+    let Snapshot { sessions, waiting, ignored, plan_decisions, now } = snapshot;
     let mut reads = REPORT_READS;
     for session in sessions.iter().filter(|session| {
         !ignored.contains(&session.session_id)
@@ -982,33 +984,29 @@ pub(super) fn answer_ask(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct PlanChoice<'a> {
+    pub(super) option: Option<usize>,
+    pub(super) refinement: Option<&'a str>,
+    pub(super) executor: Option<&'a str>,
+    pub(super) executor_effort: Option<&'a str>,
+}
+
 /// Approve a dsh plan review with its execution model, or send a refinement back to planning.
 pub(super) fn answer_plan(
     db: &Db,
     card: &Card,
     req: &AnswerReq,
-    option: Option<usize>,
-    refinement: Option<&str>,
-    executor: Option<&str>,
-    executor_effort: Option<&str>,
+    choice: PlanChoice<'_>,
     launch: &Launch,
 ) -> Result<(), String> {
+    let PlanChoice { option, refinement, executor, executor_effort } = choice;
     let sid = dsh::session_id(card).ok_or_else(|| "card is not a dsh session".to_owned())?;
     let client = dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)?;
     // A plan written without a review waits on no pending item: the host leaves plan mode and
     // starts the work, or keeps planning with the feedback.
     if is_plan_ready(card) {
-        return decide_plan(
-            db,
-            card,
-            &client,
-            sid,
-            req,
-            option,
-            refinement,
-            executor,
-            executor_effort,
-        );
+        return decide_plan(db, card, &client, sid, req, choice);
     }
     let item =
         pending_item(&client, sid, card)?.ok_or_else(|| "plan review is not open".to_owned())?;
@@ -1059,11 +1057,9 @@ fn decide_plan(
     client: &dsh::Client,
     sid: &str,
     req: &AnswerReq,
-    option: Option<usize>,
-    refinement: Option<&str>,
-    executor: Option<&str>,
-    executor_effort: Option<&str>,
+    choice: PlanChoice<'_>,
 ) -> Result<(), String> {
+    let PlanChoice { option, refinement, executor, executor_effort } = choice;
     let (decision, feedback, text) = if option == Some(0) {
         ("approve", None, executor.map(str::to_owned))
     } else {

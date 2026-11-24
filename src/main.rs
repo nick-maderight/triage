@@ -112,12 +112,12 @@ async fn run() -> Result<(), String> {
                     ignored.push(name.to_owned());
                 }
             }
-            if let Some(own) = dsh_workspace.as_deref() {
-                if ignored.iter().any(|name| name == own) {
-                    return Err(format!(
-                        "dsh ignore workspace {own} is the workspace triage launches into"
-                    ));
-                }
+            if let Some(own) = dsh_workspace.as_deref()
+                && ignored.iter().any(|name| name == own)
+            {
+                return Err(format!(
+                    "dsh ignore workspace {own} is the workspace triage launches into"
+                ));
             }
             let workspaces = workspaces_dir(dsh_workspaces);
             let dsh_ignore = match (ignored.is_empty(), workspaces.clone()) {
@@ -158,7 +158,7 @@ async fn run() -> Result<(), String> {
         }
         Commands::Emit { file } => {
             let mut input = String::new();
-            if file == PathBuf::from("-") {
+            if file == std::path::Path::new("-") {
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).map_err(|error| error.to_string())?;
             } else {
                 input = std::fs::read_to_string(file).map_err(|error| error.to_string())?;

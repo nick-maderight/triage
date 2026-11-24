@@ -408,6 +408,7 @@ impl Tracker {
     ///   cards are never swept.
     /// - Plan proposals from the transcript add a card only while the review overlay is open.
     ///   The tracker completes it after the overlay closes or supersedes it when a newer proposal appears.
+    ///
     /// Non-omp panes are ignored.
     pub fn tick(&mut self, db: &Db) -> TickReport {
         let Ok(panes) = tmux::list_panes() else {
@@ -477,15 +478,15 @@ impl Tracker {
                 self.pending_ask_ids.remove(&pane.id);
                 continue;
             }
-            if pane.command == "omp" {
-                if let Some(path) = omp::transcript_path(pane) {
-                    if previous != Some(state)
-                        || self.seen.get(&pane.id).is_none_or(|(_, seen)| *seen != path)
-                    {
-                        self.seen.insert(pane.id.clone(), (pane.clone(), path.clone()));
-                    }
-                    live_transcripts.insert(path);
+            if pane.command == "omp"
+                && let Some(path) = omp::transcript_path(pane)
+            {
+                if previous != Some(state)
+                    || self.seen.get(&pane.id).is_none_or(|(_, seen)| *seen != path)
+                {
+                    self.seen.insert(pane.id.clone(), (pane.clone(), path.clone()));
                 }
+                live_transcripts.insert(path);
             }
             if pane.command == "omp"
                 && state == PaneState::Waiting
@@ -532,15 +533,15 @@ impl Tracker {
                 finish_closed_plan_cards(db, unresolved_panes.as_ref(), pane, &mut written);
             }
 
-            if previous.is_none() && state == PaneState::Asking {
-                if let Some((_, call)) = ask {
-                    if !finish_asking(db, pane, Some(&call.tool_call_id), &mut written) {
-                        if self.pending_panes.contains(&pane.id) {
-                            failed_restored_panes.insert(pane.id.clone());
-                        }
-                        continue;
-                    }
+            if previous.is_none()
+                && state == PaneState::Asking
+                && let Some((_, call)) = ask
+                && !finish_asking(db, pane, Some(&call.tool_call_id), &mut written)
+            {
+                if self.pending_panes.contains(&pane.id) {
+                    failed_restored_panes.insert(pane.id.clone());
                 }
+                continue;
             }
             if previous != Some(state) || ask_changed {
                 let succeeded = match (previous, state) {
@@ -845,6 +846,7 @@ fn target_lock(db: &Db, card: &Card) -> Option<std::sync::Arc<std::sync::Mutex<(
 ///   Record the swipe with reason `typed`. Any mismatch returns Err and writes nothing.
 /// - info: swipe done.
 /// - A plan answer requires a queued card and an open review overlay. It sends Enter for approval. For a refine it confirms the overlay's `Refine plan` row when the review offers one, else it sends Escape; once the overlay closes it sends the note as literal text, and stores the choice in the swipe.
+///
 /// `launch` names the harness, tmux session, model and thinking level a launched session uses.
 pub fn answer(
     db: &Db,
@@ -1602,27 +1604,27 @@ fn add_ask_card(
         options: card_options(question),
         answerable: !unsupported && call.questions.iter().all(|question| !question.multi),
         allow_other: allow_other.iter().any(|allowed| *allowed),
-        questions: (call.questions.len() > 1)
-            .then(|| {
-                call.questions
-                    .iter()
-                    .zip(&allow_other)
-                    .map(|(question, allowed)| CardQuestion {
-                        label: question
-                            .header
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|header| !header.is_empty())
-                            .unwrap_or(&question.id)
-                            .to_owned(),
-                        question: question.question.clone(),
-                        options: card_options(question),
-                        allow_other: *allowed,
-                        star: None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        questions: if call.questions.len() > 1 {
+            call.questions
+                .iter()
+                .zip(&allow_other)
+                .map(|(question, allowed)| CardQuestion {
+                    label: question
+                        .header
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|header| !header.is_empty())
+                        .unwrap_or(&question.id)
+                        .to_owned(),
+                    question: question.question.clone(),
+                    options: card_options(question),
+                    allow_other: *allowed,
+                    star: None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
         body: None,
         refs: Vec::new(),
         level: None,
@@ -2541,7 +2543,7 @@ fn finish_asking_after_recheck(
     let mut succeeded = true;
     for card in cards.into_iter().filter(|card| {
         card.kind == Kind::Ask
-            && except_call_id.map_or(true, |id| card.tool_call_id.as_deref() != Some(id))
+            && except_call_id.is_none_or(|id| card.tool_call_id.as_deref() != Some(id))
     }) {
         let answer_lock = db.answer_lock(&card.id);
         let _answer_guard = answer_lock.lock().unwrap();
@@ -2774,10 +2776,10 @@ fn answer_row(options: usize, option: Option<usize>, text: Option<&str>) -> Resu
             Ok(index)
         }
         (Some(index), None) if index < other => Ok(index),
-        (Some(_), None) => return Err("option is out of range or selects Other".to_owned()),
+        (Some(_), None) => Err("option is out of range or selects Other".to_owned()),
         (None, Some(text)) if !text.trim().is_empty() => Ok(other),
-        (None, Some(_)) => return Err("Other requires nonempty text".to_owned()),
-        (None, None) => return Err("ask answer needs an option or text".to_owned()),
+        (None, Some(_)) => Err("Other requires nonempty text".to_owned()),
+        (None, None) => Err("ask answer needs an option or text".to_owned()),
     }
 }
 
@@ -3148,12 +3150,21 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
     };
     if dsh_card {
         return dsh_track::answer_plan(
-            db, card, req, option, refinement, executor, executor_effort, launch,
+            db,
+            card,
+            req,
+            dsh_track::PlanChoice { option, refinement, executor, executor_effort },
+            launch,
         );
     }
     if let Some(sid) = acp::session_id(card) {
         return acp_track::answer_plan(
-            db, card, sid, req, option, refinement, executor, executor_effort, launch,
+            db,
+            card,
+            sid,
+            req,
+            dsh_track::PlanChoice { option, refinement, executor, executor_effort },
+            launch,
         );
     }
     let pane = card
@@ -4126,10 +4137,10 @@ impl Launch {
 /// Trim an omp model selector and refuse shell characters. A blank selector means unset.
 pub fn model_selector(model: Option<&str>) -> Result<Option<&str>, String> {
     let model = model.map(str::trim).filter(|model| !model.is_empty());
-    if let Some(model) = model {
-        if !model.chars().all(|c| c.is_ascii_alphanumeric() || "._:/@-".contains(c)) {
-            return Err(format!("invalid model {model}"));
-        }
+    if let Some(model) = model
+        && !model.chars().all(|c| c.is_ascii_alphanumeric() || "._:/@-".contains(c))
+    {
+        return Err(format!("invalid model {model}"));
     }
     Ok(model)
 }
@@ -4172,10 +4183,10 @@ fn plan_selector(model: &str, thinking: Option<&str>) -> String {
 /// Trim a thinking level and check it against `THINKING_LEVELS`. A blank level means unset.
 fn thinking_level(thinking: Option<&str>) -> Result<Option<&str>, String> {
     let thinking = thinking.map(str::trim).filter(|t| !t.is_empty());
-    if let Some(thinking) = thinking {
-        if !THINKING_LEVELS.contains(&thinking) {
-            return Err(format!("unknown thinking level {thinking}"));
-        }
+    if let Some(thinking) = thinking
+        && !THINKING_LEVELS.contains(&thinking)
+    {
+        return Err(format!("unknown thinking level {thinking}"));
     }
     Ok(thinking)
 }

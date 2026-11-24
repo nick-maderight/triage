@@ -204,17 +204,14 @@ static CATALOG: std::sync::Mutex<Option<(std::time::Instant, PathBuf, Catalog)>>
 /// host that cannot answer leaves the last read of that same host in place and
 /// returns None only when it never answered.
 pub fn catalog(host: Option<&Path>) -> Option<Catalog> {
-    let key = match host.map(Path::to_owned).or_else(host_file) {
-        Some(key) => key,
-        None => return None,
-    };
+    let key = host.map(Path::to_owned).or_else(host_file)?;
     let now = std::time::Instant::now();
-    if let Ok(slot) = CATALOG.lock() {
-        if let Some((at, cached, catalog)) = slot.as_ref() {
-            if *cached == key && now.duration_since(*at) < CATALOG_TTL {
-                return Some(catalog.clone());
-            }
-        }
+    if let Ok(slot) = CATALOG.lock()
+        && let Some((at, cached, catalog)) = slot.as_ref()
+        && *cached == key
+        && now.duration_since(*at) < CATALOG_TTL
+    {
+        return Some(catalog.clone());
     }
     let catalog = connect(Some(&key), CATALOG_TIMEOUT).ok()?.models().ok()?;
     if let Ok(mut slot) = CATALOG.lock() {

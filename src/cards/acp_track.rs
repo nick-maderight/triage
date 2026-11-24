@@ -831,18 +831,15 @@ pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launc
 
 /// Answer an acp plan review. Approve sets the executor first, so the plan runs on it. Refine
 /// sends the feedback into the running turn, or as a new prompt when no turn takes it.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn answer_plan(
     db: &Db,
     card: &Card,
     sid: &str,
     req: &AnswerReq,
-    option: Option<usize>,
-    refinement: Option<&str>,
-    executor: Option<&str>,
-    executor_effort: Option<&str>,
+    choice: super::dsh_track::PlanChoice<'_>,
     launch: &Launch,
 ) -> Result<(), String> {
+    let super::dsh_track::PlanChoice { option, refinement, executor, executor_effort } = choice;
     let client = acp::client(socket(launch)?)?;
     let key = card.tool_call_id.as_deref().ok_or("plan card has no review")?;
     let open = client

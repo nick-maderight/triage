@@ -291,7 +291,7 @@ pub fn new_window(session: &str, cwd: &str, cmd: &str) -> io::Result<String> {
 /// session, then select-window and select-pane.
 pub fn jump(pane: &str) -> io::Result<()> {
     let session = tmux_text(&["display", "-p", "-t", pane, "#S"])?;
-    let session = session.trim_end_matches(|character| matches!(character, '\r' | '\n'));
+    let session = session.trim_end_matches(['\r', '\n']);
     if session.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "tmux returned an empty session name"));
     }
