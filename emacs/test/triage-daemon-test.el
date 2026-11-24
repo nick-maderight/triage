@@ -3,8 +3,9 @@
 ;;; Commentary:
 
 ;; Integration tests use a scratch `triage serve' process.  Each test gets a
-;; temporary HOME, database and failing tmux stub, so the daemon never sees the
-;; live inbox, real tmux panes or a dsh host.  Set TRIAGE_BIN to choose the
+;; temporary HOME, a database, a failing tmux stub and an ompsdk socket path
+;; that nothing listens on.  The daemon never sees the live inbox, real tmux
+;; panes, a dsh host or the ompsdk daemon.  Set TRIAGE_BIN to choose the
 ;; binary.  Otherwise tests use ../target/debug/triage from emacs/.  Tests skip
 ;; when that binary is absent.
 
@@ -105,7 +106,9 @@
                      :name "triage-daemon" :buffer log :noquery t
                      :command (list bin "serve"
                                     "--db" (expand-file-name "triage.db" dir)
-                                    "--listen" (format "127.0.0.1:%d" port))))
+                                    "--listen" (format "127.0.0.1:%d" port)
+                                    "--ompsdk-socket"
+                                    (expand-file-name "no-ompsdk.sock" dir))))
               (triage-test--await-daemon proc)
               (funcall body)))
         (triage-test--teardown proc log dir)))))
@@ -270,8 +273,10 @@
     (triage-test--await-cards 1)
     (let* ((card (car triage-queue-cards))
            (id (alist-get 'id card)))
+      ;; omp fails at once on the tmux stub.  ompsdk would wait for its daemon.
       (triage-queue-act card "dispatch"
-                        '((mode . "goal") (task . "act") (note . :null) (new_window . :false)))
+                        '((mode . "goal") (task . "act") (note . :null) (new_window . :false)
+                          (engine . "omp")))
       (triage-test--wait
        (lambda ()
          (and (triage-queue-find id)

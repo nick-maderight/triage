@@ -128,7 +128,7 @@ A dsh plan card's Approve names an Execution model and Execution effort, because
 
 An omp session in a tmux window is an omp process of its own that holds a few hundred megabytes for as long as it runs. The ompsdk engine runs sessions inside the ompsdk daemon instead. Every triage session on that engine shares one `omp acp` process in the daemon's `triage` pool. Autorules rules run with `AUTORULES_OMP_ENGINE=ompsdk` share a second process in the `autorules` pool. The ompsdk README in `~/Documents/projects/ompsdk` explains the pools.
 
-Run `triage serve --engine ompsdk`, or choose Engine `ompsdk` in the session sheet, to start sessions on it. Triage uses pool `triage` with lifetime `durable` and connects through `--ompsdk-socket`. It opens no tmux window. The engine needs `ompsdkd.service`.
+The daemon launches on ompsdk unless `--engine` names `omp` or `dsh`. Engine in the session sheet chooses per launch. Triage uses pool `triage` with lifetime `durable` and connects through `--ompsdk-socket`. It opens no tmux window. The engine needs `ompsdkd.service`.
 
 The model list comes from omp's catalog at `/v1/models?engine=ompsdk`. Selectors use `provider/id[:level]` or `@role[:level]`. Triage resolves a role from `modelRoles` in `~/.omp/agent/config.yml` before it opens the session.
 
@@ -209,9 +209,9 @@ The client commands use `TRIAGE_URL` when set. Otherwise they connect to `http:/
 
 ## Requirements
 
-Triage needs Linux, tmux, and `omp` on `PATH`. The dsh engine also requires the dsh web host, which `dsh-web.service` runs. The ompsdk engine requires the ompsdk daemon, `ompsdkd.service`, from `~/Documents/projects/ompsdk`. Building requires Rust 1.89 or newer, because the locked `uuid 1.28.0` declares `rust-version = "1.89"`. The test suite also needs Node.js, `curl`, `jq`, and `ss`.
+Triage needs Linux, tmux, and `omp` on `PATH`. The dsh engine also requires the dsh web host, which `dsh-web.service` runs. The ompsdk engine, which is the default, requires the ompsdk daemon, `ompsdkd.service`, from `~/Documents/projects/ompsdk`. Building requires Rust 1.89 or newer, because the locked `uuid 1.28.0` declares `rust-version = "1.89"`. The test suite also needs Node.js, `curl`, `jq`, and `ss`.
 
-The daemon opens new windows in the tmux session given by `--session`, `triage` by default, and that session must exist. Create it once:
+The omp engine opens new windows in the tmux session given by `--session`, which is `triage` by default. That session must exist. Create it once with this command.
 
 ```sh
 tmux new-session -d -s triage
@@ -237,7 +237,7 @@ Settings are `triage serve` flags; there is no configuration file. Put them on t
 | `--listen` | `127.0.0.1:7340` | Address the daemon binds. Port `0` takes a free port. The daemon prints `triage: listening on ADDR` to stderr once it holds the port. |
 | `--db` | `$XDG_DATA_HOME/triage/triage.db` or `~/.local/share/triage/triage.db` | SQLite database; briefs go in `briefs/` beside it, as does `report-format.md`. |
 | `--session` | `triage` | tmux session new windows open in. The session must exist. |
-| `--engine` | `omp` | Harness for launched sessions, `omp`, `dsh` or `ompsdk`. A request can override it in the session sheet, or on a finding answer. |
+| `--engine` | `ompsdk` | Harness for launched sessions, `omp`, `dsh` or `ompsdk`. A request can override it in the session sheet, or on a finding answer. |
 | `--ompsdk-socket` | `$XDG_RUNTIME_DIR/ompsdk/sock`, or `/run/user/<uid>/ompsdk/sock` when unset | Socket of the ompsdk daemon that the ompsdk engine's sessions run through. |
 | `--model` | omp's own model | Default model for new windows. A request can override it in the session sheet, or on a finding answer. It takes an omp selector or `@role`; omp resolves a role when each window starts. A brief sent to a waiting source pane keeps that pane's model, except Plan mode can switch it to the pane's own `plan` role. With `--engine dsh` it takes any selector from dsh's catalog; empty takes the host's default. |
 | `--thinking` | omp's own level | Thinking level for launched sessions; accepts `auto`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A launch also names the level on its plan model, as `--plan=<selector>:<level>`, because plan mode runs the effort its own selector carries. A selector that already names a level keeps that one. |

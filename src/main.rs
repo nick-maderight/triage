@@ -33,7 +33,7 @@ enum Commands {
         #[arg(long)]
         session: Option<String>,
         /// Harness for launched sessions
-        #[arg(long, value_enum, default_value_t = cards::Engine::Omp)]
+        #[arg(long, value_enum, default_value_t = cards::Engine::Ompsdk)]
         engine: cards::Engine,
         /// model for launched sessions, an omp selector or a dsh selector from the host catalog [default: the harness's own]
         #[arg(long)]
