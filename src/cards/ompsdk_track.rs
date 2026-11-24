@@ -16,42 +16,67 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Continuation prompts a reply without a status line earns before triage reports it anyway.
 const MAX_CONTINUES: u32 = 5;
 /// Polls an ended turn may read as unfinished in its transcript before its session counts as cut.
 /// A turn the daemon still runs is never cut, however long it takes.
 const RUNNING_TICKS: u32 = 30;
-/// Polls a plan-into auto-approval may fail before its plan falls back to a card. With
-/// `APPROVE_RETRY_MS` this waits out a busy pool for 15 minutes.
-const APPROVE_TRIES: u32 = 30;
-/// Gap before a failed plan-into auto-approval is tried again, in ms.
-const APPROVE_RETRY_MS: i64 = 30_000;
-/// Gap before a session whose resume failed is tried again, in ms.
-const RESUME_RETRY_MS: i64 = 30_000;
-/// Gap before a failed connect or state read is tried again, in ms.
-const RETRY_MS: i64 = 30_000;
-/// The two answers a plan review takes, as `acp-agent.ts` spells them.
+/// Tries a plan-into auto-approval gets before its plan falls back to a card. With the waits
+/// of `CALL_WAIT_MS` a busy pool has about ten minutes to take it.
+const APPROVE_TRIES: u32 = 8;
+/// First and longest wait after a failed connect or state read, in ms.
+const CONNECT_WAIT_MS: (i64, i64) = (1_000, 60_000);
+/// First and longest wait after a daemon call for one session failed, in ms.
+const CALL_WAIT_MS: (i64, i64) = (5_000, 600_000);
+/// First and longest wait before a session cut again soon after a revive gets its next revive, in ms.
+const CUT_WAIT_MS: (i64, i64) = (60_000, 1_800_000);
+/// Work between two cuts that clears the count of revives in a row, in ms.
+const CUT_RESET_MS: i64 = 1_800_000;
+/// Revives in a row a session gets before triage stops and reports it.
+const MAX_CUTS: u32 = 5;
+/// First and longest wait before a card action runs again after the daemon or its pool failed it, in ms.
+const ACTION_WAIT_MS: (i64, i64) = if cfg!(test) { (5, 20) } else { (2_000, 60_000) };
+/// How long a card action keeps trying. It outlasts the daemon's check for a wedged pool.
+const ACTION_BUDGET: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 900 });
+/// The answers a plan review takes, as `acp-agent.ts` spells them.
 const PLAN_APPROVE: &str = "Approve and execute";
 const PLAN_REFINE: &str = "Refine plan";
 /// The prompt that resumes a session cut mid-turn.
 const CUT_PROMPT: &str = "Continue where you stopped.";
 
+/// The wait before try `tries` of a step that failed, in ms. It doubles from the first wait up
+/// to the longest. Up to a quarter more is added at random, which keeps sessions that failed
+/// together from trying again together.
+pub(super) fn wait_ms((first, longest): (i64, i64), tries: u32) -> i64 {
+    let wait = first.saturating_mul(1 << tries.saturating_sub(1).min(30)).min(longest);
+    let random = std::collections::hash_map::RandomState::new().hash_one(tries);
+    wait + (random % (wait as u64 / 4 + 1)) as i64
+}
+
 /// What the ompsdk poll remembers between polls. The server keeps it apart from the pane
 /// tracker, so a call that waits on a busy pool never holds up the rest of the inbox poll.
 #[derive(Default)]
 pub struct Memo {
-    /// Connection id of the last poll. A new id means a reconnect, which resumes every held session.
+    /// Connection id of the last poll. A new id means a reconnect, which has bound no session yet.
     connection: Option<u64>,
+    /// Whether the next poll asks the daemon which sessions it still holds.
+    recheck: bool,
+    /// Failed connects or state reads in a row, and the earliest next poll.
+    failures: u32,
     retry_at_ms: i64,
-    failing: bool,
     /// Polls each ended turn has read as unfinished.
     running: HashMap<String, u32>,
-    /// Earliest time a cut session's resume is tried again, by session id.
-    resume_at_ms: HashMap<String, i64>,
+    /// Failed daemon calls in a row and the earliest next try, by session id. A session cut
+    /// again soon after a revive waits here as well.
+    waits: HashMap<String, (u32, i64)>,
     /// Failed plan-into auto-approvals and the earliest next try, by plan card id.
     approve_tries: HashMap<String, (u32, i64)>,
 }
@@ -65,12 +90,14 @@ impl Memo {
     }
 }
 
-/// One tracked ompsdk session, as `ompsdk-sessions.json` keeps it.
+/// One tracked ompsdk session, as `ompsdk-sessions.json` keeps it. The file is what brings a
+/// session back after triage, the daemon or its pool restarts.
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Entry {
     sid: String,
     cwd: String,
-    /// The brief path the session was launched with. A continuation names it.
+    /// The brief the session works on. A continuation names it.
     brief: String,
     title: String,
     /// What a plan-into launch approves its plan with.
@@ -81,8 +108,50 @@ struct Entry {
     continues: u32,
     /// Whether the daemon holds the session for triage.
     loaded: bool,
-    /// Whether a turn stalled, so the next poll resumes the session and nudges it.
+    /// Whether the session's turn was cut. The poll reopens the session and sends the cut prompt.
     cut: bool,
+    /// Whether a cut session waits for the user before the poll reopens it. A session cut
+    /// while a question was open waits for the answer and costs the pool nothing until then.
+    parked: bool,
+    /// Whether the session still plans. omp keeps plan mode in memory only, and a revive sets it again.
+    planning: bool,
+    /// The model and effort an approved plan runs on. A revive sets them again.
+    executor: Option<PlanInto>,
+    /// The answers the user gave since the session's last new question. A revive repeats them,
+    /// because a cut may have dropped them.
+    answers: Vec<Said>,
+    /// Revives in a row with less than `CUT_RESET_MS` of work between them, and when the last one was sent.
+    cuts: u32,
+    revived_ms: i64,
+    /// Whether the daemon must still let the session go, and whether triage then forgets it.
+    closing: bool,
+    forget: bool,
+}
+
+impl Entry {
+    /// Whether the poll has work for the session. A parked session waits for the user.
+    fn polled(&self) -> bool {
+        self.closing || (!self.parked && (self.loaded || self.cut))
+    }
+}
+
+/// One answer the user gave.
+#[derive(Clone, Serialize, Deserialize)]
+struct Said {
+    /// The elicitation the answer is for.
+    key: String,
+    /// The answer in words, as the cut prompt repeats it.
+    text: String,
+    /// The answer to send once its question is open on the connection again. None once it was sent.
+    queued: Option<Queued>,
+}
+
+/// An answer given while its question was out of reach.
+#[derive(Clone, Serialize, Deserialize)]
+enum Queued {
+    Ask(Vec<Answer>),
+    Approve,
+    Refine(String),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -98,6 +167,8 @@ struct State {
 
 /// Serializes the read-modify-write of the state file across the poll and the card actions.
 static STATE_LOCK: Mutex<()> = Mutex::new(());
+/// Counts the writes of the state file. The poll reads a session again when a card action wrote since its read.
+static STATE_REV: AtomicU64 = AtomicU64::new(0);
 
 fn state_path(db: &Db) -> PathBuf {
     db.path().with_file_name("ompsdk-sessions.json")
@@ -122,6 +193,7 @@ fn edit<R>(db: &Db, change: impl FnOnce(&mut State) -> R) -> Result<R, String> {
     fs::write(&temp, bytes)
         .and_then(|()| fs::rename(&temp, &path))
         .map_err(|error| format!("ompsdk state: {error}"))?;
+    STATE_REV.fetch_add(1, Ordering::SeqCst);
     Ok(result)
 }
 
@@ -403,6 +475,7 @@ pub(super) fn tick(memo: &mut Memo, db: &Db, launch: &Launch, now: i64) -> usize
     if now < memo.retry_at_ms {
         return 0;
     }
+    let revision = STATE_REV.load(Ordering::SeqCst);
     let state = match load(db) {
         Ok(state) => state,
         Err(error) => {
@@ -410,13 +483,8 @@ pub(super) fn tick(memo: &mut Memo, db: &Db, launch: &Launch, now: i64) -> usize
             return 0;
         }
     };
-    let held: Vec<String> = state
-        .sessions
-        .iter()
-        .filter(|entry| entry.loaded || entry.cut)
-        .map(|entry| entry.sid.clone())
-        .collect();
-    if held.is_empty() {
+    let work: Vec<Entry> = state.sessions.into_iter().filter(Entry::polled).collect();
+    if work.is_empty() {
         return 0;
     }
     let client = match ompsdk::client(socket) {
@@ -426,92 +494,371 @@ pub(super) fn tick(memo: &mut Memo, db: &Db, launch: &Launch, now: i64) -> usize
             return 0;
         }
     };
-    memo.failing = false;
-    if memo.connection != Some(client.id) {
+    let mut written = 0;
+    if memo.connection != Some(client.id) || memo.recheck {
+        let held = match client.held() {
+            Ok(held) => held,
+            Err(error) => {
+                backoff(memo, now, &error);
+                return 0;
+            }
+        };
         memo.connection = Some(client.id);
-        for sid in &held {
-            resume_held(memo, db, &client, sid, now);
+        memo.recheck = false;
+        memo.failures = 0;
+        // A restart of the daemon or its pool took these sessions and cut their turns.
+        for entry in &work {
+            if entry.loaded && !entry.closing && !held.contains(&entry.sid) {
+                written += cut(memo, db, entry, now, false);
+            }
         }
-        // Replayed requests and turn ends arrive after the resume replies. The next poll reads them.
-        return 0;
+        return written;
     }
-    held.iter()
-        .map(|sid| tend(memo, db, &client, sid, now))
-        .sum()
+    memo.failures = 0;
+    let mut called = false;
+    for entry in &work {
+        // A card action holds its session's lock, sometimes while it waits on the pool. The
+        // poll leaves that session to the action and moves on.
+        let lock = db.answer_lock(&format!("ompsdk:{}", entry.sid));
+        let _guard = match lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poison)) => poison.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => continue,
+        };
+        // A card action may have changed the session since the poll read the state.
+        let changed;
+        let entry = if STATE_REV.load(Ordering::SeqCst) == revision {
+            entry
+        } else {
+            match lookup(db, &entry.sid) {
+                Some(fresh) if fresh.polled() => {
+                    changed = fresh;
+                    &changed
+                }
+                _ => continue,
+            }
+        };
+        written += step(memo, db, &client, entry, now, &mut called);
+    }
+    written
 }
 
-/// Wait `RETRY_MS` before the next poll. The error prints only on the first failure in a row.
+/// Wait before the next poll after a failed connect or state read. The wait doubles while the
+/// failure lasts, and the error prints only on the first failure in a row.
 fn backoff(memo: &mut Memo, now: i64, error: &str) {
-    if !memo.failing {
+    if memo.failures == 0 {
         eprintln!("triage: ompsdk: {error}");
     }
-    memo.failing = true;
-    memo.retry_at_ms = now + RETRY_MS;
+    memo.failures += 1;
+    memo.retry_at_ms = now + wait_ms(CONNECT_WAIT_MS, memo.failures);
 }
 
-/// Reopen a session the daemon held before a reconnect. A failed resume cuts the session.
-fn resume_held(memo: &mut Memo, db: &Db, client: &Client, sid: &str, now: i64) {
-    let Some(entry) = lookup(db, sid) else {
-        return;
-    };
-    if let Err(error) = client.resume(sid, &entry.cwd) {
-        eprintln!("triage: ompsdk: resume {sid}: {error}");
-        mark_cut(memo, db, sid, now);
+/// Wait before the session's next daemon call after one failed. The wait doubles while the
+/// failure lasts. The next poll also asks the daemon which sessions it still holds, because a
+/// failed call often means the pool restarted.
+fn retry_later(memo: &mut Memo, sid: &str, now: i64, what: &str, error: &str) {
+    let tries = memo.waits.get(sid).map_or(0, |(tries, _)| *tries) + 1;
+    if tries == 1 {
+        eprintln!("triage: ompsdk: {what} {sid}: {error}");
     }
+    memo.waits.insert(sid.to_owned(), (tries, now + wait_ms(CALL_WAIT_MS, tries)));
+    memo.recheck = true;
 }
 
-/// Mark a session cut. The next poll resumes it, after `RESUME_RETRY_MS` when a resume just failed.
-fn mark_cut(memo: &mut Memo, db: &Db, sid: &str, now: i64) {
-    let _ = update(db, sid, |entry| entry.cut = true);
-    memo.resume_at_ms
-        .insert(sid.to_owned(), now + RESUME_RETRY_MS);
-}
-
-/// Count a poll that found the turn still running. A turn that runs too long is cut.
-fn stalled(memo: &mut Memo, db: &Db, sid: &str, now: i64) {
-    let ticks = memo.running.entry(sid.to_owned()).or_default();
-    *ticks += 1;
-    if *ticks >= RUNNING_TICKS {
-        memo.running.remove(sid);
-        mark_cut(memo, db, sid, now);
-    }
-}
-
-/// Advance one held session: answer or card its open elicitations, retire the cards of answered
-/// ones, and settle its turn once the turn has ended. Returns the cards written.
-fn tend(memo: &mut Memo, db: &Db, client: &Client, sid: &str, now: i64) -> usize {
-    let Some(entry) = lookup(db, sid) else {
+/// Advance one session. `called` is set once this poll made a daemon call that takes the
+/// pool's time, and the sessions that need such a call then take turns, one a poll. A restart
+/// that cuts every session at once never sends the pool a pile of resumes.
+fn step(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64, called: &mut bool) -> usize {
+    let sid = entry.sid.as_str();
+    let due = !*called && memo.waits.get(sid).is_none_or(|(_, due)| now >= *due);
+    if entry.closing {
+        if !entry.loaded {
+            released(memo, db, entry);
+        } else if due {
+            *called = true;
+            release(memo, db, client, entry, now);
+        }
         return 0;
+    }
+    if entry.parked {
+        return 0;
+    }
+    if entry.cut || !client.bound(sid) {
+        if !due {
+            return 0;
+        }
+        // A session the daemon still holds binds at once. A cut one may come back from disk,
+        // which takes seconds of the pool's time.
+        *called = entry.cut;
+        let written = reopen(memo, db, client, entry, now);
+        *called |= memo.recheck;
+        return written;
+    }
+    tend(memo, db, client, entry, now, called)
+}
+
+/// Mark a session's turn cut and set when the poll reopens it. `loaded` says whether the
+/// daemon still holds the session. A session with a question open waits parked for its answer.
+/// A session cut again soon after a revive waits longer each time, and stops with a card
+/// after `MAX_CUTS` revives in a row.
+fn cut(memo: &mut Memo, db: &Db, entry: &Entry, now: i64, loaded: bool) -> usize {
+    let sid = entry.sid.as_str();
+    memo.running.remove(sid);
+    let cuts = if now - entry.revived_ms > CUT_RESET_MS { 0 } else { entry.cuts };
+    if cuts >= MAX_CUTS {
+        let reason = format!("its turn was cut {} times in a row", cuts + 1);
+        return give_up(memo, db, entry, loaded, &reason);
+    }
+    let parked = has_question(db, entry);
+    let _ = update(db, sid, |entry| {
+        entry.cut = true;
+        entry.loaded = loaded;
+        entry.parked = parked;
+        entry.cuts = cuts;
+    });
+    let wait = if cuts == 0 { 0 } else { wait_ms(CUT_WAIT_MS, cuts) };
+    memo.waits.insert(sid.to_owned(), (0, now + wait));
+    0
+}
+
+/// Whether the session has an ask or plan card the user has yet to answer.
+fn has_question(db: &Db, entry: &Entry) -> bool {
+    let uri = card_source(entry).uri;
+    db.unresolved_cards().is_ok_and(|cards| {
+        cards.iter().any(|card| {
+            card.engine.as_deref() == Some("ompsdk")
+                && card.source.uri == uri
+                && matches!(card.kind, Kind::Ask | Kind::Plan)
+        })
+    })
+}
+
+/// Stop reviving a session and tell the user why. The session stays tracked and parked, and
+/// a brief dispatched to the card continues it.
+fn give_up(memo: &mut Memo, db: &Db, entry: &Entry, loaded: bool, reason: &str) -> usize {
+    let sid = entry.sid.as_str();
+    memo.waits.remove(sid);
+    eprintln!("triage: ompsdk: stopped {sid}: {reason}");
+    let transcript = transcript_of(sid).map_or_else(|| entry.brief.clone(), |path| path.display().to_string());
+    let text = format!("Stopped: {reason}. Dispatch a brief to this card to continue the session.");
+    let card = report_card(db, entry, &format!("stopped{now}", now = events::now_ms()), &transcript, text, None, true);
+    let written = usize::from(matches!(db.insert_card(&card), Ok(true)));
+    let _ = update(db, sid, |entry| {
+        entry.cut = true;
+        entry.parked = true;
+        entry.cuts = 0;
+        entry.loaded = loaded;
+        entry.closing = loaded;
+        entry.forget = false;
+    });
+    written
+}
+
+/// Bind a session to this connection. A session the daemon still held keeps its turn, and the
+/// next poll tends it. A session whose turn was cut gets its mode and model back and then the
+/// cut prompt, unless its turn runs on or had ended on its own.
+fn reopen(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) -> usize {
+    let sid = entry.sid.as_str();
+    let resumed = match client.resume(sid, &entry.cwd) {
+        Ok(resumed) => resumed,
+        Err(error) if ompsdk::transient(&error) => {
+            retry_later(memo, sid, now, "resume", &error);
+            return 0;
+        }
+        Err(error) => {
+            let reason = format!("the session could not be reopened ({error})");
+            return give_up(memo, db, entry, false, &reason);
+        }
     };
+    if !entry.cut {
+        memo.waits.remove(sid);
+        if resumed.held || resumed.running {
+            return 0;
+        }
+        // The daemon read it back from disk. A restart cut its turn after the poll last asked.
+        return cut(memo, db, entry, now, true);
+    }
+    let nudged = !resumed.running && !turn_over(sid);
+    if nudged && let Err(error) = nudge(client, entry) {
+        if ompsdk::transient(&error) {
+            retry_later(memo, sid, now, "continue", &error);
+            return 0;
+        }
+        let reason = format!("the session could not be continued ({error})");
+        return give_up(memo, db, entry, true, &reason);
+    }
+    memo.waits.remove(sid);
+    memo.running.remove(sid);
+    let _ = update(db, sid, |entry| {
+        entry.cut = false;
+        entry.loaded = true;
+        if nudged {
+            entry.cuts += 1;
+            entry.revived_ms = now;
+            // The cut prompt carried every answer in words.
+            for said in &mut entry.answers {
+                said.queued = None;
+            }
+        }
+    });
+    0
+}
+
+/// Whether the session's last turn ended on its own, with a reply or an error, as its transcript tells.
+fn turn_over(sid: &str) -> bool {
+    transcript_of(sid)
+        .and_then(|path| omp::turn_end(&path).ok().flatten())
+        .is_some_and(|end| matches!(end, omp::TurnEnd::Reply { .. } | omp::TurnEnd::Error { .. }))
+}
+
+/// Put a cut session back in its mode and on its model, then send the cut prompt.
+fn nudge(client: &Client, entry: &Entry) -> Result<(), String> {
+    let sid = entry.sid.as_str();
+    if entry.planning {
+        client.set_config(sid, "mode", "plan")?;
+    }
+    if let Some(executor) = &entry.executor {
+        configure(client, sid, executor.model.as_deref(), executor.thinking.as_deref())?;
+    }
+    client.prompt(sid, prompt_blocks(&cut_prompt(entry), None))
+}
+
+/// The prompt a cut session continues on. It names the brief, because the cut may have taken
+/// the prompt that handed the brief over. It repeats the user's answers for the same reason.
+fn cut_prompt(entry: &Entry) -> String {
+    let mut prompt = format!("{CUT_PROMPT} Your last turn was cut short. Check what it left unfinished, including any job it had running.");
+    if !entry.brief.is_empty() {
+        prompt.push_str(&format!(" Your brief is at {}.", entry.brief));
+    }
+    if !entry.answers.is_empty() {
+        prompt.push_str("\n\nThe user sent these answers before the cut. Use them in case they did not reach you.\n");
+        for said in &entry.answers {
+            prompt.push_str(&format!("- {}\n", said.text));
+        }
+    }
+    prompt
+}
+
+/// Ask the daemon to let a session go. An error from omp itself means it holds nothing more.
+fn release(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) {
+    match client.close(&entry.sid) {
+        Err(error) if ompsdk::transient(&error) => retry_later(memo, &entry.sid, now, "close", &error),
+        outcome => {
+            if let Err(error) = outcome {
+                eprintln!("triage: ompsdk: close {}: {error}", entry.sid);
+            }
+            released(memo, db, entry);
+        }
+    }
+}
+
+/// Stop holding a session the daemon let go, and forget one the user closed.
+fn released(memo: &mut Memo, db: &Db, entry: &Entry) {
+    let sid = entry.sid.as_str();
+    memo.waits.remove(sid);
+    memo.running.remove(sid);
+    let _ = if entry.forget {
+        edit(db, |state| state.sessions.retain(|entry| entry.sid != sid))
+    } else {
+        update(db, sid, |entry| {
+            entry.loaded = false;
+            entry.closing = false;
+        })
+    };
+}
+
+/// Count a poll that found an ended turn unfinished in its transcript. The last message can
+/// reach the disk a moment late. A turn that stays unfinished is cut.
+fn stalled(memo: &mut Memo, db: &Db, entry: &Entry, now: i64) -> usize {
+    let ticks = memo.running.entry(entry.sid.clone()).or_default();
+    *ticks += 1;
+    if *ticks < RUNNING_TICKS {
+        return 0;
+    }
+    cut(memo, db, entry, now, true)
+}
+
+/// Advance one bound session. Answers that waited for their question go out first. Every
+/// other open elicitation gets an answer or a card, and the cards of answered ones are
+/// finished. A turn that has ended is settled. Returns the cards written.
+fn tend(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64, called: &mut bool) -> usize {
+    let sid = entry.sid.as_str();
     let open = client.elicitations(sid);
     let mut written = 0;
     for elicitation in &open {
-        written += answer_or_card(memo, db, client, &entry, elicitation, now);
-    }
-    finish_gone(db, &entry, &open, &mut written);
-    if !open.is_empty() {
-        // A session that waits on the user is not running out of time.
-        memo.running.remove(sid);
-        return written;
-    }
-    if entry.cut {
-        if memo.resume_at_ms.get(sid).is_none_or(|due| now >= *due) {
-            revive(memo, db, client, &entry, now);
+        let key = elicitation.key();
+        let queued = entry
+            .answers
+            .iter()
+            .find(|said| said.key == key)
+            .and_then(|said| said.queued.as_ref());
+        let Some(queued) = queued else {
+            written += answer_or_card(memo, db, client, entry, elicitation, now, called);
+            continue;
+        };
+        if *called || memo.waits.get(sid).is_some_and(|(_, due)| now < *due) {
+            continue;
         }
-        return written;
+        // The user answered while the question was out of reach. It is open again.
+        *called = true;
+        match deliver(client, entry, elicitation, queued) {
+            Err(error) if ompsdk::transient(&error) => retry_later(memo, sid, now, "answer", &error),
+            outcome => {
+                if let Err(error) = outcome {
+                    eprintln!("triage: ompsdk: answer {sid}: {error}");
+                }
+                memo.waits.remove(sid);
+                let _ = update(db, sid, |entry| {
+                    for said in entry.answers.iter_mut().filter(|said| said.key == key) {
+                        said.queued = None;
+                    }
+                });
+            }
+        }
     }
-    // A running turn reports its own end. Resuming it would only reload a busy session.
-    if client.turn(sid) == Turn::Running {
+    finish_gone(db, entry, &open, &mut written);
+    if !open.is_empty() || client.turn(sid) == Turn::Running {
+        // A session that waits on the user or still runs its turn is not running out of time.
         memo.running.remove(sid);
         return written;
     }
-    memo.running.remove(sid);
-    written + settle(memo, db, client, &entry, now)
+    written + settle(memo, db, client, entry, now)
+}
+
+/// Send an answer that waited for its question to the open elicitation.
+fn deliver(client: &Client, entry: &Entry, elicitation: &Elicitation, queued: &Queued) -> Result<(), String> {
+    let sid = entry.sid.as_str();
+    match queued {
+        Queued::Ask(answers) => {
+            let content = content_of(&elicitation.schema, answers)?;
+            client.respond(sid, &elicitation.rpc_id, json!({"action": "accept", "content": content}))
+        }
+        Queued::Approve => {
+            let executor = entry.executor.as_ref();
+            approve(
+                client,
+                sid,
+                elicitation,
+                executor.and_then(|executor| executor.model.as_deref()),
+                executor.and_then(|executor| executor.thinking.as_deref()),
+            )
+        }
+        Queued::Refine(feedback) => refine(client, sid, elicitation, feedback),
+    }
 }
 
 /// Approve a plan review that plan-into approves on its own, or write the card for an elicitation.
-/// A failed auto-approval retries on later polls and falls back to a card after `APPROVE_TRIES`.
-fn answer_or_card(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, elicitation: &Elicitation, now: i64) -> usize {
+/// A failed auto-approval tries again on later polls, after waits that double, and falls back
+/// to a card after `APPROVE_TRIES`.
+fn answer_or_card(
+    memo: &mut Memo,
+    db: &Db,
+    client: &Client,
+    entry: &Entry,
+    elicitation: &Elicitation,
+    now: i64,
+    called: &mut bool,
+) -> usize {
     let id = card_id(&entry.sid, elicitation);
     if matches!(db.card(&id), Ok(Some(_))) {
         return 0;
@@ -521,27 +868,43 @@ fn answer_or_card(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, elic
         && let Some(plan_into) = &entry.plan_into
     {
         let (tries, due) = memo.approve_tries.get(&id).copied().unwrap_or_default();
-        if now < due {
+        if *called || now < due {
             return 0;
         }
+        *called = true;
         let executor = plan_into.model.as_deref().unwrap_or("@smol");
         let approved = approve(client, &entry.sid, elicitation, Some(executor), plan_into.thinking.as_deref());
         match approved {
             Ok(()) => {
                 memo.approve_tries.remove(&id);
-                let _ = update(db, &entry.sid, |entry| entry.auto_approved = true);
+                let executor = PlanInto {
+                    model: Some(executor.to_owned()),
+                    thinking: plan_into.thinking.clone(),
+                };
+                let _ = update(db, &entry.sid, |entry| {
+                    entry.auto_approved = true;
+                    entry.planning = false;
+                    entry.executor = Some(executor);
+                });
                 return 0;
             }
             Err(error) => {
-                eprintln!("triage: ompsdk: plan approval {}: {error}", entry.sid);
+                if tries == 0 {
+                    eprintln!("triage: ompsdk: plan approval {}: {error}", entry.sid);
+                }
                 if tries + 1 < APPROVE_TRIES {
-                    memo.approve_tries.insert(id, (tries + 1, now + APPROVE_RETRY_MS));
+                    memo.approve_tries
+                        .insert(id, (tries + 1, now + wait_ms(CALL_WAIT_MS, tries + 1)));
                     return 0;
                 }
-                // A plan that will not approve falls back to a card, so the user can answer it.
+                // A plan that will not approve falls back to a card for the user to answer.
                 memo.approve_tries.remove(&id);
             }
         }
+    }
+    // A new question means the session read the answers the user gave before it.
+    if !entry.answers.is_empty() {
+        let _ = update(db, &entry.sid, |entry| entry.answers.clear());
     }
     match db.insert_card(&prompt_card(entry, elicitation)) {
         Ok(inserted) => usize::from(inserted),
@@ -571,38 +934,11 @@ fn finish_gone(db: &Db, entry: &Entry, open: &[Elicitation], written: &mut usize
     finish_cards(db, gone, "answered elsewhere", written);
 }
 
-/// Resume a cut session and nudge it on. A session with no run behind it gets the cut prompt.
-fn revive(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) {
-    let sid = entry.sid.as_str();
-    let outcome = client.resume(sid, &entry.cwd).and_then(|running| {
-        if running {
-            Ok(())
-        } else {
-            client.prompt(sid, prompt_blocks(CUT_PROMPT, None))
-        }
-    });
-    match outcome {
-        Ok(()) => {
-            // The resume binds the session in the daemon again, and the poll must keep tending it.
-            let _ = update(db, sid, |entry| {
-                entry.cut = false;
-                entry.loaded = true;
-            });
-            memo.running.remove(sid);
-        }
-        Err(error) => {
-            eprintln!("triage: ompsdk: resume {sid}: {error}");
-            memo.resume_at_ms.insert(sid.to_owned(), now + RESUME_RETRY_MS);
-        }
-    }
-}
-
 /// Read the transcript of a session whose turn ended, and act on how the turn ended.
 fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) -> usize {
     let sid = entry.sid.as_str();
     let Some(path) = transcript_of(sid) else {
-        stalled(memo, db, sid, now);
-        return 0;
+        return stalled(memo, db, entry, now);
     };
     let end = match omp::turn_end(&path) {
         Ok(Some(end)) => end,
@@ -610,24 +946,9 @@ fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) ->
     };
     let transcript = path.display().to_string();
     match end {
-        omp::TurnEnd::Running => {
-            stalled(memo, db, sid, now);
-            0
-        }
-        // Triage never aborts a tracked turn. A daemon or pool restart did, and the work goes on.
-        omp::TurnEnd::Aborted if entry.continues < MAX_CONTINUES => {
-            match client.prompt(sid, prompt_blocks(CUT_PROMPT, None)) {
-                Ok(()) => {
-                    let _ = update(db, sid, |entry| entry.continues += 1);
-                }
-                Err(error) => eprintln!("triage: ompsdk: continue {sid}: {error}"),
-            }
-            0
-        }
-        omp::TurnEnd::Aborted => {
-            retire(db, client, sid);
-            0
-        }
+        omp::TurnEnd::Running => stalled(memo, db, entry, now),
+        // Triage never aborts a tracked turn. The daemon canceled a flood, or a restart cut the turn.
+        omp::TurnEnd::Aborted => cut(memo, db, entry, now, true),
         omp::TurnEnd::Error { entry_id, message } => {
             let text = if message.trim().is_empty() {
                 "Stopped with error".to_owned()
@@ -635,7 +956,7 @@ fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) ->
                 format!("Stopped with error: {message}")
             };
             let card = report_card(db, entry, &entry_id, &transcript, text, None, true);
-            publish(db, client, entry, card)
+            publish(memo, db, entry, card)
         }
         omp::TurnEnd::Reply { entry_id, text, report, .. } => {
             let status = report.is_some() || omp::final_report(&text).is_some();
@@ -644,6 +965,7 @@ fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) ->
                     "Continue the triage brief at {}. Finish every open part, then reply with the final report its format describes, starting with the ENVOY_STATUS line.",
                     entry.brief
                 );
+                memo.running.remove(sid);
                 match client.prompt(sid, prompt_blocks(&prompt, None)) {
                     Ok(()) => {
                         let _ = update(db, sid, |entry| entry.continues += 1);
@@ -653,32 +975,30 @@ fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) ->
                 return 0;
             }
             let card = report_card(db, entry, &entry_id, &transcript, text, report, false);
-            publish(db, client, entry, card)
+            publish(memo, db, entry, card)
         }
     }
 }
 
-/// Write a turn's card, supersede the session's older info cards, and close the session. The
-/// card insert is idempotent, so a close that fails retries the whole step on a later poll.
-fn publish(db: &Db, client: &Client, entry: &Entry, card: Card) -> usize {
+/// Write a turn's card, supersede the session's older info cards, and mark the session for
+/// release. The poll then closes it in the daemon, and waits before each further try when a
+/// close fails.
+fn publish(memo: &mut Memo, db: &Db, entry: &Entry, card: Card) -> usize {
     let mut written = 0;
     let transcript = card.refs.first().map_or("", String::as_str).to_owned();
     supersede_info_cards(db, &card.id, &transcript, None, &mut written);
     if let Ok(true) = db.insert_card(&card) {
         written += 1;
     }
-    retire(db, client, &entry.sid);
+    memo.running.remove(&entry.sid);
+    let _ = update(db, &entry.sid, |entry| {
+        entry.closing = true;
+        entry.forget = false;
+        entry.cuts = 0;
+        entry.executor = None;
+        entry.answers.clear();
+    });
     written
-}
-
-/// Close a session the poll is done with and stop holding it.
-fn retire(db: &Db, client: &Client, sid: &str) {
-    match client.close(sid) {
-        Ok(()) => {
-            let _ = update(db, sid, |entry| entry.loaded = false);
-        }
-        Err(error) => eprintln!("triage: ompsdk: close {sid}: {error}"),
-    }
 }
 
 /// Set the executor model and effort, then accept a plan review with Approve and execute.
@@ -739,6 +1059,25 @@ fn first_prompt(brief: &Path, start: Start) -> Result<String, String> {
     })
 }
 
+/// Run a card action again after the daemon or its pool failed it. The waits between tries
+/// double, and the action gives up after `ACTION_BUDGET`. An error from omp itself returns at once.
+fn retrying<T>(mut action: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    let deadline = Instant::now() + ACTION_BUDGET;
+    let mut tries = 0;
+    loop {
+        match action() {
+            Err(error) if ompsdk::transient(&error) && Instant::now() < deadline => {
+                tries += 1;
+                if tries == 1 {
+                    eprintln!("triage: ompsdk: {error}; trying again");
+                }
+                thread::sleep(Duration::from_millis(wait_ms(ACTION_WAIT_MS, tries) as u64));
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
 /// Start an ompsdk session on `brief` and return its `ompsdk:<sid>` pane id.
 pub(super) fn launch_new(
     db: &Db,
@@ -749,27 +1088,28 @@ pub(super) fn launch_new(
     image: Option<&Upload>,
     title: &str,
 ) -> Result<String, String> {
-    let client = ompsdk::client(socket(launch)?)?;
-    let sid = client.new_session(cwd)?;
-    let entry = Entry {
-        sid: sid.clone(),
-        cwd: cwd.to_owned(),
-        brief: brief.display().to_string(),
-        title: title.to_owned(),
-        plan_into: plan_into_of(start),
-        auto_approved: false,
-        continues: 0,
-        loaded: true,
-        cut: false,
-    };
-    // A session that started but is not tracked would run on with no poll to report it.
-    let begun = begin(&client, &sid, launch, brief, start, image)
-        .and_then(|()| edit(db, |state| state.sessions.push(entry)));
-    if let Err(error) = begun {
-        let _ = client.close(&sid);
-        return Err(error);
-    }
-    Ok(format!("ompsdk:{sid}"))
+    retrying(|| {
+        let client = ompsdk::client(socket(launch)?)?;
+        let sid = client.new_session(cwd)?;
+        let entry = Entry {
+            sid: sid.clone(),
+            cwd: cwd.to_owned(),
+            brief: brief.display().to_string(),
+            title: title.to_owned(),
+            plan_into: plan_into_of(start),
+            planning: matches!(start, Start::Plan | Start::PlanInto(..)),
+            loaded: true,
+            ..Entry::default()
+        };
+        // A session that started but is not tracked would run on with no poll to report it.
+        let begun = begin(&client, &sid, launch, brief, start, image)
+            .and_then(|()| edit(db, |state| state.sessions.push(entry)));
+        if let Err(error) = begun {
+            let _ = client.close(&sid);
+            return Err(error);
+        }
+        Ok(format!("ompsdk:{sid}"))
+    })
 }
 
 /// Set a new session up for `start` and send its first prompt.
@@ -788,8 +1128,8 @@ fn begin(
     client.prompt(sid, prompt_blocks(&first_prompt(brief, start)?, image))
 }
 
-/// Give a brief to the card's ompsdk session. A session the daemon no longer holds is resumed first.
-/// A card with no ompsdk session starts one.
+/// Give a brief to the card's ompsdk session. A session this connection has yet to bind is
+/// resumed first. A card with no ompsdk session starts one.
 pub(super) fn launch_brief(
     db: &Db,
     card: &Card,
@@ -802,55 +1142,118 @@ pub(super) fn launch_brief(
         return launch_new(db, launch, &workdir(&card.source.cwd)?, brief, start, image, &card.title);
     };
     let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
-    let client = ompsdk::client(socket(launch)?)?;
-    let running = if entry.loaded {
-        client.turn(sid) == Turn::Running
-    } else {
-        let running = client.resume(sid, &entry.cwd)?;
-        // The daemon holds the session again. A later close must release it.
-        update(db, sid, |entry| entry.loaded = true)?;
-        running
-    };
-    if matches!(start, Start::Plan | Start::PlanInto(..)) && !running {
-        client.set_config(sid, "mode", "plan")?;
-    }
+    let planning = matches!(start, Start::Plan | Start::PlanInto(..));
     let text = dispatch_prompt(brief);
-    let taken = running && client.steer(sid, &text)? == "injected";
-    if !taken {
-        client.prompt(sid, prompt_blocks(&text, image))?;
-    }
+    let taken = retrying(|| {
+        let client = ompsdk::client(socket(launch)?)?;
+        let running = bind(db, &client, &entry)?;
+        if planning && !running {
+            client.set_config(sid, "mode", "plan")?;
+        }
+        let taken = running && client.steer(sid, &text)? == "injected";
+        if !taken {
+            client.prompt(sid, prompt_blocks(&text, image))?;
+        }
+        Ok(taken)
+    })?;
     let plan_into = plan_into_of(start);
     update(db, sid, |entry| {
         entry.loaded = true;
         entry.cut = false;
+        entry.parked = false;
+        entry.closing = false;
         entry.continues = 0;
+        entry.cuts = 0;
         entry.auto_approved = false;
         entry.plan_into = plan_into;
+        // A brief steered into a running turn leaves that turn's mode as it was.
+        if !taken {
+            entry.planning = planning;
+        }
+        entry.executor = None;
+        entry.answers.clear();
+        entry.brief = brief.display().to_string();
     })?;
     Ok(format!("ompsdk:{sid}"))
 }
 
-/// Answer an ompsdk question with the picked options or the typed text, one answer per question.
-pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
-    let client = ompsdk::client(socket(launch)?)?;
-    let key = card.tool_call_id.as_deref().ok_or("ask card has no question")?;
-    let open = client
-        .elicitation(sid, key)
-        .ok_or("question is no longer pending")?;
-    let asked = questions(&open.schema);
-    let answers = if req.answers.is_empty() {
-        vec![Answer {
-            option: req.option,
-            text: req.text.clone(),
-        }]
-    } else {
-        req.answers.clone()
-    };
+/// Whether a turn runs in the session. A session this connection has yet to bind is resumed
+/// first, which also brings one back that the daemon no longer holds.
+fn bind(db: &Db, client: &Client, entry: &Entry) -> Result<bool, String> {
+    let sid = entry.sid.as_str();
+    if client.bound(sid) {
+        return Ok(client.turn(sid) == Turn::Running);
+    }
+    let resumed = client.resume(sid, &entry.cwd)?;
+    // The daemon holds the session again. A later close must release it.
+    update(db, sid, |entry| entry.loaded = true)?;
+    Ok(resumed.running)
+}
+
+/// The question a card stands for, when this connection has it open.
+fn open_question(launch: &Launch, sid: &str, key: &str) -> Option<(std::sync::Arc<Client>, Elicitation)> {
+    let client = ompsdk::client(socket(launch).ok()?).ok()?;
+    let open = client.elicitation(sid, key)?;
+    Some((client, open))
+}
+
+/// Whether an answer reached the daemon. A failure of the daemon or its pool reads as not
+/// sent, and the answer then waits in the session's entry. An error from omp itself is returned.
+fn sent(outcome: Result<(), String>) -> Result<bool, String> {
+    match outcome {
+        Ok(()) => Ok(true),
+        Err(error) if ompsdk::transient(&error) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Keep an answer in the session's entry. One that was not sent also marks the session for
+/// the poll, which sends it to its question once that is open again, or reopens a cut session
+/// with the answer in the cut prompt.
+fn remember(db: &Db, sid: &str, said: Said, change: impl FnOnce(&mut Entry)) -> Result<(), String> {
+    if lookup(db, sid).is_none() {
+        return Err("ompsdk session is no longer tracked".to_owned());
+    }
+    update(db, sid, |entry| {
+        if said.queued.is_some() {
+            entry.cut = true;
+            entry.parked = false;
+        }
+        entry.answers.push(said);
+        change(entry);
+    })
+}
+
+/// The user's answers in words, one line per question, read from the card that asked.
+fn spoken(card: &Card, answers: &[Answer]) -> Result<String, String> {
+    if answers.len() != card.questions.len().max(1) {
+        return Err("ask answer needs one answer per question".to_owned());
+    }
+    let lines: Result<Vec<String>, String> = answers
+        .iter()
+        .enumerate()
+        .map(|(index, answer)| {
+            let (question, options) = match card.questions.get(index) {
+                Some(asked) => (asked.question.as_str(), &asked.options),
+                None => (card.title.as_str(), &card.options),
+            };
+            let text = answer.text.as_deref().map(str::trim).filter(|text| !text.is_empty());
+            let picked = answer.option.and_then(|index| options.get(index)).map(|option| option.label.as_str());
+            let value = text.or(picked).ok_or("ask answer needs an option or text")?;
+            Ok(format!("\"{question}\" was answered with: {value}"))
+        })
+        .collect();
+    Ok(lines?.join("\n"))
+}
+
+/// The elicitation content for the user's answers, one field per question of the schema.
+fn content_of(schema: &Value, answers: &[Answer]) -> Result<serde_json::Map<String, Value>, String> {
+    let asked = questions(schema);
     if answers.len() != asked.len() {
         return Err("ask answer needs one answer per question".to_owned());
     }
     let mut content = serde_json::Map::new();
-    for (question, answer) in asked.iter().zip(&answers) {
+    for (question, answer) in asked.iter().zip(answers) {
         let text = answer.text.as_deref().map(str::trim).filter(|text| !text.is_empty());
         if let Some(text) = text {
             let slot = question.other.clone().unwrap_or_else(|| question.key.clone());
@@ -864,20 +1267,64 @@ pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launc
         let value = if question.multi { json!([label]) } else { json!(label) };
         content.insert(question.key.clone(), value);
     }
-    client.respond(sid, &open.rpc_id, json!({"action": "accept", "content": content}))?;
-    let (option, text) = match answers.as_slice() {
+    Ok(content)
+}
+
+/// Answer an ompsdk question with the picked options or the typed text, one answer per
+/// question. An answer whose question is out of reach, after a restart or before the poll bound
+/// the session again, is kept and returns at once. The poll sends it.
+pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
+    let key = card.tool_call_id.as_deref().ok_or("ask card has no question")?;
+    let answers = if req.answers.is_empty() {
+        vec![Answer {
+            option: req.option,
+            text: req.text.clone(),
+        }]
+    } else {
+        req.answers.clone()
+    };
+    let text = spoken(card, &answers)?;
+    let delivered = match open_question(launch, sid, key) {
+        Some((client, open)) => {
+            let content = content_of(&open.schema, &answers)?;
+            sent(client.respond(sid, &open.rpc_id, json!({"action": "accept", "content": content})))?
+        }
+        None => false,
+    };
+    let (option, typed) = match answers.as_slice() {
         [only] => (only.option, only.text.clone()),
         _ => (None, None),
     };
-    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some("sent to ompsdk".to_owned())) {
+    let said = Said {
+        key: key.to_owned(),
+        text,
+        queued: (!delivered).then_some(Queued::Ask(answers)),
+    };
+    remember(db, sid, said, |_| {})?;
+    let reason = if delivered { "sent to ompsdk" } else { "queued for ompsdk" };
+    if record_swipe(db, &card.id, "done", option, typed, req.note.clone(), Some(reason.to_owned())) {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
 }
 
-/// Answer an ompsdk plan review. Approve sets the executor first, so the plan runs on it. Refine
-/// sends the feedback into the running turn, or as a new prompt when no turn takes it.
+/// Answer a plan review with Refine. The feedback goes into the running turn, or into a new
+/// prompt when no turn takes it.
+fn refine(client: &Client, sid: &str, open: &Elicitation, feedback: &str) -> Result<(), String> {
+    client.respond(
+        sid,
+        &open.rpc_id,
+        json!({"action": "accept", "content": {"value": PLAN_REFINE}}),
+    )?;
+    if client.steer(sid, feedback)? != "injected" {
+        client.prompt(sid, prompt_blocks(feedback, None))?;
+    }
+    Ok(())
+}
+
+/// Answer an ompsdk plan review. Approve sets the executor first. The plan then runs on it. A
+/// review that is out of reach keeps the answer, as `answer_ask` does.
 pub(super) fn answer_plan(
     db: &Db,
     card: &Card,
@@ -887,41 +1334,51 @@ pub(super) fn answer_plan(
     launch: &Launch,
 ) -> Result<(), String> {
     let super::dsh_track::PlanChoice { option, refinement, executor, executor_effort } = choice;
-    let client = ompsdk::client(socket(launch)?)?;
     let key = card.tool_call_id.as_deref().ok_or("plan card has no review")?;
-    let open = client
-        .elicitation(sid, key)
-        .ok_or("plan review is not open")?;
-    let text = if option == Some(0) {
-        approve(&client, sid, &open, executor, executor_effort)?;
-        executor.map(str::to_owned)
-    } else {
-        let feedback = refinement.ok_or("Refine requires nonempty text")?;
-        client.respond(
-            sid,
-            &open.rpc_id,
-            json!({"action": "accept", "content": {"value": PLAN_REFINE}}),
-        )?;
-        if client.steer(sid, feedback)? != "injected" {
-            client.prompt(sid, prompt_blocks(feedback, None))?;
-        }
-        Some(feedback.to_owned())
+    let feedback = match option {
+        Some(0) => None,
+        _ => Some(refinement.ok_or("Refine requires nonempty text")?),
     };
-    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some("sent to ompsdk".to_owned())) {
+    let delivered = match (open_question(launch, sid, key), feedback) {
+        (Some((client, open)), None) => sent(approve(&client, sid, &open, executor, executor_effort))?,
+        (Some((client, open)), Some(feedback)) => sent(refine(&client, sid, &open, feedback))?,
+        (None, _) => false,
+    };
+    let said = match feedback {
+        None => Said {
+            key: key.to_owned(),
+            text: "The plan is approved. Carry it out now.".to_owned(),
+            queued: (!delivered).then_some(Queued::Approve),
+        },
+        Some(feedback) => Said {
+            key: key.to_owned(),
+            text: format!("Refine the plan: {feedback}"),
+            queued: (!delivered).then(|| Queued::Refine(feedback.to_owned())),
+        },
+    };
+    let ran_on = executor.map(|model| PlanInto {
+        model: Some(model.to_owned()),
+        thinking: executor_effort.map(str::to_owned),
+    });
+    remember(db, sid, said, |entry| {
+        if feedback.is_none() {
+            entry.planning = false;
+            entry.executor = ran_on;
+        }
+    })?;
+    let text = feedback.or(executor).map(str::to_owned);
+    let reason = if delivered { "sent to ompsdk" } else { "queued for ompsdk" };
+    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some(reason.to_owned())) {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
 }
 
-/// Close an ompsdk session and resolve the cards it still has open.
-pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>, launch: &Launch) -> Result<(), String> {
+/// Close an ompsdk session and resolve the cards it still has open. The close returns at
+/// once. The poll tells the daemon, and waits before each further try when the pool does not answer.
+pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>) -> Result<(), String> {
     let open = db.unresolved_cards().map_err(|error| error.to_string())?;
-    if lookup(db, sid).is_some_and(|entry| entry.loaded) {
-        ompsdk::client(socket(launch)?)?.close(sid)?;
-        // The daemon no longer holds it, even when a later step here fails.
-        update(db, sid, |entry| entry.loaded = false)?;
-    }
     let reason = format!("closed ompsdk:{sid}");
     if !record_swipe(
         db,
@@ -934,7 +1391,14 @@ pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>, launch:
     ) {
         return Err("could not record swipe".to_owned());
     }
-    edit(db, |state| state.sessions.retain(|entry| entry.sid != sid))?;
+    edit(db, |state| {
+        // A session the daemon no longer holds has nothing to release.
+        state.sessions.retain(|entry| entry.sid != sid || entry.loaded);
+        if let Some(entry) = state.sessions.iter_mut().find(|entry| entry.sid == sid) {
+            entry.closing = true;
+            entry.forget = true;
+        }
+    })?;
     let others: Vec<Card> = open
         .into_iter()
         .filter(|other| other.id != card.id && other.source.uri == card.source.uri)
@@ -948,22 +1412,19 @@ pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>, launch:
 /// answer, refuses the request.
 pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -> Result<(), String> {
     let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
-    let client = ompsdk::client(socket(launch)?)?;
-    if !entry.loaded {
-        let running = client.resume(sid, &entry.cwd)?;
-        update(db, sid, |entry| entry.loaded = true)?;
-        if running {
+    let request = report_request(db)?;
+    retrying(|| {
+        let client = ompsdk::client(socket(launch)?)?;
+        if bind(db, &client, &entry)? || !client.elicitations(sid).is_empty() {
             return Err("session is busy".to_owned());
         }
-    }
-    if client.turn(sid) == Turn::Running || !client.elicitations(sid).is_empty() {
-        return Err("session is busy".to_owned());
-    }
-    let request = report_request(db)?;
-    client.prompt(sid, prompt_blocks(&request, None))?;
+        client.prompt(sid, prompt_blocks(&request, None))
+    })?;
     update(db, sid, |entry| {
         entry.loaded = true;
         entry.cut = false;
+        entry.parked = false;
+        entry.closing = false;
     })?;
     let reason = format!("report requested ompsdk:{sid}");
     if record_swipe(
@@ -981,19 +1442,25 @@ pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -
     }
 }
 
-/// Hand a held ompsdk session to a tmux window that runs `omp --resume` on its transcript. A turn
-/// that was still running resumes with the cut prompt, so the work goes on where it stopped.
+/// Hand an ompsdk session to a tmux window that runs `omp --resume` on its transcript. A turn
+/// that was still running, or that a restart cut, resumes with the cut prompt. The work then
+/// goes on where it stopped.
 pub(super) fn open_cli(db: &Db, card: &Card, sid: &str, launch: &Launch) -> Result<(), String> {
     let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
-    let mut running = false;
+    let mut running = entry.cut;
     if entry.loaded {
-        let client = ompsdk::client(socket(launch)?)?;
-        running = client.turn(sid) == Turn::Running;
-        client.close(sid)?;
+        running |= retrying(|| {
+            let client = ompsdk::client(socket(launch)?)?;
+            let running = bind(db, &client, &entry)?;
+            client.close(sid)?;
+            Ok(running)
+        })?;
         // The daemon no longer holds it. A refusal below must not leave the poll resuming it.
         update(db, sid, |entry| {
             entry.loaded = false;
             entry.cut = false;
+            entry.parked = false;
+            entry.closing = false;
         })?;
     }
     if lease_held(sid)? {

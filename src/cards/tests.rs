@@ -9770,51 +9770,87 @@ fn ompsdk_lock() -> std::sync::MutexGuard<'static, ()> {
     OMPSDK_TESTS.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+/// What the fake daemon shares across its connections.
+#[derive(Default)]
+struct FakeState {
+    log: Mutex<Vec<Value>>,
+    dropped: std::sync::atomic::AtomicBool,
+    /// The sessions the fake holds, as `_ompsdk/status` lists them.
+    held: Mutex<HashSet<String>>,
+    /// The question a turn waits on. A resume replays it, as the daemon does.
+    asking: Mutex<Option<Value>>,
+    /// Calls that fail once, each with the error message to give.
+    failing: Mutex<Vec<(String, String)>>,
+    streams: Mutex<Vec<UnixStream>>,
+}
+
 /// A fake daemon. It logs every line it reads and answers each call as the daemon does. Each
 /// connection gets its own thread. Triage can then reconnect after the daemon drops one.
 struct FakeOmpsdk {
     socket: PathBuf,
-    log: Arc<Mutex<Vec<Value>>>,
-    dropped: Arc<std::sync::atomic::AtomicBool>,
+    state: Arc<FakeState>,
 }
 
 impl FakeOmpsdk {
     fn start(root: &Path) -> Self {
         let socket = root.join("ompsdk.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (served, gone) = (Arc::clone(&log), Arc::clone(&dropped));
+        let state = Arc::new(FakeState::default());
+        let served = Arc::clone(&state);
         thread::spawn(move || {
             for (connection, stream) in listener.incoming().enumerate() {
                 let Ok(stream) = stream else { break };
-                let (served, gone) = (Arc::clone(&served), Arc::clone(&gone));
-                thread::spawn(move || fake_ompsdk_serve(stream, connection + 1, &served, &gone));
+                let served = Arc::clone(&served);
+                thread::spawn(move || fake_ompsdk_serve(stream, connection + 1, &served));
             }
         });
-        Self { socket, log, dropped }
+        Self { socket, state }
     }
 
     /// Whether the fake dropped its first connection, as the `away` scenario does.
     fn dropped(&self) -> bool {
-        self.dropped.load(std::sync::atomic::Ordering::SeqCst)
+        self.state.dropped.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn sent(&self) -> Vec<Value> {
-        self.log.lock().unwrap().clone()
+        self.state.log.lock().unwrap().clone()
     }
 
     fn find(&self, matches: impl Fn(&Value) -> bool) -> Option<Value> {
         self.sent().into_iter().find(|message| matches(message))
     }
+
+    fn count(&self, method: &str) -> usize {
+        self.sent().iter().filter(|message| message["method"] == method).count()
+    }
+
+    /// Drop every client. The fake keeps its sessions, as the daemon does while triage restarts.
+    fn drop_clients(&self) {
+        for stream in self.state.streams.lock().unwrap().drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Restart the pool. Its sessions and their turns are gone, and every client is dropped.
+    fn restart(&self) {
+        self.state.held.lock().unwrap().clear();
+        *self.state.asking.lock().unwrap() = None;
+        self.drop_clients();
+    }
+
+    /// Fail the next `method` call with `message`.
+    fn fail_once(&self, method: &str, message: &str) {
+        self.state.failing.lock().unwrap().push((method.to_owned(), message.to_owned()));
+    }
 }
 
-fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Value>>, dropped: &std::sync::atomic::AtomicBool) {
-    let mut writer = stream.try_clone().unwrap();
-    let mut send = |value: Value| {
+fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
+    let writer = stream.try_clone().unwrap();
+    state.streams.lock().unwrap().push(stream.try_clone().unwrap());
+    let send = |value: Value| {
         let mut line = value.to_string();
         line.push('\n');
-        writer.write_all(line.as_bytes()).unwrap();
+        let _ = (&writer).write_all(line.as_bytes());
     };
     // The prompt id and the elicitation id that the turn waits on.
     let mut waiting: Option<(Value, String)> = None;
@@ -9823,9 +9859,13 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else { break };
         let message: Value = serde_json::from_str(&line).unwrap();
-        log.lock().unwrap().push(message.clone());
+        state.log.lock().unwrap().push(message.clone());
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         let Some(method) = message.get("method").and_then(Value::as_str) else {
+            let mut asking = state.asking.lock().unwrap();
+            if asking.as_ref().is_some_and(|open| open["id"] == id) {
+                *asking = None;
+            }
             // An answer to an elicitation releases the turn that asked it.
             match waiting.take() {
                 Some((prompt, key)) if id.as_str() == Some(key.as_str()) => {
@@ -9835,12 +9875,29 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
             }
             continue;
         };
+        let failed = {
+            let mut failing = state.failing.lock().unwrap();
+            failing
+                .iter()
+                .position(|(name, _)| name == method)
+                .map(|index| failing.remove(index).1)
+        };
+        if let Some(error) = failed {
+            send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": error}}));
+            continue;
+        }
+        let sid = message["params"]["sessionId"].as_str().unwrap_or(OMPSDK_SID).to_owned();
         let result = match method {
+            "_ompsdk/status" => {
+                let sessions: Vec<Value> = state.held.lock().unwrap().iter().map(|id| json!({"id": id})).collect();
+                json!({"pools": [{"name": "triage", "sessions": sessions}]})
+            }
             "session/prompt" => {
                 let text = message["params"]["prompt"][0]["text"].as_str().unwrap_or_default();
                 if fake_scenario(text) == "away" && connection == 1 {
                     // The daemon loses the client mid-turn, and the turn ends while the client is away.
-                    dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+                    state.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = writer.shutdown(std::net::Shutdown::Both);
                     return;
                 }
                 match fake_scenario(text) {
@@ -9861,8 +9918,10 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
                 };
                 match asked {
                     Some((key, question, schema)) => {
-                        send(json!({"jsonrpc": "2.0", "id": key, "method": "elicitation/create",
-                            "params": {"mode": "form", "sessionId": OMPSDK_SID, "message": question, "requestedSchema": schema}}));
+                        let request = json!({"jsonrpc": "2.0", "id": key, "method": "elicitation/create",
+                            "params": {"mode": "form", "sessionId": OMPSDK_SID, "message": question, "requestedSchema": schema}});
+                        *state.asking.lock().unwrap() = Some(request.clone());
+                        send(request);
                         waiting = Some((id, key.to_owned()));
                         continue;
                     }
@@ -9875,14 +9934,32 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
                 send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "Internal error", "data": {"details": details}}}));
                 continue;
             }
-            "session/new" => json!({"sessionId": OMPSDK_SID, "configOptions": fake_options()}),
-            "session/resume" if connection > 1 => {
+            "session/new" => {
+                state.held.lock().unwrap().insert(OMPSDK_SID.to_owned());
+                json!({"sessionId": OMPSDK_SID, "configOptions": fake_options()})
+            }
+            "session/resume" if state.dropped.load(std::sync::atomic::Ordering::SeqCst) => {
                 // The turn end reaches the new connection before the reply that still reports a run.
                 send(json!({"jsonrpc": "2.0", "method": "_ompsdk/turn_end", "params": {"sessionId": OMPSDK_SID, "stopReason": "end_turn"}}));
-                json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": true}}})
+                json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": true, "held": true}}})
             }
-            // A turn that waits on an elicitation is still running, as the daemon reports it.
-            "session/resume" => json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": waiting.is_some() || holding}}}),
+            "session/resume" => {
+                let held = !state.held.lock().unwrap().insert(sid);
+                // A session the fake still holds replays the question its turn waits on.
+                let asking = state.asking.lock().unwrap().clone().filter(|_| held);
+                // A turn that waits on an elicitation is still running, as the daemon reports it.
+                let running = waiting.is_some() || holding || asking.is_some();
+                send(json!({"jsonrpc": "2.0", "id": id, "result":
+                    {"configOptions": fake_options(), "_meta": {"ompsdk": {"running": running, "held": held}}}}));
+                if let Some(request) = asking {
+                    send(request);
+                }
+                continue;
+            }
+            "session/close" => {
+                state.held.lock().unwrap().remove(&sid);
+                json!({})
+            }
             "session/set_config_option" if flaky && message["params"]["configId"] == "model" => {
                 flaky = false;
                 send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "session/set_config_option timed out"}}));
@@ -10208,7 +10285,8 @@ fn ompsdk_status_reply_child() {
     let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Info);
     assert_eq!(card.engine.as_deref(), Some("ompsdk"));
-    wait_for(&fake, |m| m["method"] == "session/close");
+    // The poll after the card closes the session.
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| fake.count("session/close") == 1);
 }
 
 #[test]
@@ -10239,19 +10317,57 @@ fn ompsdk_continuation_child() {
     assert_eq!(continuations, 5);
 }
 
-#[test]
-fn ompsdk_aborted_turn_is_continued_before_it_retires() {
-    let _lock = ompsdk_lock();
-    let scratch = Scratch::new();
-    run_child("ompsdk_aborted_child", scratch.path(), Some(&scratch.path().join("home")), None);
+/// Tick the ompsdk poll on a clock that moves `step_ms` a poll, until `done` holds.
+fn ompsdk_tick_until(memo: &mut ompsdk_track::Memo, db: &Db, launch: &Launch, step_ms: i64, done: impl Fn() -> bool) {
+    let mut now = events::now_ms();
+    for _ in 0..300 {
+        if done() {
+            return;
+        }
+        ompsdk_track::tick(memo, db, launch, now);
+        now += step_ms;
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("ompsdk poll never reached the expected state");
+}
+
+/// The cut prompts the fake daemon got.
+fn cut_prompts(fake: &FakeOmpsdk) -> Vec<String> {
+    fake.sent()
+        .iter()
+        .filter(|m| m["method"] == "session/prompt")
+        .filter_map(|m| m["params"]["prompt"][0]["text"].as_str().map(str::to_owned))
+        .filter(|text| text.starts_with("Continue where you stopped."))
+        .collect()
+}
+
+/// The fake session's entry in `ompsdk-sessions.json`.
+fn ompsdk_tracked(root: &Path) -> Value {
+    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap()).unwrap();
+    state["sessions"][0].clone()
+}
+
+/// The card that tells the user a session stopped.
+fn stopped_card(db: &Db) -> Option<Card> {
+    db.unresolved_cards()
+        .unwrap()
+        .into_iter()
+        .find(|card| card.id.starts_with("done:ompsdk:sid-1:stopped"))
 }
 
 #[test]
-fn ompsdk_aborted_child() {
-    let Some(root) = child_root("ompsdk_aborted_child") else {
+fn ompsdk_turn_cut_again_and_again_waits_longer_then_stops_with_a_card() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    run_child("ompsdk_cut_loop_child", scratch.path(), Some(&scratch.path().join("home")), None);
+}
+
+#[test]
+fn ompsdk_cut_loop_child() {
+    let Some(root) = child_root("ompsdk_cut_loop_child") else {
         return;
     };
-    // A pool restart aborts the running turn, which leaves an aborted assistant entry.
+    // A turn the daemon canceled leaves an aborted assistant entry. The fake ends every turn that way.
     let aborted = json!({"type": "message", "id": "e1", "message": {"role": "assistant", "stopReason": "aborted", "content": []}});
     write_ompsdk_transcript(&root.join("home"), &[aborted]);
     let db = Db::open(&root.join("triage.db")).unwrap();
@@ -10260,13 +10376,13 @@ fn ompsdk_aborted_child() {
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Restart it").unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |_| fake.find(|m| m["method"] == "session/close").is_some());
-    let continued = fake
-        .sent()
-        .iter()
-        .filter(|m| m["method"] == "session/prompt" && m["params"]["prompt"][0]["text"] == "Continue where you stopped.")
-        .count();
-    assert_eq!(continued, 5);
+    // Five minutes a poll is less than the work that clears the count of cuts in a row.
+    ompsdk_tick_until(&mut memo, &db, &launch, 300_000, || fake.count("session/close") == 1);
+    assert_eq!(cut_prompts(&fake).len(), 5);
+    assert!(stopped_card(&db).is_some(), "no card told the user the session stopped");
+    let entry = ompsdk_tracked(&root);
+    assert_eq!(entry["parked"], true, "{entry}");
+    assert_eq!(entry["loaded"], false, "{entry}");
 }
 
 fn wait_until(what: &str, done: impl Fn() -> bool) {
@@ -10348,7 +10464,7 @@ fn ompsdk_away_child() {
     thread::sleep(Duration::from_millis(100));
     let mut memo = ompsdk_track::Memo::default();
     ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
-    wait_for(&fake, |m| m["method"] == "session/close");
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| fake.count("session/close") == 1);
     let sent = fake.sent();
     let count = |method: &str| sent.iter().filter(|m| m["method"] == method).count();
     assert_eq!(count("session/resume"), 1, "the session resumed more than once");
@@ -10496,4 +10612,215 @@ fn ompsdk_request_report_refuses_a_session_waiting_on_an_answer() {
     });
     let card = Card { report_due: true, ..ompsdk_card(&db, "done:ompsdk:sid-1:e0", Kind::Info) };
     assert_eq!(request_report(&db, &card, &launch), Err("session is busy".to_owned()));
+}
+
+// A pool restart cuts every turn. The poll brings the session back and sends the cut prompt.
+
+#[test]
+fn ompsdk_pool_restart_revives_a_running_session() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    wait_for(&fake, |m| m["method"] == "session/prompt");
+    let mut memo = ompsdk_track::Memo::default();
+    memo.tick(&db, &launch);
+    fake.restart();
+    thread::sleep(Duration::from_millis(100));
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || ompsdk_tracked(scratch.path())["cuts"] == 1);
+    let prompts = cut_prompts(&fake);
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains(&brief.display().to_string()), "{}", prompts[0]);
+    assert_eq!(fake.count("session/resume"), 1);
+    let entry = ompsdk_tracked(scratch.path());
+    assert_eq!(entry["cut"], false, "{entry}");
+    assert_eq!(entry["loaded"], true, "{entry}");
+}
+
+#[test]
+fn ompsdk_pool_restart_parks_a_waiting_session_until_its_question_is_answered() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    fake.restart();
+    thread::sleep(Duration::from_millis(100));
+    for _ in 0..10 {
+        memo.tick(&db, &launch);
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(fake.count("session/resume"), 0, "a session that waits on the user was reopened");
+    let (card, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
+    assert!(swipe.is_none(), "the restart finished the question card");
+    assert_eq!(ompsdk_tracked(scratch.path())["parked"], true);
+
+    let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
+    ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
+    let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
+    assert_eq!(swipe.unwrap().reason.as_deref(), Some("queued for ompsdk"));
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || !cut_prompts(&fake).is_empty());
+    let prompt = &cut_prompts(&fake)[0];
+    assert!(prompt.contains("\"Which colour?\" was answered with: blue"), "{prompt}");
+    assert_eq!(fake.count("session/resume"), 1);
+}
+
+#[test]
+fn ompsdk_pool_restart_puts_a_planning_session_back_in_plan_mode() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "SCENARIO-hold.md", "Plan the change");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    wait_for(&fake, |m| m["method"] == "session/prompt");
+    let mut memo = ompsdk_track::Memo::default();
+    memo.tick(&db, &launch);
+    fake.restart();
+    thread::sleep(Duration::from_millis(100));
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || !cut_prompts(&fake).is_empty());
+    let sent = fake.sent();
+    let last = |found: &dyn Fn(&Value) -> bool| sent.iter().rposition(found).unwrap();
+    let resume = last(&|m| m["method"] == "session/resume");
+    let mode = last(&|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == "mode" && m["params"]["value"] == "plan");
+    let prompt = last(&|m| m["method"] == "session/prompt");
+    assert!(resume < mode && mode < prompt, "resume {resume}, plan mode {mode}, prompt {prompt}");
+}
+
+// Triage restarts while a question is open. The daemon keeps the session and its question. An
+// answer given before the poll bound the session again waits, then goes to the replayed question.
+
+#[test]
+fn ompsdk_answer_given_before_the_poll_bound_the_session_reaches_its_question() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    fake.drop_clients();
+    thread::sleep(Duration::from_millis(100));
+    let (card, _) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
+    let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
+    ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
+    let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
+    assert_eq!(swipe.unwrap().reason.as_deref(), Some("queued for ompsdk"));
+    let accepted = || fake.find(|m| m["id"] == "ask-1" && m.get("result").is_some());
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || accepted().is_some());
+    assert_eq!(accepted().unwrap()["result"], json!({"action": "accept", "content": {"q0": "blue"}}));
+    assert!(cut_prompts(&fake).is_empty(), "a turn that still ran got the cut prompt");
+}
+
+#[test]
+fn ompsdk_close_returns_at_once_and_the_poll_releases_the_session_after_a_wait() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    wait_for(&fake, |m| m["method"] == "session/prompt");
+    let card = ompsdk_card(&db, "info:ompsdk:sid-1:e1", Kind::Info);
+    fake.fail_once("session/close", "ompsdk: restarted: session/close unanswered 600 s");
+    close(&db, &card, None, &launch).unwrap();
+    assert_eq!(fake.count("session/close"), 0, "the close waited on the daemon");
+    let (_, swipe) = db.card(&card.id).unwrap().unwrap();
+    assert_eq!(swipe.unwrap().text.as_deref(), Some("Close"));
+
+    let mut memo = ompsdk_track::Memo::default();
+    let mut now = events::now_ms();
+    // The second poll sends the close, which fails. The polls after it fall inside its wait.
+    for _ in 0..20 {
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
+        now += 100;
+    }
+    assert_eq!(fake.count("session/close"), 1, "a failed close went out again before its wait passed");
+    now += 10_000;
+    for _ in 0..3 {
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
+        now += 100;
+    }
+    assert_eq!(fake.count("session/close"), 2);
+    let state: Value = serde_json::from_str(&fs::read_to_string(scratch.path().join("ompsdk-sessions.json")).unwrap()).unwrap();
+    assert_eq!(state["sessions"], json!([]), "the entry is dropped");
+}
+
+// A restart cuts every session at once. The poll reopens them one a poll, never all together.
+
+#[test]
+fn ompsdk_poll_reopens_one_cut_session_a_poll() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let entries: Vec<Value> = ["a", "b", "c"]
+        .iter()
+        .map(|sid| json!({"sid": sid, "cwd": "/work/project", "loaded": true}))
+        .collect();
+    fs::write(scratch.path().join("ompsdk-sessions.json"), json!({"sessions": entries}).to_string()).unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    let mut now = events::now_ms();
+    // The first poll learns that the daemon holds none of them.
+    ompsdk_track::tick(&mut memo, &db, &launch, now);
+    assert_eq!(fake.count("session/resume"), 0);
+    for expected in 1..=3 {
+        now += 1_000;
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
+        assert_eq!(fake.count("session/resume"), expected);
+    }
+}
+
+#[test]
+fn ompsdk_launch_tries_again_after_the_pool_restarts_under_it() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
+    fake.fail_once("session/new", "ompsdk: restarted: session/new unanswered 600 s");
+    let pane = ompsdk_track::launch_new(&db, &ompsdk_launch(&fake), "/work/project", &brief, Start::Goal, None, "Hold it");
+    assert_eq!(pane.as_deref(), Ok("ompsdk:sid-1"));
+    assert_eq!(fake.count("session/new"), 2);
+}
+
+#[test]
+fn ompsdk_session_that_cannot_reopen_stops_with_a_card() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    wait_for(&fake, |m| m["method"] == "session/prompt");
+    let mut memo = ompsdk_track::Memo::default();
+    memo.tick(&db, &launch);
+    fake.restart();
+    thread::sleep(Duration::from_millis(100));
+    fake.fail_once("session/resume", "ACP session not found: sid-1");
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || stopped_card(&db).is_some());
+    assert_eq!(fake.count("session/resume"), 1, "a resume omp refused went out again");
+    assert!(cut_prompts(&fake).is_empty());
+    assert_eq!(ompsdk_tracked(scratch.path())["parked"], true);
+}
+
+#[test]
+fn ompsdk_waits_double_up_to_the_longest_with_at_most_a_quarter_added() {
+    for (tries, wait) in [(1, 1_000), (2, 2_000), (4, 8_000), (40, 60_000)] {
+        let waited = ompsdk_track::wait_ms((1_000, 60_000), tries);
+        assert!((wait..=wait + wait / 4).contains(&waited), "try {tries} waited {waited}");
+    }
 }

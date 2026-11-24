@@ -1097,7 +1097,7 @@ pub fn close(db: &Db, card: &Card, note: Option<&str>, launch: &Launch) -> Resul
         return dsh_track::close(db, card, sid, note, launch);
     }
     if let Some(sid) = ompsdk::session_id(card) {
-        return ompsdk_track::close(db, card, sid, note, launch);
+        return ompsdk_track::close(db, card, sid, note);
     }
     let reason = match card.source.pane.as_deref() {
         None => None,

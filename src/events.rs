@@ -191,7 +191,7 @@ pub struct Swipe {
 }
 
 /// One answer of a multi-question ask: the chosen option index, or custom text.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Answer {
     pub option: Option<usize>,
     pub text: Option<String>,

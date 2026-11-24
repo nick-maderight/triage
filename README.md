@@ -132,15 +132,27 @@ Run `triage serve --engine ompsdk`, or choose Engine `ompsdk` in the session she
 
 The model list comes from omp's catalog at `/v1/models?engine=ompsdk`. Selectors use `provider/id[:level]` or `@role[:level]`. Triage resolves a role from `modelRoles` in `~/.omp/agent/config.yml` before it opens the session.
 
-Cards use source `ompsdk://session/<id>`. Form and ask-tool questions become ask cards, and plan approvals become plan cards. Plan into approves its first plan and switches to the execution model. When that approval fails, triage tries again every 30 seconds for 15 minutes before it shows a plan card. Triage declines confirmation requests and grants permissions with `allow_always` when available, then `allow_once`.
+Cards use source `ompsdk://session/<id>`. Form and ask-tool questions become ask cards, and plan approvals become plan cards. Plan into approves its first plan and switches to the execution model. When that approval fails, triage tries again after waits that double from 5 seconds, and shows a plan card after eight failures. Triage declines confirmation requests and grants permissions with `allow_always` when available, then `allow_once`.
 
-A reply with a status line becomes a `done:ompsdk:` report card, and the session closes. A reply without a status line gets "Continue the triage brief..." up to five times before triage reports it. The daemon keeps each ompsdk session for up to an hour while triage restarts or stays down, then replays waiting questions when triage resumes the session. Triage never resumes a turn the daemon reports as running, however long it runs. It sends "Continue where you stopped." when the connection dropped, when a turn ended without a final transcript entry, or when a daemon or pool restart aborted the turn, up to five times before it closes the session. A launch that cannot finish closes the session it opened. When a `session/new` reply arrives after the call timed out, triage closes that session too.
+A reply with a status line becomes a `done:ompsdk:` report card, and the session closes. A reply without a status line gets "Continue the triage brief..." up to five times before triage reports it. Triage never resumes a turn the daemon reports as running, however long it runs. A launch that cannot finish closes the session it opened. When a `session/new` reply arrives after the call timed out, triage closes that session too.
 
-A pool with many sessions answers late, and triage waits for it. Each call to the daemon waits up to 15 minutes, longer than the daemon's 10-minute check for a wedged pool. The ompsdk poll runs apart from the tmux and dsh polls. A call that waits on a busy pool never delays the rest of the inbox.
+A pool with many sessions answers late, and triage waits for it. Each call to the daemon waits up to 15 minutes, longer than the daemon's 10-minute check for a wedged pool. A call is never sent a second time while its first copy waits. The ompsdk poll runs apart from the tmux and dsh polls. A call that waits on a busy pool never delays the rest of the inbox.
 
 A dispatch goes to the engine the sheet names. With Engine `ompsdk` an ompsdk card's brief continues the card's own session and ignores `new_window`. Picking `omp` for that card opens an omp window instead.
 
-Open in CLI (`O`) closes the daemon session and opens `omp --resume=<transcript>` in a tmux window. Triage refuses when another omp holds a lease. If a turn was running, the new window adds "Continue where you stopped." Close (`C`) closes the session. Request final report (`r`) works only while it is idle. Peek and Jump are not offered.
+Open in CLI (`O`) closes the daemon session and opens `omp --resume=<transcript>` in a tmux window. Triage refuses when another omp holds a lease. If a turn was running, or a restart had cut it, the new window adds "Continue where you stopped." Close (`C`) closes the session. Request final report (`r`) works only while it is idle. Peek and Jump are not offered.
+
+#### Sessions after a restart
+
+Sessions come back on their own after a restart of triage, of the daemon, or of its pool. `ompsdk-sessions.json` beside the database holds what brings each one back. That is its brief, whether it still plans, the model an approved plan runs on, and the answers given in its current turn.
+
+When triage reconnects, it asks the daemon which sessions it still holds. A session the daemon holds is bound again, and the daemon replays its waiting questions and a turn end it missed. A session the daemon lost had its turn cut. Triage reopens it, sets plan mode and the execution model again, and sends "Continue where you stopped." with the brief path and the answers given before the cut. One session is reopened per poll. A restart that cuts every session never sends the pool all the resumes at once.
+
+A session that was waiting on a question when it was cut stays parked. Its card stays in the inbox, and the session costs the pool nothing until the answer comes. The answer then goes out with the cut prompt.
+
+An answer and Close return at once. An answer whose question is out of reach is kept, and the poll delivers it. Close resolves the cards, and the poll tells the daemon. Launch, dispatch, Request final report and Open in CLI wait for the pool. When the daemon or its pool fails one of them, it runs again after waits that double from 2 seconds to a minute, for up to 15 minutes.
+
+Every wait before a retry doubles, and triage adds up to a quarter more at random. Reconnects wait from 1 second to a minute. A failed call for one session waits from 5 seconds to 10 minutes. A session whose turn is cut again within 30 minutes of a revive waits a minute before the next one, and each further wait doubles up to 30 minutes. After five revives in a row triage stops and writes a card that says so. The session stays parked, and a brief dispatched to that card continues it. A session omp cannot reopen stops with a card the same way.
 
 ## Event input
 

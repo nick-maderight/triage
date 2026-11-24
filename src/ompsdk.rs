@@ -5,7 +5,7 @@
 use crate::cards::THINKING_LEVELS;
 use crate::events::Card;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// How long a call waits for its reply. A busy pool answers late, and its calls queue. The
 /// daemon fails a call itself once the pool child has been silent for its `stuck_seconds`
 /// (600 by default). This timeout outlasts that, and a slow pool never fails a call here.
+/// A call is never sent twice while its first copy waits, which would pile work on a busy pool.
 const CALL_TIMEOUT: Duration = Duration::from_secs(900);
 /// The pool the triage sessions run in. `pools.toml` names it.
 const POOL: &str = "triage";
@@ -85,9 +86,29 @@ enum Waiting {
 /// What the connection knows about one session.
 #[derive(Default, Clone)]
 struct Session {
+    /// Whether this connection started or resumed the session.
+    bound: bool,
     turn: Turn,
     options: Value,
     elicitations: Vec<Elicitation>,
+}
+
+/// What a resume found.
+pub struct Resumed {
+    /// Whether a turn is running in the session.
+    pub running: bool,
+    /// Whether the daemon still held the session. False means it came back from disk, after
+    /// a restart of the daemon or its pool cut whatever turn the session ran.
+    pub held: bool,
+}
+
+/// Whether an error came from the daemon, its pool or the socket, and not from the session.
+/// A later try can succeed after such an error. An error omp itself gave will repeat.
+pub fn transient(error: &str) -> bool {
+    ["ompsdk connection closed", "ompsdk write failed", "could not reach ompsdk", "ompsdk: restarted", "ompsdk: omp acp", "ompsdk: cannot start"]
+        .iter()
+        .any(|start| error.starts_with(start))
+        || error.ends_with(" timed out")
 }
 
 /// Where a session's turn stands, as the daemon reports it.
@@ -158,24 +179,47 @@ impl Client {
             .ok_or("session/new gave no sessionId")?
             .to_owned();
         self.store_options(&sid, &result);
+        self.with(&sid, |session| session.bound = true);
         Ok(sid)
     }
 
-    /// Reopen a session the daemon no longer holds. Returns whether a turn is still running in it.
-    pub fn resume(&self, sid: &str, cwd: &str) -> Result<bool, String> {
+    /// Bind a session to this connection, which reopens it from disk when the daemon no longer holds it.
+    pub fn resume(&self, sid: &str, cwd: &str) -> Result<Resumed, String> {
         let result = self.call(
             "session/resume",
             json!({"sessionId": sid, "cwd": cwd, "mcpServers": []}),
         )?;
         self.store_options(sid, &result);
-        let running = result["_meta"]["ompsdk"]["running"].as_bool().unwrap_or(false);
+        let meta = &result["_meta"]["ompsdk"];
+        let running = meta["running"].as_bool().unwrap_or(false);
         self.with(sid, |session| {
+            session.bound = true;
             // A turn end that arrived before this reply is already recorded, and the reply must not undo it.
             if !matches!(session.turn, Turn::Ended(_)) {
                 session.turn = if running { Turn::Running } else { Turn::Ended("resumed".to_owned()) };
             }
         });
-        Ok(running)
+        // A daemon that does not say reads as holding the session, which leaves the turn alone.
+        Ok(Resumed { running, held: meta["held"].as_bool().unwrap_or(true) })
+    }
+
+    /// The sessions the daemon holds in the triage pool. The daemon answers this itself, and a
+    /// busy or wedged pool does not delay it.
+    pub fn held(&self) -> Result<HashSet<String>, String> {
+        let status = self.call("_ompsdk/status", Value::Null)?;
+        Ok(status["pools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|pool| pool["name"] == POOL)
+            .flat_map(|pool| pool["sessions"].as_array().into_iter().flatten())
+            .filter_map(|session| session["id"].as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// Whether this connection started or resumed the session. A reconnect knows none.
+    pub fn bound(&self, sid: &str) -> bool {
+        self.snapshot(sid).bound
     }
 
     /// Set one config option, such as `mode`, `model` or `thinking`, to `value`.
