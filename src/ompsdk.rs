@@ -75,6 +75,9 @@ enum Waiting {
     Call(mpsc::Sender<Result<Value, String>>),
     /// A prompt. Its reply ends the session's turn.
     Prompt(String),
+    /// A `session/new` whose caller timed out. The daemon still binds its session to this
+    /// connection. Triage closes that session when the reply arrives.
+    Abandoned,
 }
 
 /// What the connection knows about one session.
@@ -286,7 +289,15 @@ impl Client {
         match rx.recv_timeout(CALL_TIMEOUT) {
             Ok(result) => result,
             Err(_) => {
-                self.link.forget(&id);
+                let mut pending = self.link.pending.lock().unwrap_or_else(|poison| poison.into_inner());
+                if pending.remove(&id).is_none() {
+                    // The reply won the race and is being delivered now.
+                    drop(pending);
+                    return rx.recv().unwrap_or_else(|_| Err(format!("{method} timed out")));
+                }
+                if method == "session/new" {
+                    pending.insert(id, Waiting::Abandoned);
+                }
                 Err(format!("{method} timed out"))
             }
         }
@@ -397,6 +408,13 @@ impl Link {
                     .unwrap_or("error")
                     .to_owned();
                 self.live_entry(&sid, |session| session.turn = Turn::Ended(stop));
+            }
+            Some(Waiting::Abandoned) => {
+                if let Some(sid) = message["result"]["sessionId"].as_str() {
+                    // The close goes unregistered. Its reply finds no waiter and is dropped.
+                    let id = format!("{}-{}", self.prefix, self.next.fetch_add(1, Ordering::SeqCst));
+                    let _ = self.send(&json!({"jsonrpc": "2.0", "id": id, "method": "session/close", "params": {"sessionId": sid}}));
+                }
             }
             None => {}
         }
@@ -608,5 +626,26 @@ mod tests {
         assert!(is_confirm(&json!({"properties": {"value": {"type": "boolean"}}})));
         assert!(!is_confirm(&json!({"properties": {"value": {"type": "string"}}})));
         assert!(!is_confirm(&json!({"properties": {"value": {"type": "boolean"}, "q0": {}}})));
+    }
+
+    #[test]
+    fn late_session_new_reply_closes_the_abandoned_session() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let link = Link {
+            writer: Mutex::new(ours),
+            prefix: "t".to_owned(),
+            next: AtomicU64::new(0),
+            open: AtomicBool::new(true),
+            pending: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
+        };
+        link.pending.lock().unwrap().insert("t-9".to_owned(), Waiting::Abandoned);
+        link.route(json!({"jsonrpc": "2.0", "id": "t-9", "result": {"sessionId": "sid-late"}}));
+        let mut line = String::new();
+        BufReader::new(theirs).read_line(&mut line).unwrap();
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(sent["method"], "session/close");
+        assert_eq!(sent["params"]["sessionId"], "sid-late");
+        assert!(link.pending.lock().unwrap().is_empty());
     }
 }

@@ -147,9 +147,11 @@ Signal a `user-error' when CARD is no longer in the queue."
 
 (defun triage-inbox--read-only-notice (card)
   "Return the notice that explains how to answer CARD outside the deck."
-  (if (triage-card-dsh-id card)
-      "Answer in the dsh web UI. This prompt is read only here."
-    "Answer in the pane. This prompt is read only here."))
+  (cond ((triage-card-dsh-id card)
+         "Answer in the dsh web UI. This prompt is read only here.")
+        ((triage-card-ompsdk-id card)
+         "Answer in the CLI. This prompt is read only here.")
+        (t "Answer in the pane. This prompt is read only here.")))
 
 (defun triage-inbox--set-history (&rest args)
   "Merge the key and value pairs in ARGS into the history summary."

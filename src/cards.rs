@@ -1401,7 +1401,7 @@ fn launch_brief(
         }
         return dsh_track::launch_brief(card, launch, brief, image);
     }
-    if ompsdk::session_id(card).is_some() || launch.engine == Engine::Ompsdk {
+    if launch.engine == Engine::Ompsdk {
         return ompsdk_track::launch_brief(db, card, launch, brief, start, image);
     }
     // Only a pane that finished its turn takes typed text. A plan review also reads as waiting,
@@ -3452,7 +3452,7 @@ fn finding_pane_for_answer(
         tmux::finding_pane(&card.id, option, note, label).map_err(|error| error.to_string())?
     };
     let pending_pane = if tagged_pane.is_none() {
-        recover_pending_finding_pane(launch, swipe, option, note, label)?
+        recover_pending_finding_pane(db, launch, swipe, option, note, label)?
     } else {
         None
     };
@@ -3644,6 +3644,7 @@ fn finding_answers_brief(
 }
 
 fn recover_pending_finding_pane(
+    db: &Db,
     launch: &Launch,
     swipe: Option<&Swipe>,
     option: usize,
@@ -3661,14 +3662,15 @@ fn recover_pending_finding_pane(
         return Ok(None);
     };
     // With the bridge unreachable, the session is unconfirmed and the finding launches anew.
-    let listed = match pane.strip_prefix("dsh:") {
-        Some(sid) => dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)
+    let listed = if let Some(sid) = pane.strip_prefix("dsh:") {
+        dsh::connect(launch.dsh_host.as_deref(), dsh::ACTION_TIMEOUT)
             .and_then(|client| client.sessions())
-            .is_ok_and(|(_, sessions, _)| sessions.iter().any(|session| session.session_id == sid)),
-        None => {
-            let panes = tmux::list_panes().map_err(|error| error.to_string())?;
-            panes.iter().any(|candidate| candidate.id == pane)
-        }
+            .is_ok_and(|(_, sessions, _)| sessions.iter().any(|session| session.session_id == sid))
+    } else if let Some(sid) = pane.strip_prefix("ompsdk:") {
+        ompsdk_track::tracked(db, sid)
+    } else {
+        let panes = tmux::list_panes().map_err(|error| error.to_string())?;
+        panes.iter().any(|candidate| candidate.id == pane)
     };
     if !listed {
         return Ok(None);

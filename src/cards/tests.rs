@@ -9818,6 +9818,8 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
     };
     // The prompt id and the elicitation id that the turn waits on.
     let mut waiting: Option<(Value, String)> = None;
+    // Whether the next model change fails once, and whether a turn runs with no reply.
+    let (mut flaky, mut holding) = (false, false);
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else { break };
         let message: Value = serde_json::from_str(&line).unwrap();
@@ -9841,10 +9843,20 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
                     dropped.store(true, std::sync::atomic::Ordering::SeqCst);
                     return;
                 }
+                match fake_scenario(text) {
+                    // The turn runs on and never answers.
+                    "hold" => {
+                        holding = true;
+                        continue;
+                    }
+                    // The first model change fails, as it does when the pool is too busy to answer.
+                    "planflaky" => flaky = true,
+                    _ => {}
+                }
                 let asked = match fake_scenario(text) {
                     "ask" => Some(("ask-1", "Which colour?", ask_schema())),
                     "confirm" => Some(("confirm-1", "Keep it?", json!({"type": "object", "properties": {"value": {"type": "boolean"}}}))),
-                    "plan" => Some(("plan-1", "Approve plan and start implementation?", plan_schema())),
+                    "plan" | "planflaky" => Some(("plan-1", "Approve plan and start implementation?", plan_schema())),
                     _ => None,
                 };
                 match asked {
@@ -9870,7 +9882,12 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Valu
                 json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": true}}})
             }
             // A turn that waits on an elicitation is still running, as the daemon reports it.
-            "session/resume" => json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": waiting.is_some()}}}),
+            "session/resume" => json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": waiting.is_some() || holding}}}),
+            "session/set_config_option" if flaky && message["params"]["configId"] == "model" => {
+                flaky = false;
+                send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "session/set_config_option timed out"}}));
+                continue;
+            }
             "session/set_config_option" => json!({"configOptions": fake_options()}),
             "_session/steering" => json!({"outcome": "promptRequired", "queue": 0}),
             _ => json!({}),
@@ -10104,6 +10121,56 @@ fn ompsdk_plan_into_approves_the_first_plan_without_a_card() {
     assert!(fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["value"] == "anthropic/claude-smol").is_some());
 }
 
+#[test]
+fn ompsdk_plan_into_retries_a_failed_approval_without_a_card() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "SCENARIO-planflaky.md", "Plan the change");
+    let start = Start::PlanInto(Some("anthropic/claude-smol"), None);
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut now = events::now_ms();
+    while fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_none() {
+        assert!(Instant::now() < deadline, "the plan was never approved");
+        assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none(), "a failed auto-approval wrote a plan card");
+        ompsdk_track::tick(&mut tracker.ompsdk, &db, &launch, now);
+        now += 31_000;
+        thread::sleep(Duration::from_millis(20));
+    }
+    let model_sets = fake.sent().iter().filter(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == "model").count();
+    assert_eq!(model_sets, 2);
+    assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
+}
+
+#[test]
+fn ompsdk_long_running_turn_is_never_resumed() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    wait_for(&fake, |m| m["method"] == "session/prompt");
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    let mut now = events::now_ms();
+    // One poll a second for two minutes, far past the polls a finished turn's transcript gets.
+    for _ in 0..120 {
+        ompsdk_track::tick(&mut tracker.ompsdk, &db, &launch, now);
+        now += 1_000;
+        thread::sleep(Duration::from_millis(2));
+    }
+    let resumes = fake.sent().iter().filter(|m| m["method"] == "session/resume").count();
+    let prompts = fake.sent().iter().filter(|m| m["method"] == "session/prompt").count();
+    // Only the first poll on a fresh connection resumes held sessions.
+    assert!(resumes <= 1, "a running turn was resumed {resumes} times");
+    assert_eq!(prompts, 1, "a running turn was prompted again");
+}
+
 /// Write the transcript the fake session's turn leaves in `home`, where omp keeps it.
 fn write_ompsdk_transcript(home: &Path, lines: &[Value]) {
     let dir = home.join(".omp/agent/sessions/-work-project");
@@ -10170,6 +10237,36 @@ fn ompsdk_continuation_child() {
         .filter(|m| m["method"] == "session/prompt" && m["params"]["prompt"][0]["text"].as_str().is_some_and(|text| text.starts_with("Continue the triage brief at")))
         .count();
     assert_eq!(continuations, 5);
+}
+
+#[test]
+fn ompsdk_aborted_turn_is_continued_before_it_retires() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    run_child("ompsdk_aborted_child", scratch.path(), Some(&scratch.path().join("home")), None);
+}
+
+#[test]
+fn ompsdk_aborted_child() {
+    let Some(root) = child_root("ompsdk_aborted_child") else {
+        return;
+    };
+    // A pool restart aborts the running turn, which leaves an aborted assistant entry.
+    let aborted = json!({"type": "message", "id": "e1", "message": {"role": "assistant", "stopReason": "aborted", "content": []}});
+    write_ompsdk_transcript(&root.join("home"), &[aborted]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Restart it").unwrap();
+    let mut tracker = Tracker::from_db(&db).unwrap();
+    ompsdk_poll_until(&mut tracker, &db, &launch, |_| fake.find(|m| m["method"] == "session/close").is_some());
+    let continued = fake
+        .sent()
+        .iter()
+        .filter(|m| m["method"] == "session/prompt" && m["params"]["prompt"][0]["text"] == "Continue where you stopped.")
+        .count();
+    assert_eq!(continued, 5);
 }
 
 fn wait_until(what: &str, done: impl Fn() -> bool) {

@@ -373,9 +373,10 @@ DRAFT supplies the text and ACTIONS-FN supplies the `other' action."
             "\n"))
   (triage-render--gap)
   (insert triage-render--indent
-          (if (equal (alist-get 'engine card) "dsh")
-              "Answer in the dsh web UI. This prompt is read only here."
-            "Answer in the pane. This prompt is read only here.")
+          (pcase (alist-get 'engine card)
+            ("dsh" "Answer in the dsh web UI. This prompt is read only here.")
+            ("ompsdk" "Answer in the CLI. This prompt is read only here.")
+            (_ "Answer in the pane. This prompt is read only here."))
           "\n")
   (triage-render--gap))
 
