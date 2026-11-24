@@ -2942,7 +2942,7 @@ const S = {
       ? 'Optional direction for the session'
       : 'Ask a question, give a task, or start a chat';
     $('#compose-target').hidden = Boolean(c);
-    $('#compose-session-pair').hidden = field.value === 'dsh' || field.value === 'ompsdk';
+    $('#compose-session-pair').hidden = ['dsh', 'ompsdk'].includes(field.value || PICKERS['compose-engine'].fallback);
     setSheetMode(mode, c);
     setSheetTask(task, c);
     $('#compose-hint').textContent = '';
@@ -2967,7 +2967,7 @@ const S = {
     $('#compose-target').hidden = false;
     if (field.value !== S.sheetEngine) setPickerValue('compose-engine', S.sheetEngine);
     if (!same) clearModels('compose');
-    $('#compose-session-pair').hidden = field.value === 'dsh' || field.value === 'ompsdk';
+    $('#compose-session-pair').hidden = ['dsh', 'ompsdk'].includes(field.value || daemon);
     setSheetMode(S.composeMode, null);
     setSheetTask(S.composeTask, null);
     $('#compose-hint').textContent = '';

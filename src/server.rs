@@ -451,6 +451,10 @@ async fn answer(
     .await
 }
 
+fn shares_selectors(a: crate::cards::Engine, b: crate::cards::Engine) -> bool {
+    a == b || (a != crate::cards::Engine::Dsh && b != crate::cards::Engine::Dsh)
+}
+
 /// A new engine drops the daemon's model and thinking level, unless the old and new engines share their selectors.
 fn apply_launch_choices(
     launch: &mut crate::cards::Launch,
@@ -460,15 +464,11 @@ fn apply_launch_choices(
 ) -> Result<(), String> {
     if let Some(engine) = engine.map(str::trim).filter(|engine| !engine.is_empty()) {
         let engine = crate::cards::Engine::parse(engine).ok_or_else(|| format!("unknown engine {engine}"))?;
-        if engine != launch.engine {
-            // omp and ompsdk take the same selectors and levels, so a switch between them keeps the choice.
-            let shared = launch.engine != crate::cards::Engine::Dsh && engine != crate::cards::Engine::Dsh;
-            launch.engine = engine;
-            if !shared {
-                launch.model = None;
-                launch.thinking = None;
-            }
+        if !shares_selectors(launch.engine, engine) {
+            launch.model = None;
+            launch.thinking = None;
         }
+        launch.engine = engine;
     }
     if let Some(model) = crate::cards::engine_selector(launch.engine, model)? {
         launch.model = Some(model.to_owned());
@@ -1003,7 +1003,7 @@ async fn models(
         },
         None => state.launch.engine,
     };
-    let daemon = state.launch.engine == engine;
+    let daemon = shares_selectors(state.launch.engine, engine);
     if engine == crate::cards::Engine::Dsh {
         // dsh's own catalog decides the list: its settings add and remove model
         // routes, and a pair triage remembered would be rejected at launch.

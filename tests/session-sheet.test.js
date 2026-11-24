@@ -362,6 +362,22 @@ test('Clear turns the card sheet back into a plain new session', async () => {
   });
 });
 
+test('Default on an ompsdk daemon hides the tmux session picker', () => {
+  const ui = sheet([report, finding], 'ompsdk'),
+    pair = ui.elements['#compose-session-pair'];
+  ui.context.openSheet(null, 'goal', 'fix');
+  assert.equal(pair.hidden, true, 'a plain session on Default');
+  ui.elements['#compose'].close();
+  ui.context.openSheet(report, 'goal', 'investigate');
+  assert.equal(pair.hidden, false, 'a pane card preselects omp');
+  ui.context.clearSheetCard();
+  assert.equal(pair.hidden, true, 'Clear goes back to Default');
+  ui.elements['#compose'].close();
+  ui.state.sheetEngine = 'omp';
+  ui.context.openSheet(null, 'goal', 'fix');
+  assert.equal(pair.hidden, false, 'a picked omp offers the picker');
+});
+
 // A plain session sends its mode and its task, and no note. The task is the only part of the
 // brief that a task changes.
 test('a plain session sends its mode and task with no note', async () => {

@@ -347,7 +347,7 @@ One key changes an option, the way a Magit menu does."
     ((or "x" "X") (and (equal triage-launch--mode "plan-into") (not (triage-launch--dsh-p))))
     ("d" (memq triage-launch--kind '(compose context)))
     ("s" (and (memq triage-launch--kind '(compose context))
-              (not (triage-launch--dsh-p))))
+              (not (member (triage-launch--effective-engine) '("dsh" "ompsdk")))))
     (_ t)))
 
 (defun triage-launch--require (key)

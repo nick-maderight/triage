@@ -113,6 +113,25 @@
     (should-not (triage-launch--offers-p "X"))
     (should (string-match-p (regexp-quote triage-card-dsh-plan-into-help) (buffer-string)))))
 
+(ert-deftest triage-launch-test-ompsdk-offers-no-tmux-session ()
+  "An ompsdk launch, picked or the daemon's default, has no tmux session row."
+  (with-temp-buffer
+    (let ((triage-launch--daemon-engine "omp")
+          (triage-launch--engine nil))
+      (triage-launch-test--sheet 'compose "goal" "fix")
+      (should (string-match-p "^s  tmux session" (buffer-string)))
+      (should (triage-launch--offers-p "s"))
+      (setq triage-launch--daemon-engine "ompsdk")
+      (triage-launch--draw)
+      (should-not (triage-launch--offers-p "s"))
+      (should-not (string-match-p "^s  tmux session" (buffer-string)))
+      (setq triage-launch--engine "ompsdk")
+      (should-not (triage-launch--offers-p "s"))
+      (setq triage-launch--engine "omp")
+      (triage-launch--draw)
+      (should (string-match-p "^s  tmux session" (buffer-string)))
+      (should (triage-launch--offers-p "s")))))
+
 (ert-deftest triage-launch-test-engine-takes-one-key ()
   "The fixed Engine choices accept one mnemonic key instead of a completion prompt."
   (with-temp-buffer

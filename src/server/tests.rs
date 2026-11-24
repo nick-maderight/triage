@@ -2989,6 +2989,30 @@ async fn models_refuse_an_unknown_engine() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn omp_and_ompsdk_models_name_the_daemon_model_and_level() {
+    let launch = crate::cards::Launch {
+        engine: crate::cards::Engine::Ompsdk,
+        model: Some("@opus".to_owned()),
+        thinking: Some("xhigh".to_owned()),
+        ..crate::cards::Launch::default()
+    };
+    let state = state_with(Db::open(Path::new(":memory:")).unwrap(), launch);
+    for engine in ["ompsdk", "omp"] {
+        let response = super::models(
+            axum::extract::State(state.clone()),
+            axum::extract::Query(super::ModelsQuery { engine: Some(engine.to_owned()) }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(body["engine"], engine);
+        assert_eq!(body["default"], "@opus", "{engine} names the daemon model");
+        assert_eq!(body["default_thinking"], "xhigh", "{engine} names the daemon level");
+    }
+}
+
 #[test]
 fn engine_switch_drops_the_daemon_model_and_keeps_a_requested_thinking_level() {
     let mut launch = crate::cards::Launch {
@@ -3000,6 +3024,19 @@ fn engine_switch_drops_the_daemon_model_and_keeps_a_requested_thinking_level() {
     assert_eq!(launch.engine, crate::cards::Engine::Dsh);
     assert_eq!(launch.model, None);
     assert_eq!(launch.thinking.as_deref(), Some("high"));
+}
+
+#[test]
+fn engine_switch_between_omp_and_ompsdk_keeps_the_daemon_model_and_level() {
+    let mut launch = crate::cards::Launch {
+        model: Some("@opus".to_owned()),
+        thinking: Some("xhigh".to_owned()),
+        ..crate::cards::Launch::default()
+    };
+    super::apply_launch_choices(&mut launch, Some("ompsdk"), None, None).unwrap();
+    assert_eq!(launch.engine, crate::cards::Engine::Ompsdk);
+    assert_eq!(launch.model.as_deref(), Some("@opus"));
+    assert_eq!(launch.thinking.as_deref(), Some("xhigh"));
 }
 
 #[test]
