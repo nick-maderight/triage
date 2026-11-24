@@ -3917,7 +3917,6 @@ pub fn workdir(cwd: &str) -> Result<String, String> {
         return Err(format!("working directory must be absolute: {cwd}"));
     }
     Ok(path.components().collect::<PathBuf>().display().to_string())
-
 }
 fn workdir_note(cwd: &str) -> String {
     format!(
