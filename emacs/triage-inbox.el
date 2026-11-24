@@ -630,7 +630,7 @@ The session opens in its own window."
   (triage-inbox--act (triage-inbox--card 'restore) "restore" nil))
 
 (defun triage-inbox-open-cli ()
-  "Open the acp session behind the shown card in an omp window."
+  "Open the ompsdk session behind the shown card in an omp window."
   (interactive)
   (triage-inbox--act (triage-inbox--card 'cli) "cli" nil))
 

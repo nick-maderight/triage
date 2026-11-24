@@ -36,8 +36,8 @@ A status without a tone is stored as (LABEL), so its tone is nil.")
 (defconst triage-card--dsh-uri-prefix "dsh://session/"
   "URI prefix of a card that belongs to a dsh session.")
 
-(defconst triage-card--acp-uri-prefix "acp://session/"
-  "URI prefix of a card that belongs to an acp session.")
+(defconst triage-card--ompsdk-uri-prefix "ompsdk://session/"
+  "URI prefix of a card that belongs to an ompsdk session.")
 
 (defun triage-card--nonempty-p (value)
   "Return non-nil when VALUE is a non-empty string."
@@ -178,23 +178,23 @@ Port of cardStatus and legacyStatus in ui/app.js."
   "Return the dsh session id of CARD, or nil when it has none."
   (triage-card--session-id card "dsh" triage-card--dsh-uri-prefix))
 
-(defun triage-card-acp-id (card)
-  "Return the acp session id of CARD, or nil when it has none."
-  (triage-card--session-id card "acp" triage-card--acp-uri-prefix))
+(defun triage-card-ompsdk-id (card)
+  "Return the ompsdk session id of CARD, or nil when it has none."
+  (triage-card--session-id card "ompsdk" triage-card--ompsdk-uri-prefix))
 
 (defun triage-card-pane (card)
   "Return the pane that CARD came from, or nil.
-A dsh card names its pane as dsh:ID, and an acp card as acp:ID."
+A dsh card names its pane as dsh:ID, and an ompsdk card as ompsdk:ID."
   (or (alist-get 'pane (alist-get 'source card))
       (let ((id (triage-card-dsh-id card)))
         (and id (concat "dsh:" id)))
-      (let ((id (triage-card-acp-id card)))
-        (and id (concat "acp:" id)))))
+      (let ((id (triage-card-ompsdk-id card)))
+        (and id (concat "ompsdk:" id)))))
 
 (defun triage-card-shown-pane (card)
   "Return the pane of CARD that Peek and Jump can show, or nil.
-An acp session runs inside the ompsdk daemon, so it has no pane to show."
-  (and (not (triage-card-acp-id card)) (triage-card-pane card)))
+An ompsdk session runs inside the daemon, so it has no pane to show."
+  (and (not (triage-card-ompsdk-id card)) (triage-card-pane card)))
 
 (defun triage-card-answerable-p (card)
   "Return non-nil when CARD can be answered in this client.
@@ -464,7 +464,7 @@ Port resultMessage from ui/app.js."
          :offered (lambda (card _step) (triage-card-restorable-p card))
          :command 'triage-inbox-restore)
    (list 'cli :key "O" :label "Open in CLI"
-         :offered (lambda (card _step) (triage-card-acp-id card))
+         :offered (lambda (card _step) (triage-card-ompsdk-id card))
          :command 'triage-inbox-open-cli)
    (list 'ack :key "a" :label "Acknowledge"
          :offered (lambda (card _step) (equal (alist-get 'kind card) "info"))

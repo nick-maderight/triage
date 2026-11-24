@@ -9762,23 +9762,23 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 
-// acp engine. A fake ompsdk daemon on a unix socket answers the calls triage makes.
+// ompsdk engine. A fake ompsdk daemon on a unix socket answers the calls triage makes.
 
-static ACP_TESTS: Mutex<()> = Mutex::new(());
+static OMPSDK_TESTS: Mutex<()> = Mutex::new(());
 
-fn acp_lock() -> std::sync::MutexGuard<'static, ()> {
-    ACP_TESTS.lock().unwrap_or_else(|poison| poison.into_inner())
+fn ompsdk_lock() -> std::sync::MutexGuard<'static, ()> {
+    OMPSDK_TESTS.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// A fake daemon. It logs every line it reads and answers each call as the daemon does. Each
 /// connection gets its own thread. Triage can then reconnect after the daemon drops one.
-struct FakeAcp {
+struct FakeOmpsdk {
     socket: PathBuf,
     log: Arc<Mutex<Vec<Value>>>,
     dropped: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl FakeAcp {
+impl FakeOmpsdk {
     fn start(root: &Path) -> Self {
         let socket = root.join("ompsdk.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -9789,7 +9789,7 @@ impl FakeAcp {
             for (connection, stream) in listener.incoming().enumerate() {
                 let Ok(stream) = stream else { break };
                 let (served, gone) = (Arc::clone(&served), Arc::clone(&gone));
-                thread::spawn(move || fake_acp_serve(stream, connection + 1, &served, &gone));
+                thread::spawn(move || fake_ompsdk_serve(stream, connection + 1, &served, &gone));
             }
         });
         Self { socket, log, dropped }
@@ -9809,7 +9809,7 @@ impl FakeAcp {
     }
 }
 
-fn fake_acp_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Value>>, dropped: &std::sync::atomic::AtomicBool) {
+fn fake_ompsdk_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Value>>, dropped: &std::sync::atomic::AtomicBool) {
     let mut writer = stream.try_clone().unwrap();
     let mut send = |value: Value| {
         let mut line = value.to_string();
@@ -9850,17 +9850,17 @@ fn fake_acp_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Value>>
                 match asked {
                     Some((key, question, schema)) => {
                         send(json!({"jsonrpc": "2.0", "id": key, "method": "elicitation/create",
-                            "params": {"mode": "form", "sessionId": ACP_SID, "message": question, "requestedSchema": schema}}));
+                            "params": {"mode": "form", "sessionId": OMPSDK_SID, "message": question, "requestedSchema": schema}}));
                         waiting = Some((id, key.to_owned()));
                         continue;
                     }
                     None => json!({"stopReason": "end_turn"}),
                 }
             }
-            "session/new" => json!({"sessionId": ACP_SID, "configOptions": fake_options()}),
+            "session/new" => json!({"sessionId": OMPSDK_SID, "configOptions": fake_options()}),
             "session/resume" if connection > 1 => {
                 // The turn end reaches the new connection before the reply that still reports a run.
-                send(json!({"jsonrpc": "2.0", "method": "_ompsdk/turn_end", "params": {"sessionId": ACP_SID, "stopReason": "end_turn"}}));
+                send(json!({"jsonrpc": "2.0", "method": "_ompsdk/turn_end", "params": {"sessionId": OMPSDK_SID, "stopReason": "end_turn"}}));
                 json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": true}}})
             }
             // A turn that waits on an elicitation is still running, as the daemon reports it.
@@ -9873,7 +9873,7 @@ fn fake_acp_serve(stream: UnixStream, connection: usize, log: &Mutex<Vec<Value>>
     }
 }
 
-const ACP_SID: &str = "sid-1";
+const OMPSDK_SID: &str = "sid-1";
 
 fn fake_options() -> Value {
     json!([
@@ -9906,28 +9906,28 @@ fn fake_scenario(text: &str) -> &str {
     &rest[..rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len())]
 }
 
-fn acp_brief(root: &Path, name: &str, heading: &str) -> PathBuf {
+fn ompsdk_brief(root: &Path, name: &str, heading: &str) -> PathBuf {
     let path = root.join(name);
     fs::write(&path, format!("{heading}\n\nReply with the report.\n")).unwrap();
     path
 }
 
-fn acp_launch(fake: &FakeAcp) -> Launch {
-    Launch { engine: Engine::Acp, acp_socket: Some(fake.socket.clone()), ..Launch::default() }
+fn ompsdk_launch(fake: &FakeOmpsdk) -> Launch {
+    Launch { engine: Engine::Ompsdk, ompsdk_socket: Some(fake.socket.clone()), ..Launch::default() }
 }
 
-/// Poll the acp tracker until `done` holds. A reply reaches the connection a moment after its call.
-fn acp_poll_until(tracker: &mut Tracker, db: &Db, launch: &Launch, done: impl Fn(&Db) -> bool) {
+/// Poll the ompsdk tracker until `done` holds. A reply reaches the connection a moment after its call.
+fn ompsdk_poll_until(tracker: &mut Tracker, db: &Db, launch: &Launch, done: impl Fn(&Db) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done(db) {
-        assert!(Instant::now() < deadline, "acp poll never reached the expected state");
-        tracker.acp_tick(db, launch);
+        assert!(Instant::now() < deadline, "ompsdk poll never reached the expected state");
+        tracker.ompsdk_tick(db, launch);
         thread::sleep(Duration::from_millis(20));
     }
 }
 
 /// Wait until the fake logs a message that `found` picks.
-fn wait_for(fake: &FakeAcp, found: impl Fn(&Value) -> bool) -> Value {
+fn wait_for(fake: &FakeOmpsdk, found: impl Fn(&Value) -> bool) -> Value {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(message) = fake.find(&found) {
@@ -9939,19 +9939,19 @@ fn wait_for(fake: &FakeAcp, found: impl Fn(&Value) -> bool) -> Value {
 }
 
 #[test]
-fn acp_launch_sets_mode_model_and_thinking_then_prompts() {
-    let _lock = acp_lock();
+fn ompsdk_launch_sets_mode_model_and_thinking_then_prompts() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
+    let fake = FakeOmpsdk::start(scratch.path());
     let launch = Launch {
         model: Some("openai/gpt-x".to_owned()),
         thinking: Some("high".to_owned()),
-        ..acp_launch(&fake)
+        ..ompsdk_launch(&fake)
     };
-    let brief = acp_brief(scratch.path(), "brief.md", "Plan the change");
-    let pane = acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
-    assert_eq!(pane, "acp:sid-1");
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "Plan the change");
+    let pane = ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    assert_eq!(pane, "ompsdk:sid-1");
     let set = |config: &str, value: &str| {
         fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == config && m["params"]["value"] == value)
             .is_some()
@@ -9964,63 +9964,63 @@ fn acp_launch_sets_mode_model_and_thinking_then_prompts() {
 }
 
 #[test]
-fn acp_ask_question_becomes_a_card_and_answers_back() {
-    let _lock = acp_lock();
+fn ompsdk_ask_question_becomes_a_card_and_answers_back() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO ask");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:acp:sid-1:ask-1").unwrap().is_some());
-    let (card, swipe) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
+    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    let (card, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Ask);
     assert!(card.answerable);
-    assert_eq!(card.source.uri, "acp://session/sid-1");
-    assert_eq!(card.engine.as_deref(), Some("acp"));
+    assert_eq!(card.source.uri, "ompsdk://session/sid-1");
+    assert_eq!(card.engine.as_deref(), Some("ompsdk"));
     let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
     assert_eq!(labels, ["red", "blue"]);
     assert!(swipe.is_none());
     let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
-    acp_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
+    ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
     let accepted = wait_for(&fake, |m| m["id"] == "ask-1" && m.get("result").is_some());
     assert_eq!(accepted["result"], json!({"action": "accept", "content": {"q0": "blue"}}));
-    let (_, swipe) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
-    assert_eq!(swipe.unwrap().reason.as_deref(), Some("sent to acp"));
+    let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
+    assert_eq!(swipe.unwrap().reason.as_deref(), Some("sent to ompsdk"));
 }
 
 #[test]
-fn acp_confirm_is_declined_without_a_card() {
-    let _lock = acp_lock();
+fn ompsdk_confirm_is_declined_without_a_card() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO confirm");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Confirm it").unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO confirm");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Confirm it").unwrap();
     let declined = wait_for(&fake, |m| m["id"] == "confirm-1" && m["result"]["action"] == "decline");
     assert_eq!(declined["result"], json!({"action": "decline"}));
     let mut tracker = Tracker::from_db(&db).unwrap();
-    tracker.acp_tick(&db, &launch);
-    tracker.acp_tick(&db, &launch);
-    assert!(db.card("ask:acp:sid-1:confirm-1").unwrap().is_none());
+    tracker.ompsdk_tick(&db, &launch);
+    tracker.ompsdk_tick(&db, &launch);
+    assert!(db.card("ask:ompsdk:sid-1:confirm-1").unwrap().is_none());
 }
 
 #[test]
-fn acp_plan_approval_sets_the_executor_before_accepting() {
-    let _lock = acp_lock();
+fn ompsdk_plan_approval_sets_the_executor_before_accepting() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("plan:acp:sid-1:plan-1").unwrap().is_some());
-    let (card, _) = db.card("plan:acp:sid-1:plan-1").unwrap().unwrap();
+    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_some());
+    let (card, _) = db.card("plan:ompsdk:sid-1:plan-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Plan);
-    acp_track::answer_plan(
+    ompsdk_track::answer_plan(
         &db,
         &card,
         "sid-1",
@@ -10047,83 +10047,83 @@ fn acp_plan_approval_sets_the_executor_before_accepting() {
 }
 
 #[test]
-fn acp_plan_into_approves_the_first_plan_without_a_card() {
-    let _lock = acp_lock();
+fn ompsdk_plan_into_approves_the_first_plan_without_a_card() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
     let start = Start::PlanInto(Some("anthropic/claude-smol"), Some("low"));
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |_| {
+    ompsdk_poll_until(&mut tracker, &db, &launch, |_| {
         fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_some()
     });
-    assert!(db.card("plan:acp:sid-1:plan-1").unwrap().is_none());
+    assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
     assert!(fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["value"] == "anthropic/claude-smol").is_some());
 }
 
 /// Write the transcript the fake session's turn leaves in `home`, where omp keeps it.
-fn write_acp_transcript(home: &Path, lines: &[Value]) {
+fn write_ompsdk_transcript(home: &Path, lines: &[Value]) {
     let dir = home.join(".omp/agent/sessions/-work-project");
     fs::create_dir_all(&dir).unwrap();
     let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
     fs::write(dir.join("2026-01-01T00-00-00Z_sid-1.jsonl"), text).unwrap();
 }
 
-fn acp_entry(id: &str, text: &str) -> Value {
+fn ompsdk_entry(id: &str, text: &str) -> Value {
     json!({"type": "message", "id": id, "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": text}]}})
 }
 
 // omp reads the transcript from $HOME, so these run in a child process with its own HOME.
 
 #[test]
-fn acp_status_reply_reports_and_closes_the_session() {
-    let _lock = acp_lock();
+fn ompsdk_status_reply_reports_and_closes_the_session() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    run_child("acp_status_reply_child", scratch.path(), Some(&scratch.path().join("home")), None);
+    run_child("ompsdk_status_reply_child", scratch.path(), Some(&scratch.path().join("home")), None);
 }
 
 #[test]
-fn acp_status_reply_child() {
-    let Some(root) = child_root("acp_status_reply_child") else {
+fn ompsdk_status_reply_child() {
+    let Some(root) = child_root("ompsdk_status_reply_child") else {
         return;
     };
-    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
     let db = Db::open(&root.join("triage.db")).unwrap();
-    let fake = FakeAcp::start(&root);
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(&root, "brief.md", "SCENARIO plain");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Finish it").unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Finish it").unwrap();
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("done:acp:sid-1:e1").unwrap().is_some());
-    let (card, _) = db.card("done:acp:sid-1:e1").unwrap().unwrap();
+    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Info);
-    assert_eq!(card.engine.as_deref(), Some("acp"));
+    assert_eq!(card.engine.as_deref(), Some("ompsdk"));
     wait_for(&fake, |m| m["method"] == "session/close");
 }
 
 #[test]
-fn acp_reply_without_status_continues_five_times_then_reports() {
-    let _lock = acp_lock();
+fn ompsdk_reply_without_status_continues_five_times_then_reports() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    run_child("acp_continuation_child", scratch.path(), Some(&scratch.path().join("home")), None);
+    run_child("ompsdk_continuation_child", scratch.path(), Some(&scratch.path().join("home")), None);
 }
 
 #[test]
-fn acp_continuation_child() {
-    let Some(root) = child_root("acp_continuation_child") else {
+fn ompsdk_continuation_child() {
+    let Some(root) = child_root("ompsdk_continuation_child") else {
         return;
     };
-    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "Done, with no status line.")]);
+    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "Done, with no status line.")]);
     let db = Db::open(&root.join("triage.db")).unwrap();
-    let fake = FakeAcp::start(&root);
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(&root, "brief.md", "SCENARIO plain");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Continue it").unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Continue it").unwrap();
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("done:acp:sid-1:e1").unwrap().is_some());
+    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
     let continuations = fake
         .sent()
         .iter()
@@ -10140,16 +10140,16 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// An acp card for the fake's session, queued and unanswered.
-fn acp_card(db: &Db, id: &str, kind: Kind) -> Card {
+/// An ompsdk card for the fake's session, queued and unanswered.
+fn ompsdk_card(db: &Db, id: &str, kind: Kind) -> Card {
     let card = Card {
         id: id.to_owned(),
         kind,
         priority: 1,
         created_ms: events::now_ms(),
         source: Source {
-            uri: format!("acp://session/{ACP_SID}"),
-            label: "acp Gate fix".to_owned(),
+            uri: format!("ompsdk://session/{OMPSDK_SID}"),
+            label: "ompsdk Gate fix".to_owned(),
             cwd: "/work/project".to_owned(),
             pane: None,
             target: None,
@@ -10165,7 +10165,7 @@ fn acp_card(db: &Db, id: &str, kind: Kind) -> Card {
         level: Some("info".to_owned()),
         tool_call_id: None,
         report_due: false,
-        engine: Some("acp".to_owned()),
+        engine: Some("ompsdk".to_owned()),
         status: None,
     };
     db.insert_card(&card).unwrap();
@@ -10174,7 +10174,7 @@ fn acp_card(db: &Db, id: &str, kind: Kind) -> Card {
 
 /// A bin directory with the fake tmux and an `omp` whose session lease holds nothing.
 #[cfg(unix)]
-fn acp_cli_bin(root: &Path) -> PathBuf {
+fn ompsdk_cli_bin(root: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let bin = fake_tmux(root);
@@ -10188,66 +10188,66 @@ fn acp_cli_bin(root: &Path) -> PathBuf {
 // session settles once. No second prompt or cut follows.
 
 #[test]
-fn acp_turn_ended_while_away_is_settled_once_on_resume() {
-    let _lock = acp_lock();
+fn ompsdk_turn_ended_while_away_is_settled_once_on_resume() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let home = scratch.path().join("home");
-    run_child("acp_away_child", scratch.path(), Some(home.as_path()), None);
+    run_child("ompsdk_away_child", scratch.path(), Some(home.as_path()), None);
 }
 
 #[test]
-fn acp_away_child() {
-    let Some(root) = child_root("acp_away_child") else {
+fn ompsdk_away_child() {
+    let Some(root) = child_root("ompsdk_away_child") else {
         return;
     };
-    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
     let db = Db::open(&root.join("triage.db")).unwrap();
-    let fake = FakeAcp::start(&root);
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(&root, "brief.md", "SCENARIO away");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Away").unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO away");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Away").unwrap();
     wait_until("the daemon to drop the client", || fake.dropped());
     // The reader notices the closed socket a moment after the daemon drops it.
     thread::sleep(Duration::from_millis(100));
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("done:acp:sid-1:e1").unwrap().is_some());
+    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
     wait_for(&fake, |m| m["method"] == "session/close");
     let sent = fake.sent();
     let count = |method: &str| sent.iter().filter(|m| m["method"] == method).count();
     assert_eq!(count("session/resume"), 1, "the session resumed more than once");
     assert_eq!(count("session/prompt"), 1, "the turn was driven again");
     assert_eq!(count("session/close"), 1, "the session closed more than once");
-    let (card, _) = db.card("done:acp:sid-1:e1").unwrap().unwrap();
-    assert_eq!(card.engine.as_deref(), Some("acp"));
+    let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
+    assert_eq!(card.engine.as_deref(), Some("ompsdk"));
 }
 
 // Open in CLI hands the session to a tmux window. The fake tmux logs the window's command.
 
 #[test]
-fn acp_open_cli_resumes_a_running_turn_with_the_cut_prompt() {
-    let _lock = acp_lock();
+fn ompsdk_open_cli_resumes_a_running_turn_with_the_cut_prompt() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    let bin = acp_cli_bin(scratch.path());
+    let bin = ompsdk_cli_bin(scratch.path());
     let home = scratch.path().join("home");
-    run_child("acp_open_cli_running_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
+    run_child("ompsdk_open_cli_running_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
 }
 
 #[test]
-fn acp_open_cli_running_child() {
-    let Some(root) = child_root("acp_open_cli_running_child") else {
+fn ompsdk_open_cli_running_child() {
+    let Some(root) = child_root("ompsdk_open_cli_running_child") else {
         return;
     };
-    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "Still going.")]);
+    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "Still going.")]);
     let db = Db::open(&root.join("triage.db")).unwrap();
-    let fake = FakeAcp::start(&root);
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(&root, "brief.md", "SCENARIO ask");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO ask");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
     let mut tracker = Tracker::from_db(&db).unwrap();
-    acp_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:acp:sid-1:ask-1").unwrap().is_some());
-    acp_card(&db, "info:acp:sid-1:e1", Kind::Info);
-    let (ask, _) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
-    acp_track::open_cli(&db, &ask, "sid-1", &launch).unwrap();
+    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    ompsdk_card(&db, "info:ompsdk:sid-1:e1", Kind::Info);
+    let (ask, _) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
+    ompsdk_track::open_cli(&db, &ask, "sid-1", &launch).unwrap();
 
     let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
     let window = log.lines().find(|line| line.starts_with("new-window ")).unwrap();
@@ -10255,42 +10255,42 @@ fn acp_open_cli_running_child() {
     assert!(window.contains("2026-01-01T00-00-00Z_sid-1.jsonl"), "{window}");
     assert!(window.contains("'Continue where you stopped.'"), "{window}");
     assert_eq!(fake.sent().iter().filter(|m| m["method"] == "session/close").count(), 1);
-    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("acp-sessions.json")).unwrap()).unwrap();
+    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap()).unwrap();
     assert_eq!(state["sessions"], json!([]), "the entry is dropped");
-    let (_, swipe) = db.card("ask:acp:sid-1:ask-1").unwrap().unwrap();
+    let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     let swipe = swipe.unwrap();
     assert_eq!(swipe.action, "done");
     assert_eq!(swipe.text.as_deref(), Some("Open in CLI"));
     assert_eq!(swipe.reason.as_deref(), Some("opened in cli %42"));
-    let (_, other) = db.card("info:acp:sid-1:e1").unwrap().unwrap();
+    let (_, other) = db.card("info:ompsdk:sid-1:e1").unwrap().unwrap();
     assert_eq!(other.unwrap().reason.as_deref(), Some("opened in cli %42"));
 }
 
 #[test]
-fn acp_open_cli_hands_an_idle_session_over_without_a_cut_prompt() {
-    let _lock = acp_lock();
+fn ompsdk_open_cli_hands_an_idle_session_over_without_a_cut_prompt() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    let bin = acp_cli_bin(scratch.path());
+    let bin = ompsdk_cli_bin(scratch.path());
     let home = scratch.path().join("home");
-    run_child("acp_open_cli_idle_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
+    run_child("ompsdk_open_cli_idle_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
 }
 
 #[test]
-fn acp_open_cli_idle_child() {
-    let Some(root) = child_root("acp_open_cli_idle_child") else {
+fn ompsdk_open_cli_idle_child() {
+    let Some(root) = child_root("ompsdk_open_cli_idle_child") else {
         return;
     };
-    write_acp_transcript(&root.join("home"), &[acp_entry("e1", "Done.")]);
+    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "Done.")]);
     let db = Db::open(&root.join("triage.db")).unwrap();
-    let fake = FakeAcp::start(&root);
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(&root, "brief.md", "SCENARIO plain");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
     wait_until("the turn to end", || {
-        matches!(crate::acp::client(&fake.socket).unwrap().turn("sid-1"), crate::acp::Turn::Ended(_))
+        matches!(crate::ompsdk::client(&fake.socket).unwrap().turn("sid-1"), crate::ompsdk::Turn::Ended(_))
     });
-    let card = acp_card(&db, "ask:acp:sid-1:ask-1", Kind::Ask);
-    acp_track::open_cli(&db, &card, "sid-1", &launch).unwrap();
+    let card = ompsdk_card(&db, "ask:ompsdk:sid-1:ask-1", Kind::Ask);
+    ompsdk_track::open_cli(&db, &card, "sid-1", &launch).unwrap();
 
     let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
     let window = log.lines().find(|line| line.starts_with("new-window ")).unwrap();
@@ -10303,9 +10303,9 @@ fn acp_open_cli_idle_child() {
 #[test]
 fn lease_report_holds_only_the_session_it_names() {
     let sid = "01a20a9f-4921-77b7-aa76-719bc592d7a5";
-    assert!(!acp_track::held_by(&json!({"held": [], "unknown": []}), sid));
-    assert!(!acp_track::held_by(&json!({"held": ["01a20a9f-46c9-77e0-bb2e-3f4e43d6bcc1"]}), sid));
-    assert!(acp_track::held_by(&json!({"held": [sid]}), sid));
+    assert!(!ompsdk_track::held_by(&json!({"held": [], "unknown": []}), sid));
+    assert!(!ompsdk_track::held_by(&json!({"held": ["01a20a9f-46c9-77e0-bb2e-3f4e43d6bcc1"]}), sid));
+    assert!(ompsdk_track::held_by(&json!({"held": [sid]}), sid));
 }
 
 #[test]
@@ -10314,7 +10314,7 @@ fn form_fields_read_as_answerable_questions() {
         "choice": {"oneOf": [{"const": "Continue"}, {"const": "Stop"}]},
         "choice__other": {"type": "string"},
     }});
-    let asked = acp_track::questions(&schema);
+    let asked = ompsdk_track::questions(&schema);
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0].key, "choice");
     assert!(!asked[0].multi);
@@ -10324,18 +10324,18 @@ fn form_fields_read_as_answerable_questions() {
 }
 
 #[test]
-fn acp_request_report_prompts_an_idle_session() {
-    let _lock = acp_lock();
+fn ompsdk_request_report_prompts_an_idle_session() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO plain");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Report it").unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Report it").unwrap();
     wait_until("the turn to end", || {
-        matches!(crate::acp::client(&fake.socket).unwrap().turn(ACP_SID), crate::acp::Turn::Ended(_))
+        matches!(crate::ompsdk::client(&fake.socket).unwrap().turn(OMPSDK_SID), crate::ompsdk::Turn::Ended(_))
     });
-    let card = Card { report_due: true, ..acp_card(&db, "done:acp:sid-1:e1", Kind::Info) };
+    let card = Card { report_due: true, ..ompsdk_card(&db, "done:ompsdk:sid-1:e1", Kind::Info) };
     assert_eq!(request_report(&db, &card, &launch), Ok(()));
     wait_for(&fake, |m| {
         m["method"] == "session/prompt"
@@ -10346,17 +10346,17 @@ fn acp_request_report_prompts_an_idle_session() {
 }
 
 #[test]
-fn acp_request_report_refuses_a_session_waiting_on_an_answer() {
-    let _lock = acp_lock();
+fn ompsdk_request_report_refuses_a_session_waiting_on_an_answer() {
+    let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
-    let fake = FakeAcp::start(scratch.path());
-    let launch = acp_launch(&fake);
-    let brief = acp_brief(scratch.path(), "brief.md", "SCENARIO ask");
-    acp_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
     wait_until("the question to arrive", || {
-        !crate::acp::client(&fake.socket).unwrap().elicitations(ACP_SID).is_empty()
+        !crate::ompsdk::client(&fake.socket).unwrap().elicitations(OMPSDK_SID).is_empty()
     });
-    let card = Card { report_due: true, ..acp_card(&db, "done:acp:sid-1:e0", Kind::Info) };
+    let card = Card { report_due: true, ..ompsdk_card(&db, "done:ompsdk:sid-1:e0", Kind::Info) };
     assert_eq!(request_report(&db, &card, &launch), Err("session is busy".to_owned()));
 }

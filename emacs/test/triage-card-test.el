@@ -144,20 +144,20 @@
                '((id . "d2") (kind . "info") (engine . "omp")
                  (source . ((uri . "dsh://session/abc")))))))
 
-(ert-deftest triage-card-test-acp-session-id ()
-  "An acp card offers Close, Request report and Open in CLI, not Peek or Jump."
-  (let ((card '((id . "a1") (kind . "info") (title . "Plain") (engine . "acp")
-                (source . ((uri . "acp://session/abc"))))))
-    (should (equal (triage-card-acp-id card) "abc"))
-    (should (equal (triage-card-pane card) "acp:abc"))
+(ert-deftest triage-card-test-ompsdk-session-id ()
+  "An ompsdk card offers Close, Request report and Open in CLI, not Peek or Jump."
+  (let ((card '((id . "a1") (kind . "info") (title . "Plain") (engine . "ompsdk")
+                (source . ((uri . "ompsdk://session/abc"))))))
+    (should (equal (triage-card-ompsdk-id card) "abc"))
+    (should (equal (triage-card-pane card) "ompsdk:abc"))
     (should (triage-card-offers-p card 'cli 0))
     (should (triage-card-offers-p card 'close 0))
     (should (triage-card-offers-p (cons '(report_due . t) card) 'request 0))
     (should-not (triage-card-offers-p card 'peek 0))
     (should-not (triage-card-offers-p card 'jump 0)))
-  (should-not (triage-card-acp-id
+  (should-not (triage-card-ompsdk-id
                '((id . "a2") (kind . "info") (engine . "omp")
-                 (source . ((uri . "acp://session/abc")))))))
+                 (source . ((uri . "ompsdk://session/abc")))))))
 
 (ert-deftest triage-card-test-restorable ()
   "Only exited info cards are restorable."
@@ -343,8 +343,8 @@
                  '(?g ?p ?P)))
   (should (equal (triage-card-choice-keys (mapcar #'cadr triage-card-tasks))
                  '(?i ?f ?a ?v ?s)))
-  (should (equal (triage-card-choice-keys '("Default" "omp" "dsh" "acp"))
-                 '(?d ?o ?D ?a)))
+  (should (equal (triage-card-choice-keys '("Default" "omp" "dsh" "ompsdk"))
+                 '(?d ?o ?D ?O)))
   (should (equal (triage-card-choice-keys
                   '("Default (omp default)" "auto" "off" "minimal"
                     "low" "medium" "high" "xhigh" "max"))

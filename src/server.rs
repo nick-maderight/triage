@@ -461,7 +461,7 @@ fn apply_launch_choices(
     if let Some(engine) = engine.map(str::trim).filter(|engine| !engine.is_empty()) {
         let engine = crate::cards::Engine::parse(engine).ok_or_else(|| format!("unknown engine {engine}"))?;
         if engine != launch.engine {
-            // omp and acp take the same selectors and levels, so a switch between them keeps the choice.
+            // omp and ompsdk take the same selectors and levels, so a switch between them keeps the choice.
             let shared = launch.engine != crate::cards::Engine::Dsh && engine != crate::cards::Engine::Dsh;
             launch.engine = engine;
             if !shared {
@@ -1757,7 +1757,7 @@ pub async fn serve(
                 let mut written = tracker.tick(&state.db).written
                     + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written
                     + tracker.chase_missing_reports(&state.db, &state.launch).written
-                    + tracker.acp_tick(&state.db, &state.launch).written;
+                    + tracker.ompsdk_tick(&state.db, &state.launch).written;
                 drop(tracker);
                 // shortcut: the poll waits while a Plan into plan starts its dsh session, up to
                 // dsh::LAUNCH_TIMEOUT. Move it to a task of its own if those waits slow the inbox.

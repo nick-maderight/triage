@@ -49,7 +49,7 @@ test('a choice takes the mnemonic key the Emacs client gives it', () => {
     [['Goal', 'Plan', 'Plan into'], 'g p P'],
     [['Goal', 'Plan into'], 'g p'],
     [['Investigate', 'Fix', 'Act', 'Verify', 'Simplify'], 'i f a v s'],
-    [['Default', 'omp', 'dsh', 'acp'], 'd o D a'],
+    [['Default', 'omp', 'dsh', 'ompsdk'], 'd o D O'],
     [
       ['Default (omp default)', 'auto', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
       'd a o m l M h x A',

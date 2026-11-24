@@ -718,7 +718,7 @@ openDispatch in ui/app.js."
       (unless (derived-mode-p 'triage-launch-mode)
         (triage-launch-mode))
       (let* ((engine (cond ((triage-card-dsh-id card) "dsh")
-                           ((triage-card-acp-id card) "acp")
+                           ((triage-card-ompsdk-id card) "ompsdk")
                            ((alist-get 'pane (alist-get 'source card)) "omp")
                            (t triage-launch--last-dispatch-engine)))
              (draft (triage-queue-draft card)))
@@ -876,7 +876,7 @@ A sheet with answers cannot investigate, because each question decides that."
   (interactive)
   (let ((engine (triage-launch--read-fixed
                  "Engine"
-                 '(("Default" nil) ("omp" "omp") ("dsh" "dsh") ("acp" "acp")))))
+                 '(("Default" nil) ("omp" "omp") ("dsh" "dsh") ("ompsdk" "ompsdk")))))
     (setq triage-launch--engine engine
           triage-launch--model nil
           triage-launch--thinking nil

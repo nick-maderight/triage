@@ -421,7 +421,7 @@ test('finding options open the session sheet and answer with its choices', async
       titleOf: (current) => current.title,
       sourceName: () => 'unknown',
       dshOf: () => null,
-      acpOf: () => null,
+      ompsdkOf: () => null,
       setPickerValue() {},
       clearModels() {},
       noteValue: (current) => state.drafts.get(current.id).note.trim() || null,

@@ -1,4 +1,4 @@
-//! Client for the ompsdk daemon's ACP socket. One connection per process carries every acp
+//! Client for the ompsdk daemon's ACP socket. One connection per process carries every ompsdk
 //! session triage holds. A reader thread routes the daemon's replies, agent requests and turn
 //! ends into the state each session's calls and tracker read.
 
@@ -37,9 +37,12 @@ pub fn client(socket: &Path) -> Result<Arc<Client>, String> {
     Ok(client)
 }
 
-/// The acp session a card belongs to, from its `acp://session/<sid>` source.
+/// The URI prefix of a card whose source is an ompsdk session.
+pub const SESSION_URI_PREFIX: &str = "ompsdk://session/";
+
+/// The ompsdk session a card belongs to, from its `ompsdk://session/<sid>` source.
 pub fn session_id(card: &Card) -> Option<&str> {
-    card.source.uri.strip_prefix("acp://session/")
+    card.source.uri.strip_prefix(SESSION_URI_PREFIX)
 }
 
 /// The socket ompsdk serves on: `$XDG_RUNTIME_DIR/ompsdk/sock`, or the same path under the user's runtime directory when that variable is unset.
@@ -481,7 +484,7 @@ pub fn resolve_model(selector: &str, thinking: Option<&str>, options: &Value) ->
             (model.to_owned(), level.map(str::to_owned))
         }
         None if base.contains('/') => (base.to_owned(), None),
-        None => return Err("acp engine takes provider/id or @role".to_owned()),
+        None => return Err("ompsdk engine takes provider/id or @role".to_owned()),
     };
     if !option_values(options, "model").contains(&model) {
         return Err(format!("unknown model {model}"));
@@ -575,7 +578,7 @@ mod tests {
     fn refuses_bare_names_and_unknown_models() {
         assert_eq!(
             resolve_model("gpt-x", None, &options()).unwrap_err(),
-            "acp engine takes provider/id or @role"
+            "ompsdk engine takes provider/id or @role"
         );
         assert_eq!(
             resolve_model("openai/missing", None, &options()).unwrap_err(),

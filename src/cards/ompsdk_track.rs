@@ -1,15 +1,15 @@
-//! Triage's acp sessions. The ompsdk daemon runs each one as an omp session in its triage pool.
+//! Triage's ompsdk sessions. The ompsdk daemon runs each one as an omp session in its triage pool.
 //! Triage starts them, answers their questions and plan reviews, turns their replies into
-//! cards, and keeps what the poll loop needs in `acp-sessions.json` beside the database.
+//! cards, and keeps what the poll loop needs in `ompsdk-sessions.json` beside the database.
 
 use super::{
     DEFAULT_SESSION, Launch, Start, TickReport, Tracker, brief_heading, dispatch_prompt, finish_cards,
     record_swipe, reply_turn, report_request, shell_quote, supersede_info_cards, trail, turn_card,
 };
-use crate::acp::{self, Client, Elicitation, Turn};
 use crate::db::Db;
 use crate::events::{self, Answer, AnswerReq, Card, CardOption, CardQuestion, CardStatus, Kind, Source, Star};
 use crate::omp;
+use crate::ompsdk::{self, Client, Elicitation, Turn};
 use crate::tmux;
 use crate::uploads::Upload;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ const PLAN_REFINE: &str = "Refine plan";
 /// The prompt that resumes a session cut mid-turn.
 const CUT_PROMPT: &str = "Continue where you stopped.";
 
-/// What the acp poll remembers between polls.
+/// What the ompsdk poll remembers between polls.
 #[derive(Default)]
 pub(super) struct Memo {
     /// Connection id of the last poll. A new id means a reconnect, which resumes every held session.
@@ -48,15 +48,15 @@ pub(super) struct Memo {
 }
 
 impl Tracker {
-    /// Drive the acp sessions triage holds and return the number of cards written.
-    pub fn acp_tick(&mut self, db: &Db, launch: &Launch) -> TickReport {
+    /// Drive the ompsdk sessions triage holds and return the number of cards written.
+    pub fn ompsdk_tick(&mut self, db: &Db, launch: &Launch) -> TickReport {
         TickReport {
-            written: tick(&mut self.acp, db, launch, events::now_ms()),
+            written: tick(&mut self.ompsdk, db, launch, events::now_ms()),
         }
     }
 }
 
-/// One tracked acp session, as `acp-sessions.json` keeps it.
+/// One tracked ompsdk session, as `ompsdk-sessions.json` keeps it.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Entry {
     sid: String,
@@ -91,14 +91,14 @@ struct State {
 static STATE_LOCK: Mutex<()> = Mutex::new(());
 
 fn state_path(db: &Db) -> PathBuf {
-    db.path().with_file_name("acp-sessions.json")
+    db.path().with_file_name("ompsdk-sessions.json")
 }
 
 fn load(db: &Db) -> Result<State, String> {
     match fs::read(state_path(db)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!("acp state: {error}")),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| format!("ompsdk state: {error}")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-        Err(error) => Err(format!("acp state: {error}")),
+        Err(error) => Err(format!("ompsdk state: {error}")),
     }
 }
 
@@ -112,7 +112,7 @@ fn edit<R>(db: &Db, change: impl FnOnce(&mut State) -> R) -> Result<R, String> {
     let bytes = serde_json::to_vec_pretty(&state).map_err(|error| error.to_string())?;
     fs::write(&temp, bytes)
         .and_then(|()| fs::rename(&temp, &path))
-        .map_err(|error| format!("acp state: {error}"))?;
+        .map_err(|error| format!("ompsdk state: {error}"))?;
     Ok(result)
 }
 
@@ -128,12 +128,12 @@ fn update(db: &Db, sid: &str, change: impl FnOnce(&mut Entry)) -> Result<(), Str
     })
 }
 
-/// The socket the acp engine reaches ompsdk on.
+/// The socket the ompsdk engine reaches the daemon on.
 fn socket(launch: &Launch) -> Result<&Path, String> {
     launch
-        .acp_socket
+        .ompsdk_socket
         .as_deref()
-        .ok_or_else(|| "acp engine has no ompsdk socket".to_owned())
+        .ok_or_else(|| "ompsdk engine has no daemon socket".to_owned())
 }
 
 /// The transcript omp keeps for session `sid`, which sits at `sessions/<cwd>/<stamp>_<sid>.jsonl`.
@@ -167,7 +167,7 @@ fn card_source(entry: &Entry) -> Source {
         entry.title.clone()
     };
     Source {
-        uri: format!("acp://session/{}", entry.sid),
+        uri: format!("{}{}", ompsdk::SESSION_URI_PREFIX, entry.sid),
         label,
         cwd: entry.cwd.clone(),
         pane: None,
@@ -242,7 +242,7 @@ fn is_plan_review(schema: &Value) -> bool {
 
 fn card_id(sid: &str, elicitation: &Elicitation) -> String {
     let kind = if is_plan_review(&elicitation.schema) { "plan" } else { "ask" };
-    format!("{kind}:acp:{sid}:{}", elicitation.key())
+    format!("{kind}:ompsdk:{sid}:{}", elicitation.key())
 }
 
 fn question_options(question: &Question) -> Vec<CardOption> {
@@ -291,7 +291,7 @@ fn prompt_card(entry: &Entry, elicitation: &Elicitation) -> Card {
             level: None,
             tool_call_id,
             report_due: false,
-            engine: Some("acp".to_owned()),
+            engine: Some("ompsdk".to_owned()),
             status: Some(CardStatus::PlanReady),
         };
     }
@@ -333,7 +333,7 @@ fn prompt_card(entry: &Entry, elicitation: &Elicitation) -> Card {
         level: None,
         tool_call_id,
         report_due: false,
-        engine: Some("acp".to_owned()),
+        engine: Some("ompsdk".to_owned()),
         status: Some(CardStatus::Waiting),
     }
 }
@@ -355,7 +355,7 @@ fn report_card(
     report: Option<String>,
     failed: bool,
 ) -> Card {
-    let key = format!("acp:{}", entry.sid);
+    let key = format!("ompsdk:{}", entry.sid);
     let (star, investigation) = trail(db, &key, 0);
     let source = card_source(entry);
     let briefed_ms = db
@@ -372,18 +372,18 @@ fn report_card(
         turn.level = "warn";
     }
     let mut card = turn_card(
-        format!("done:acp:{}:{entry_id}", entry.sid),
+        format!("done:ompsdk:{}:{entry_id}", entry.sid),
         source,
         vec![transcript.to_owned()],
         star,
         turn,
     );
-    card.engine = Some("acp".to_owned());
+    card.engine = Some("ompsdk".to_owned());
     card
 }
 
 fn tick(memo: &mut Memo, db: &Db, launch: &Launch, now: i64) -> usize {
-    let Some(socket) = launch.acp_socket.as_deref() else {
+    let Some(socket) = launch.ompsdk_socket.as_deref() else {
         return 0;
     };
     if now < memo.retry_at_ms {
@@ -405,7 +405,7 @@ fn tick(memo: &mut Memo, db: &Db, launch: &Launch, now: i64) -> usize {
     if held.is_empty() {
         return 0;
     }
-    let client = match acp::client(socket) {
+    let client = match ompsdk::client(socket) {
         Ok(client) => client,
         Err(error) => {
             backoff(memo, now, &error);
@@ -429,7 +429,7 @@ fn tick(memo: &mut Memo, db: &Db, launch: &Launch, now: i64) -> usize {
 /// Wait `RETRY_MS` before the next poll. The error prints only on the first failure in a row.
 fn backoff(memo: &mut Memo, now: i64, error: &str) {
     if !memo.failing {
-        eprintln!("triage: acp: {error}");
+        eprintln!("triage: ompsdk: {error}");
     }
     memo.failing = true;
     memo.retry_at_ms = now + RETRY_MS;
@@ -441,7 +441,7 @@ fn resume_held(memo: &mut Memo, db: &Db, client: &Client, sid: &str, now: i64) {
         return;
     };
     if let Err(error) = client.resume(sid, &entry.cwd) {
-        eprintln!("triage: acp: resume {sid}: {error}");
+        eprintln!("triage: ompsdk: resume {sid}: {error}");
         mark_cut(memo, db, sid, now);
     }
 }
@@ -511,13 +511,13 @@ fn answer_or_card(db: &Db, client: &Client, entry: &Entry, elicitation: &Elicita
                 return 0;
             }
             // A plan that will not approve falls back to a card, so the user can answer it.
-            Err(error) => eprintln!("triage: acp: plan approval {}: {error}", entry.sid),
+            Err(error) => eprintln!("triage: ompsdk: plan approval {}: {error}", entry.sid),
         }
     }
     match db.insert_card(&prompt_card(entry, elicitation)) {
         Ok(inserted) => usize::from(inserted),
         Err(error) => {
-            eprintln!("triage: acp: card for {}: {error}", entry.sid);
+            eprintln!("triage: ompsdk: card for {}: {error}", entry.sid);
             0
         }
     }
@@ -533,7 +533,7 @@ fn finish_gone(db: &Db, entry: &Entry, open: &[Elicitation], written: &mut usize
     let gone: Vec<Card> = cards
         .into_iter()
         .filter(|card| {
-            card.engine.as_deref() == Some("acp")
+            card.engine.as_deref() == Some("ompsdk")
                 && card.source.uri == uri
                 && matches!(card.kind, Kind::Ask | Kind::Plan)
                 && card.tool_call_id.as_ref().is_some_and(|key| !keys.contains(key))
@@ -558,7 +558,7 @@ fn revive(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) {
             memo.running.remove(sid);
         }
         Err(error) => {
-            eprintln!("triage: acp: resume {sid}: {error}");
+            eprintln!("triage: ompsdk: resume {sid}: {error}");
             memo.resume_at_ms.insert(sid.to_owned(), now + RESUME_RETRY_MS);
         }
     }
@@ -605,7 +605,7 @@ fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) ->
                     Ok(()) => {
                         let _ = update(db, sid, |entry| entry.continues += 1);
                     }
-                    Err(error) => eprintln!("triage: acp: continue {sid}: {error}"),
+                    Err(error) => eprintln!("triage: ompsdk: continue {sid}: {error}"),
                 }
                 return 0;
             }
@@ -634,7 +634,7 @@ fn retire(db: &Db, client: &Client, sid: &str) {
         Ok(()) => {
             let _ = update(db, sid, |entry| entry.loaded = false);
         }
-        Err(error) => eprintln!("triage: acp: close {sid}: {error}"),
+        Err(error) => eprintln!("triage: ompsdk: close {sid}: {error}"),
     }
 }
 
@@ -664,7 +664,7 @@ fn configure(client: &Client, sid: &str, selector: Option<&str>, thinking: Optio
             None => Ok(()),
         };
     };
-    let resolved = acp::resolve_model(selector, thinking, &client.options(sid))?;
+    let resolved = ompsdk::resolve_model(selector, thinking, &client.options(sid))?;
     client.set_config(sid, "model", &resolved.model)?;
     match resolved.thinking {
         Some(level) => client.set_config(sid, "thinking", &level),
@@ -696,7 +696,7 @@ fn first_prompt(brief: &Path, start: Start) -> Result<String, String> {
     })
 }
 
-/// Start an acp session on `brief` and return its `acp:<sid>` pane id.
+/// Start an ompsdk session on `brief` and return its `ompsdk:<sid>` pane id.
 pub(super) fn launch_new(
     db: &Db,
     launch: &Launch,
@@ -706,7 +706,7 @@ pub(super) fn launch_new(
     image: Option<&Upload>,
     title: &str,
 ) -> Result<String, String> {
-    let client = acp::client(socket(launch)?)?;
+    let client = ompsdk::client(socket(launch)?)?;
     let sid = client.new_session(cwd)?;
     let begun = begin(&client, &sid, launch, brief, start, image);
     if let Err(error) = begun {
@@ -725,7 +725,7 @@ pub(super) fn launch_new(
         cut: false,
     };
     edit(db, |state| state.sessions.push(entry))?;
-    Ok(format!("acp:{sid}"))
+    Ok(format!("ompsdk:{sid}"))
 }
 
 /// Set a new session up for `start` and send its first prompt.
@@ -744,8 +744,8 @@ fn begin(
     client.prompt(sid, prompt_blocks(&first_prompt(brief, start)?, image))
 }
 
-/// Give a brief to the card's acp session. A session the daemon no longer holds is resumed first.
-/// A card with no acp session starts one.
+/// Give a brief to the card's ompsdk session. A session the daemon no longer holds is resumed first.
+/// A card with no ompsdk session starts one.
 pub(super) fn launch_brief(
     db: &Db,
     card: &Card,
@@ -754,11 +754,11 @@ pub(super) fn launch_brief(
     start: Start,
     image: Option<&Upload>,
 ) -> Result<String, String> {
-    let Some(sid) = acp::session_id(card) else {
+    let Some(sid) = ompsdk::session_id(card) else {
         return launch_new(db, launch, &card.source.cwd, brief, start, image, &card.title);
     };
-    let entry = lookup(db, sid).ok_or("acp session is no longer tracked")?;
-    let client = acp::client(socket(launch)?)?;
+    let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
+    let client = ompsdk::client(socket(launch)?)?;
     let running = if entry.loaded {
         client.turn(sid) == Turn::Running
     } else {
@@ -780,12 +780,12 @@ pub(super) fn launch_brief(
         entry.auto_approved = false;
         entry.plan_into = plan_into;
     })?;
-    Ok(format!("acp:{sid}"))
+    Ok(format!("ompsdk:{sid}"))
 }
 
-/// Answer an acp question with the picked options or the typed text, one answer per question.
+/// Answer an ompsdk question with the picked options or the typed text, one answer per question.
 pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launch: &Launch) -> Result<(), String> {
-    let client = acp::client(socket(launch)?)?;
+    let client = ompsdk::client(socket(launch)?)?;
     let key = card.tool_call_id.as_deref().ok_or("ask card has no question")?;
     let open = client
         .elicitation(sid, key)
@@ -822,14 +822,14 @@ pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launc
         [only] => (only.option, only.text.clone()),
         _ => (None, None),
     };
-    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some("sent to acp".to_owned())) {
+    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some("sent to ompsdk".to_owned())) {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
 }
 
-/// Answer an acp plan review. Approve sets the executor first, so the plan runs on it. Refine
+/// Answer an ompsdk plan review. Approve sets the executor first, so the plan runs on it. Refine
 /// sends the feedback into the running turn, or as a new prompt when no turn takes it.
 pub(super) fn answer_plan(
     db: &Db,
@@ -840,7 +840,7 @@ pub(super) fn answer_plan(
     launch: &Launch,
 ) -> Result<(), String> {
     let super::dsh_track::PlanChoice { option, refinement, executor, executor_effort } = choice;
-    let client = acp::client(socket(launch)?)?;
+    let client = ompsdk::client(socket(launch)?)?;
     let key = card.tool_call_id.as_deref().ok_or("plan card has no review")?;
     let open = client
         .elicitation(sid, key)
@@ -860,20 +860,20 @@ pub(super) fn answer_plan(
         }
         Some(feedback.to_owned())
     };
-    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some("sent to acp".to_owned())) {
+    if record_swipe(db, &card.id, "done", option, text, req.note.clone(), Some("sent to ompsdk".to_owned())) {
         Ok(())
     } else {
         Err("could not record swipe".to_owned())
     }
 }
 
-/// Close an acp session and resolve the cards it still has open.
+/// Close an ompsdk session and resolve the cards it still has open.
 pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>, launch: &Launch) -> Result<(), String> {
     let open = db.unresolved_cards().map_err(|error| error.to_string())?;
     if lookup(db, sid).is_some_and(|entry| entry.loaded) {
-        acp::client(socket(launch)?)?.close(sid)?;
+        ompsdk::client(socket(launch)?)?.close(sid)?;
     }
-    let reason = format!("closed acp:{sid}");
+    let reason = format!("closed ompsdk:{sid}");
     if !record_swipe(
         db,
         &card.id,
@@ -895,11 +895,11 @@ pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>, launch:
     Ok(())
 }
 
-/// Ask an idle acp session for its final report. A session still running, or waiting on an
+/// Ask an idle ompsdk session for its final report. A session still running, or waiting on an
 /// answer, refuses the request.
 pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -> Result<(), String> {
-    let entry = lookup(db, sid).ok_or("acp session is no longer tracked")?;
-    let client = acp::client(socket(launch)?)?;
+    let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
+    let client = ompsdk::client(socket(launch)?)?;
     if !entry.loaded && client.resume(sid, &entry.cwd)? {
         return Err("session is busy".to_owned());
     }
@@ -912,7 +912,7 @@ pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -
         entry.loaded = true;
         entry.cut = false;
     })?;
-    let reason = format!("report requested acp:{sid}");
+    let reason = format!("report requested ompsdk:{sid}");
     if record_swipe(
         db,
         &card.id,
@@ -928,13 +928,13 @@ pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -
     }
 }
 
-/// Hand a held acp session to a tmux window that runs `omp --resume` on its transcript. A turn
+/// Hand a held ompsdk session to a tmux window that runs `omp --resume` on its transcript. A turn
 /// that was still running resumes with the cut prompt, so the work goes on where it stopped.
 pub(super) fn open_cli(db: &Db, card: &Card, sid: &str, launch: &Launch) -> Result<(), String> {
-    let entry = lookup(db, sid).ok_or("acp session is no longer tracked")?;
+    let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
     let mut running = false;
     if entry.loaded {
-        let client = acp::client(socket(launch)?)?;
+        let client = ompsdk::client(socket(launch)?)?;
         running = client.turn(sid) == Turn::Running;
         client.close(sid)?;
     }
