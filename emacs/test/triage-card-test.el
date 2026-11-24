@@ -230,8 +230,8 @@
 
 (ert-deftest triage-card-test-directory ()
   "The home directory prefix becomes a tilde."
-  (should (equal (triage-card-directory "/home/nick/proj") "~/proj"))
-  (should (equal (triage-card-directory "/Users/nick") "~"))
+  (should (equal (triage-card-directory "/home/user/proj") "~/proj"))
+  (should (equal (triage-card-directory "/Users/user") "~"))
   (should (equal (triage-card-directory "/opt/data") "/opt/data")))
 
 (ert-deftest triage-card-test-age ()

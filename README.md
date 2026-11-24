@@ -2,6 +2,45 @@
 
 Triage is one decision inbox for scheduled jobs and for omp, dsh and ompsdk sessions. It shows one card at a time in priority order. Priority 1 is the most urgent. Priority 5, the lowest, is the Reading list, which holds cards to read when there is time, such as material for a later improvement or an audit. The inbox shows Reading list in place of P5 on those cards. Ask cards show the STAR situation, task, action, and result with options suited to the situation. Skip and later are built in.
 
+- [How it works](#how-it-works)
+- [Agent sessions](#agent-sessions)
+  - [Goal mode](#goal-mode)
+  - [Tasks](#tasks)
+  - [Plan mode](#plan-mode)
+  - [Plan into](#plan-into)
+  - [dsh sessions](#dsh-sessions)
+  - [ompsdk sessions](#ompsdk-sessions)
+- [Event input](#event-input)
+- [HTTP routes](#http-routes)
+- [CLI](#cli)
+- [Requirements](#requirements)
+- [Build and install](#build-and-install)
+- [Configuration](#configuration)
+- [Web inbox](#web-inbox)
+- [Scope and limits](#scope-and-limits)
+- [Known Issues](#known-issues)
+- [Emacs inbox](#emacs-inbox)
+- [Development](#development)
+- [License](#license)
+
+## How it works
+
+One daemon, `triage serve`, polls the harnesses, stores every card in SQLite, and serves both clients from one queue.
+
+```mermaid
+flowchart LR
+  O[tmux omp panes] --> P[poller]
+  D[dsh sessions] --> P
+  M[ompsdk sessions] --> P
+  J[scheduled jobs] -->|POST /v1/ingest| API[HTTP and SSE]
+  P --> DB[(SQLite queue)]
+  DB --> API
+  API --> W[Web inbox]
+  API --> E[Emacs client]
+```
+
+Answers and dispatches travel back through the daemon to a tmux pane, a dsh session or an ompsdk session. The client never talks to a harness directly.
+
 ## Agent sessions
 
 Triage polls tmux once a second and reads each omp pane's transcript when its title changes to asking. Omp 18.18.7 uses `ask.arguments.html` and returns `details.answers` in form order. Triage converts supported radios, single selects, lone checkboxes, and text fields into native cards, then answers through field controls. Multi-select and multi-checkbox controls stay read-only and must be answered in the pane. Legacy `ask.arguments.questions` and `details.selectedOptions` remain supported. Agents need no triage-side code or plugin.
@@ -152,13 +191,26 @@ For `triage.info`, `data` may contain `title`, `body` and `level`. An emitter se
 
 The client commands use `TRIAGE_URL` when set. Otherwise they connect to `http://127.0.0.1:7340`.
 
-## Build and install
-
-Build with `cargo build --release`, then copy `target/release/triage` to `~/.local/bin/triage`. Install `deploy/triage.service` as `~/.config/systemd/user/triage.service`, then run `systemctl --user enable --now triage.service`.
-
 ## Requirements
 
 Triage needs Linux, tmux, and `omp` on `PATH`. The dsh engine also requires the dsh web host, which `dsh-web.service` runs. The ompsdk engine requires the ompsdk daemon, `ompsdkd.service`, from `~/Documents/projects/ompsdk`. Building requires Rust 1.89 or newer, because the locked `uuid 1.28.0` declares `rust-version = "1.89"`. The test suite also needs Node.js, `curl`, `jq`, and `ss`.
+
+The daemon opens new windows in the tmux session given by `--session`, `triage` by default, and that session must exist. Create it once:
+
+```sh
+tmux new-session -d -s triage
+```
+
+## Build and install
+
+```sh
+cargo build --release
+install -m 755 target/release/triage ~/.local/bin/triage
+install -m 644 deploy/triage.service ~/.config/systemd/user/triage.service
+systemctl --user enable --now triage.service
+```
+
+Then open <http://127.0.0.1:7340/>. The unit runs `triage serve` with the defaults under Configuration. Edit its `ExecStart`, then run `systemctl --user restart triage.service`, to change them.
 
 ## Configuration
 
@@ -183,8 +235,11 @@ An invalid `--model` or `--thinking` stops the daemon at startup, for example `E
 ## Web inbox
 
 The web UI is served at `/`. Its keys are the Emacs client's. `tests/emacs-keys.test.js` fails when the two clients' key tables differ. A card shortcut names an action, never a button position. One table in `ui/app.js` lists every card action with its key, its button label and the cards that offer it. The dock, the key handler and Enter all read that table. A card shows one button for each action it offers. Each button carries the key that runs its action. That key does nothing on a card that does not offer the action. A finding is not tied to a session and ignores `C`, `v` and `J`. Acknowledge is `a` and Acknowledge & close is `C` wherever each one appears. Enter runs the button the card marks primary. A report with an open recommended step keeps Plan next step primary. A report with a session and no open step keeps Acknowledge & close primary. Both still offer plain Acknowledge at `a`, which is the primary on an info card without a session. A prompt that takes its answer in its pane or in the dsh web UI is read-only in the inbox and keeps Peek primary. Enter on every other ask, plan or finding card picks the recommended option or, on a review step, sends the answers.
+
 Digits choose an option. The digit after the last option opens Other. A finding option opens the session sheet on Goal with its implied task. `p` opens it preselected to Plan and Act. On a report card that offers Plan next step, `p` plans that step. `D` opens the sheet on Goal and Act for Do next step. Each option opens a new window for omp reports and continues the card's session on dsh reports. `o` opens Other text (submitting it empty keeps the field open and says to type an answer), `n` focuses the note, `d` opens the sheet with Investigate. `f` preselects Fix, `A` Act and `P` Plan into. `C` acknowledges a card and closes its session, which exits omp and closes the tmux pane or archives the dsh session. `r` requests the final report from a reply card that missed its status line. `R` restores the run of an `Unreported:` or `Ended mid-turn:` card in a new window. `s` skips, `l` defers the card for 1 hour, `v` peeks at the card's pane or dsh session, `t` opens context and `J` jumps to the pane. A dsh card shows Open in place of Jump, where `J` opens the dsh web UI. `w` copies a reply. On a plan card, `e` opens the Execution model picker, and on a dsh plan card `E` opens Execution effort. `c` opens the session sheet for a new session, `h` opens history, `S` opens Settings, `g` refreshes, `j` and `k` move through cards, and `?` opens help. In Peek, `f` switches between Fit and Readable, `s` moves to the text to send, `g` refreshes and `J` jumps to the pane. In History, `t` opens the context and `r` reloads the card of the focused row. `g` refreshes History and Context. `q` closes Peek, History, Context, and the session sheet.
+
 The session sheet has Mode and Task controls, Engine, Model and Thinking, plus Execution model and Execution effort for Plan into. Plan approval offers the same two execution fields on a dsh plan card. The sheet opens on the engine of the card's own session, which is dsh for a dsh card and omp for a card with a tmux pane. A plain session opens on the engine last picked in the sheet, which starts as the daemon's default. Every card has a Note field. The sheet's Instruction is that same note, which keeps its line breaks in the sheet and reads as one line on the card. Every sheet offers Goal, Plan and Plan into. A finding's answers hide Investigate from the Task control. A task never writes into the Instruction, and a typed note follows its direction. A card's context strip names its title and source, and Clear drops the card and leaves a plain new session. The plain session defaults to Fix. Dispatch defaults to Investigate. Plan and Plan into preselect Act. A card's sheet opens on its options and a new session's sheet opens in its text, as in Emacs. Outside a text field, `m` and `T` move into Mode and Task, where each button shows its key. The modes take `g`, `p` and `P` and the tasks take `i`, `f`, `a`, `v` and `s`. `d`, `s`, `e`, `M`, `t`, `x` and `X` open the Working directory, tmux session, Engine, Model, Thinking, Execution model and Execution effort pickers whenever the sheet shows that field. `a` attaches an image, Ctrl+V pastes one anywhere in the sheet and `D` drops it. Tab moves from the options into the text. Ctrl+Enter or Start launches the session. Enter alone never does. A New session sheet keeps its text when it closes, until a session starts. The text field keeps its four rows when the sheet has to scroll. On a window at least 640px wide and 481px tall the sheet fills the window height and the text field takes the height its options leave. Engine, Model and Thinking share one row there. A window at least 960px wide and wider than it is tall shows the text field on the left and the options on the right. When an on-screen keyboard shrinks the visible area, the page and any open sheet shrink with it. The last row of buttons and Start stay above the keyboard.
+
 The sliders button in the top bar, or `S`, opens Settings, which holds the Dictation form. A microphone appears beside the card's Note, the Other answer, the text for the pane in Peek and the session sheet's text field whenever the browser offers speech recognition on a secure page, served over HTTPS or from localhost. A browser that can recognize speech on the device is told to do so: the inbox reads `SpeechRecognition` or `webkitSpeechRecognition`, takes the on-device path only when `available()` and `processLocally` exist, and sets `processLocally` on every recognition. Chrome 139 or later and Firefox 160 or later offer that on a desktop. Safari offers only `webkitSpeechRecognition`, which sends the audio to Apple's speech service, so the microphones work on iPhone, iPad and Safari through that service, and the Settings sheet says the words leave the device. iOS 14.5 or later also needs Dictation and Siri enabled in the device's Settings; a page cannot turn that on, and Safari reports no speech without it. Audio never reaches the daemon. The first press on a site sets up the browser's speech model for that site, which can take a few minutes. After that, a press starts listening and a second press stops it. Every recognition is continuous, so Safari 17 or later, Chrome and Firefox keep listening across short pauses. Safari before 17 still ends a run at the first pause; the run then finishes with the words it heard, and the next press starts it again. The page keeps one recogniser and reuses it for every run, because iPhone can ask for the microphone again for a new one. A recogniser that never reports starting is dropped, and a start or stop the browser never answers ends within seconds with a message instead of a microphone that answers no press. A hidden page drops the run, as WebKit refuses speech recognition while the page is not visible. The words go in at the cursor each time the browser finishes recognizing a stretch of speech, read by index from the array-like result list, which has no iterator. Each Dictionary line reads `heard = written`. The inbox matches the heard form as whole words in any letter case and puts the written form in its place. The daemon keeps the dictionary for all devices. `GET /v1/dictation` reads it and `POST /v1/dictation` saves it.
 The top bar and card share one centered column. Pages never scroll. The card body scrolls between its head and dock. Its head shows the card's place in the deck, such as `1 of 7`, beside one bar for each waiting card. Higher-priority cards get taller bars. The shown card's bar is blue. A higher-priority arrival moves the view to the deck's top card. Typed answer text on the shown card keeps it in place. Under the title, facts give the source, directory, pane, kind, priority, and waiting time. From 1100px wide, Situation, Plan, Task, and Result fill the left column while Action options fill the right. When the window is also at least 760px tall, the Action column stays in view while the evidence scrolls. Narrower screens stack evidence above the Action block beside the dock. A touch tablet uses a tighter frame when its coarse-pointer screen is at least 640px wide and more than 480px tall. Its title is 22px, as on a phone. Facts show labels and values on one line. The card head, body, and dock lose some padding. Its Action block lists options before the recommended action, as a phone does. Its final reply scrolls with the card body instead of sitting in a separate box. Plan cards show their plan under Plan. Info cards show their final reply only under Result. Card text renders as Markdown. Evidence blocks and the final reply show headings, lists, tables, quotes, code blocks, emphasis, and links. Titles and option text show code and emphasis without links. Raw HTML shows as literal text; only http, https, and mailto links become links. Each link opens in a new tab. Remote images show as links instead of loading. A body that parses as JSON shows as one code block. The parser lives in `ui/marked.js`. Its MIT license is in `ui/marked.LICENSE.md`. The inbox builds elements from parser tokens, which keeps card text out of `innerHTML`. When an ask's task repeats its title, the card has no separate Task block. Dock buttons show their action's key. Header buttons also show their keys on screens wider than 800px, while touch screens hide every key hint. On phones, fact labels drop away and values run together under the source name. The four counts fold into a single total that opens them. Text uses Geist and Geist Mono. The daemon serves both fonts from `ui/fonts/`. The inbox takes the system's light or dark appearance at load and follows changes while open. The sun or moon button switches the page until the next system change or reload.
 
@@ -206,6 +261,7 @@ Two performance limits are known. Each poll tick scans and parses every open and
 The Emacs client uses `j`/`k` or Left/Right to switch cards. After you answer a card, the next card takes its place. Repeated card switches reuse Markdown fontification.
 
 Card actions use Magit-style mnemonic keys, and every dock button prints its key: `d` Dispatch, `D` Do next step, `f` Fix, `A` Act, `p` Plan, `P` Plan into, `a` Acknowledge, `C` Acknowledge & close, `r` Request final report, `R` Restore run, `O` Open in CLI, `s` Skip, `l` Later, `t` Context, `v` Peek, `J` Jump, `n` Note, `o` Other, `w` Copy reply. `?` lists every key on the shown card.
+
 In a session sheet, `C-c C-c` launches from the option rows or the text. `RET` never launches.
 
 `M-x triage-delegate` captures an Org heading or agenda entry, a notmuch thread, marked Dired files, or an active file region and opens it in a session sheet. The sheet starts in the context's directory on Goal and Fix. Its direction is empty. The launch goes through `/v1/sessions` with the direction as `note`. Org tasks name their attachment directory when one exists. A selected mail passage limits the task to that passage. The whole thread remains reference. `triage-delegate-omp` and `triage-delegate-dsh` preselect the engine. `triage-start-session` starts a prompt through `/v1/sessions` for unattended fallbacks such as mail unsubscribe.
@@ -213,7 +269,6 @@ In a session sheet, `C-c C-c` launches from the option rows or the text. `RET` n
 Context capture widens narrowed Org buffers while it reads the task and restores the narrowing before it returns. Ancestor capture walks every heading above the task and stops at the top, including headings that hold only child headings. Region prompts use the saved text and name the exact selected lines. A contextual launch asks before replacing a different unsent draft. Cancel hides a New session or context sheet and keeps its text for the next time it opens. A New session or context launch keeps the sheet open until the daemon answers. A failed launch leaves the text and options ready for another try. Repeated submits cannot start duplicate sessions.
 
 `triage-clock-mode` clocks the Org heading `triage review` while you review cards. Set `triage-clock-heading` to `("~/Documents/orgstuff/master.org" "triage review")`, then turn the mode on. Review starts on the inbox, card context, peek, card Dispatch sheet or history when the selected window belongs to a focused frame and Emacs has seen input in the last five minutes. Every Triage screen keeps the clock going. A visit elsewhere shorter than a minute also keeps one logbook line; after a minute away, review stops at the last time it was seen and resumes the interrupted clock from there. Five minutes without input on a Triage screen stops review at the last key and leaves the earlier clock stopped. Clocks under a minute leave no logbook line. Leaving review opens no clock-out note.
-
 
 New omp windows set `OMP_MCP_STARTUP_TIMEOUT_MS=0`, so the first turn waits for MCP servers before it uses their tools.
 

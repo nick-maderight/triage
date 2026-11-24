@@ -1,6 +1,6 @@
 ;;; triage.el --- Emacs client for the Triage decision inbox -*- lexical-binding: t; -*-
 
-;; Author: Nick <nick@maderightsoftware.com>
+;; Author: Nick <271549447+nick-maderight@users.noreply.github.com>
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "30.1") (plz "0.9") (magit-section "4.0") (transient "0.7"))
 ;; Keywords: tools, convenience
