@@ -3918,8 +3918,6 @@ pub fn workdir(cwd: &str) -> Result<String, String> {
     }
     Ok(path.components().collect::<PathBuf>().display().to_string())
 
-}
-
 fn workdir_note(cwd: &str) -> String {
     format!(
         "Work from `{cwd}`. This session starts in its dsh workspace directory, so call the `working_directory` tool with `cd` set to that path before you start.\n\n"
