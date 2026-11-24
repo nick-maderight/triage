@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 mod dsh_track;
 mod ompsdk_track;
 
+pub use ompsdk_track::Memo as OmpsdkMemo;
+
 /// Remembers each pane's last state so only transitions produce cards.
 #[derive(Default)]
 pub struct Tracker {
@@ -60,8 +62,6 @@ pub struct Tracker {
     startup_panes: HashMap<String, String>,
     /// The host pid, retry time and per-session change marks of the dsh bridge poll.
     dsh: dsh_track::Memo,
-    /// Retry state for the ompsdk sessions triage holds.
-    ompsdk: ompsdk_track::Memo,
     /// The dsh workspaces whose sessions triage does not track.
     dsh_ignore: crate::dsh::Ignore,
     #[cfg(test)]
@@ -156,7 +156,6 @@ impl Tracker {
             startup: HashMap::new(),
             startup_panes: HashMap::new(),
             dsh: dsh_track::Memo::default(),
-            ompsdk: ompsdk_track::Memo::default(),
             dsh_ignore: crate::dsh::Ignore::default(),
             #[cfg(test)]
             pending_ask_reads: 0,

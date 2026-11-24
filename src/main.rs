@@ -139,6 +139,7 @@ async fn run() -> Result<(), String> {
                 db,
                 bus,
                 tracker: std::sync::Mutex::new(tracker),
+                ompsdk: std::sync::Mutex::default(),
                 launch: cards::Launch {
                     session,
                     model,

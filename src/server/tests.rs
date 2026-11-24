@@ -179,6 +179,7 @@ fn state_with(db: Db, launch: crate::cards::Launch) -> Arc<AppState> {
         db,
         bus: tokio::sync::broadcast::channel(32).0,
         tracker: Mutex::new(crate::cards::Tracker::default()),
+        ompsdk: Mutex::default(),
         launch,
         allowed_hosts: Vec::new(),
     })
@@ -2436,6 +2437,7 @@ async fn poll_broadcasts_when_deferred_card_becomes_due() {
         db,
         bus,
         tracker: Mutex::new(crate::cards::Tracker::default()),
+        ompsdk: Mutex::default(),
         launch: crate::cards::Launch::default(),
         allowed_hosts: Vec::new(),
     });

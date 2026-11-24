@@ -14,6 +14,8 @@ pub struct AppState {
     pub db: Db,
     pub bus: broadcast::Sender<i64>,
     pub tracker: Mutex<Tracker>,
+    /// The ompsdk poll's memory, apart from `tracker` so its calls wait without blocking the inbox poll.
+    pub ompsdk: Mutex<crate::cards::OmpsdkMemo>,
     /// Where and how triage launches omp sessions, from `triage serve` flags.
     pub launch: crate::cards::Launch,
     /// Host names accepted besides loopback, from `serve --allow-host`.
@@ -1755,8 +1757,7 @@ pub async fn serve(
                 let mut tracker = state.tracker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut written = tracker.tick(&state.db).written
                     + tracker.dsh_tick(&state.db, state.launch.dsh_host.as_deref()).written
-                    + tracker.chase_missing_reports(&state.db, &state.launch).written
-                    + tracker.ompsdk_tick(&state.db, &state.launch).written;
+                    + tracker.chase_missing_reports(&state.db, &state.launch).written;
                 drop(tracker);
                 // shortcut: the poll waits while a Plan into plan starts its dsh session, up to
                 // dsh::LAUNCH_TIMEOUT. Move it to a task of its own if those waits slow the inbox.
@@ -1773,6 +1774,25 @@ pub async fn serve(
                 if let Some(version) = version {
                     let _ = poll_state.bus.send(version);
                 }
+            }
+        }
+    });
+    let ompsdk_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let state = Arc::clone(&ompsdk_state);
+            let result = tokio::task::spawn_blocking(move || {
+                let mut memo = state.ompsdk.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let written = memo.tick(&state.db, &state.launch).written;
+                drop(memo);
+                if written > 0 { state.db.version().map(Some) } else { Ok(None) }
+            })
+            .await;
+            if let Ok(Ok(Some(version))) = result {
+                let _ = ompsdk_state.bus.send(version);
             }
         }
     });

@@ -14,8 +14,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// How long a call waits for its reply.
-const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a call waits for its reply. A busy pool answers late, and its calls queue. The
+/// daemon fails a call itself once the pool child has been silent for its `stuck_seconds`
+/// (600 by default). This timeout outlasts that, and a slow pool never fails a call here.
+const CALL_TIMEOUT: Duration = Duration::from_secs(900);
 /// The pool the triage sessions run in. `pools.toml` names it.
 const POOL: &str = "triage";
 

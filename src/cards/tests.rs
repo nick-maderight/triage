@@ -9940,11 +9940,11 @@ fn ompsdk_launch(fake: &FakeOmpsdk) -> Launch {
 }
 
 /// Poll the ompsdk tracker until `done` holds. A reply reaches the connection a moment after its call.
-fn ompsdk_poll_until(tracker: &mut Tracker, db: &Db, launch: &Launch, done: impl Fn(&Db) -> bool) {
+fn ompsdk_poll_until(memo: &mut ompsdk_track::Memo, db: &Db, launch: &Launch, done: impl Fn(&Db) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done(db) {
         assert!(Instant::now() < deadline, "ompsdk poll never reached the expected state");
-        tracker.ompsdk_tick(db, launch);
+        memo.tick(db, launch);
         thread::sleep(Duration::from_millis(20));
     }
 }
@@ -10029,8 +10029,8 @@ fn ompsdk_ask_question_becomes_a_card_and_answers_back() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
     let (card, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Ask);
     assert!(card.answerable);
@@ -10058,9 +10058,9 @@ fn ompsdk_confirm_is_declined_without_a_card() {
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Confirm it").unwrap();
     let declined = wait_for(&fake, |m| m["id"] == "confirm-1" && m["result"]["action"] == "decline");
     assert_eq!(declined["result"], json!({"action": "decline"}));
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    tracker.ompsdk_tick(&db, &launch);
-    tracker.ompsdk_tick(&db, &launch);
+    let mut memo = ompsdk_track::Memo::default();
+    memo.tick(&db, &launch);
+    memo.tick(&db, &launch);
     assert!(db.card("ask:ompsdk:sid-1:confirm-1").unwrap().is_none());
 }
 
@@ -10073,8 +10073,8 @@ fn ompsdk_plan_approval_sets_the_executor_before_accepting() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_some());
     let (card, _) = db.card("plan:ompsdk:sid-1:plan-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Plan);
     ompsdk_track::answer_plan(
@@ -10113,8 +10113,8 @@ fn ompsdk_plan_into_approves_the_first_plan_without_a_card() {
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
     let start = Start::PlanInto(Some("anthropic/claude-smol"), Some("low"));
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |_| {
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| {
         fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_some()
     });
     assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
@@ -10131,13 +10131,13 @@ fn ompsdk_plan_into_retries_a_failed_approval_without_a_card() {
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-planflaky.md", "Plan the change");
     let start = Start::PlanInto(Some("anthropic/claude-smol"), None);
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
+    let mut memo = ompsdk_track::Memo::default();
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut now = events::now_ms();
     while fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_none() {
         assert!(Instant::now() < deadline, "the plan was never approved");
         assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none(), "a failed auto-approval wrote a plan card");
-        ompsdk_track::tick(&mut tracker.ompsdk, &db, &launch, now);
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
         now += 31_000;
         thread::sleep(Duration::from_millis(20));
     }
@@ -10156,11 +10156,11 @@ fn ompsdk_long_running_turn_is_never_resumed() {
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
     wait_for(&fake, |m| m["method"] == "session/prompt");
-    let mut tracker = Tracker::from_db(&db).unwrap();
+    let mut memo = ompsdk_track::Memo::default();
     let mut now = events::now_ms();
     // One poll a second for two minutes, far past the polls a finished turn's transcript gets.
     for _ in 0..120 {
-        ompsdk_track::tick(&mut tracker.ompsdk, &db, &launch, now);
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
         now += 1_000;
         thread::sleep(Duration::from_millis(2));
     }
@@ -10203,8 +10203,8 @@ fn ompsdk_status_reply_child() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Finish it").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
     let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Info);
     assert_eq!(card.engine.as_deref(), Some("ompsdk"));
@@ -10229,8 +10229,8 @@ fn ompsdk_continuation_child() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Continue it").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
     let continuations = fake
         .sent()
         .iter()
@@ -10259,8 +10259,8 @@ fn ompsdk_aborted_child() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Restart it").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |_| fake.find(|m| m["method"] == "session/close").is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| fake.find(|m| m["method"] == "session/close").is_some());
     let continued = fake
         .sent()
         .iter()
@@ -10346,8 +10346,8 @@ fn ompsdk_away_child() {
     wait_until("the daemon to drop the client", || fake.dropped());
     // The reader notices the closed socket a moment after the daemon drops it.
     thread::sleep(Duration::from_millis(100));
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
     wait_for(&fake, |m| m["method"] == "session/close");
     let sent = fake.sent();
     let count = |method: &str| sent.iter().filter(|m| m["method"] == method).count();
@@ -10380,8 +10380,8 @@ fn ompsdk_open_cli_running_child() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO ask");
     ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
-    let mut tracker = Tracker::from_db(&db).unwrap();
-    ompsdk_poll_until(&mut tracker, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
     ompsdk_card(&db, "info:ompsdk:sid-1:e1", Kind::Info);
     let (ask, _) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     ompsdk_track::open_cli(&db, &ask, "sid-1", &launch).unwrap();

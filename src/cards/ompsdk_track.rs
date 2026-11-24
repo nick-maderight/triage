@@ -3,7 +3,7 @@
 //! cards, and keeps what the poll loop needs in `ompsdk-sessions.json` beside the database.
 
 use super::{
-    DEFAULT_SESSION, Launch, Start, TickReport, Tracker, brief_heading, dispatch_prompt, finish_cards, workdir,
+    DEFAULT_SESSION, Launch, Start, TickReport, brief_heading, dispatch_prompt, finish_cards, workdir,
     record_swipe, reply_turn, report_request, shell_quote, supersede_info_cards, trail, turn_card,
 };
 use crate::db::Db;
@@ -25,8 +25,9 @@ const MAX_CONTINUES: u32 = 5;
 /// Polls an ended turn may read as unfinished in its transcript before its session counts as cut.
 /// A turn the daemon still runs is never cut, however long it takes.
 const RUNNING_TICKS: u32 = 30;
-/// Polls a plan-into auto-approval may fail before its plan falls back to a card.
-const APPROVE_TRIES: u32 = 5;
+/// Polls a plan-into auto-approval may fail before its plan falls back to a card. With
+/// `APPROVE_RETRY_MS` this waits out a busy pool for 15 minutes.
+const APPROVE_TRIES: u32 = 30;
 /// Gap before a failed plan-into auto-approval is tried again, in ms.
 const APPROVE_RETRY_MS: i64 = 30_000;
 /// Gap before a session whose resume failed is tried again, in ms.
@@ -39,9 +40,10 @@ const PLAN_REFINE: &str = "Refine plan";
 /// The prompt that resumes a session cut mid-turn.
 const CUT_PROMPT: &str = "Continue where you stopped.";
 
-/// What the ompsdk poll remembers between polls.
+/// What the ompsdk poll remembers between polls. The server keeps it apart from the pane
+/// tracker, so a call that waits on a busy pool never holds up the rest of the inbox poll.
 #[derive(Default)]
-pub(super) struct Memo {
+pub struct Memo {
     /// Connection id of the last poll. A new id means a reconnect, which resumes every held session.
     connection: Option<u64>,
     retry_at_ms: i64,
@@ -54,11 +56,11 @@ pub(super) struct Memo {
     approve_tries: HashMap<String, (u32, i64)>,
 }
 
-impl Tracker {
+impl Memo {
     /// Drive the ompsdk sessions triage holds and return the number of cards written.
-    pub fn ompsdk_tick(&mut self, db: &Db, launch: &Launch) -> TickReport {
+    pub fn tick(&mut self, db: &Db, launch: &Launch) -> TickReport {
         TickReport {
-            written: tick(&mut self.ompsdk, db, launch, events::now_ms()),
+            written: tick(self, db, launch, events::now_ms()),
         }
     }
 }
