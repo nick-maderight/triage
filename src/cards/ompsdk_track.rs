@@ -581,7 +581,11 @@ fn revive(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) {
     });
     match outcome {
         Ok(()) => {
-            let _ = update(db, sid, |entry| entry.cut = false);
+            // The resume binds the session in the daemon again, and the poll must keep tending it.
+            let _ = update(db, sid, |entry| {
+                entry.cut = false;
+                entry.loaded = true;
+            });
             memo.running.remove(sid);
         }
         Err(error) => {
