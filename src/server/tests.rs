@@ -75,8 +75,15 @@ fn roles_from_config_leaves_out_roles_outside_the_chat_catalog() {
 #[test]
 fn string_list_from_config_parses_value_arrays() {
     let config = r#"{"key":"enabledModels","value":["provider/a","provider/b"],"type":"list","description":""}"#;
-    assert_eq!(super::string_list_from_config(config).unwrap(), ["provider/a", "provider/b"]);
-    assert!(super::string_list_from_config(r#"{"value":null}"#).unwrap().is_empty());
+    assert_eq!(
+        super::string_list_from_config(config).unwrap(),
+        ["provider/a", "provider/b"]
+    );
+    assert!(
+        super::string_list_from_config(r#"{"value":null}"#)
+            .unwrap()
+            .is_empty()
+    );
     assert!(super::string_list_from_config("not json").is_none());
 }
 
@@ -112,8 +119,14 @@ fn parse_catalog_keeps_only_enabled_selectors() {
         ]}"#;
     let enabled = vec!["provider/a".to_owned(), "provider/b".to_owned()];
     let models = super::parse_catalog(catalog, &enabled).unwrap();
-    let entries: Vec<(&str, &str)> = models.iter().map(|m| (m.selector.as_str(), m.name.as_str())).collect();
-    assert_eq!(entries, [("provider/a", "Alpha"), ("provider/b", "provider/b")]);
+    let entries: Vec<(&str, &str)> = models
+        .iter()
+        .map(|m| (m.selector.as_str(), m.name.as_str()))
+        .collect();
+    assert_eq!(
+        entries,
+        [("provider/a", "Alpha"), ("provider/b", "provider/b")]
+    );
     assert_eq!(super::parse_catalog(catalog, &[]).unwrap().len(), 3);
     assert!(super::parse_catalog("not json", &enabled).is_none());
 }
@@ -444,7 +457,9 @@ async fn new_session_plan_mode_launches_with_config_overlay() {
 #[cfg(unix)]
 #[tokio::test]
 async fn new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh() {
-    if run_with_fake_tmux_child("server::tests::new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh") {
+    if run_with_fake_tmux_child(
+        "server::tests::new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh",
+    ) {
         return;
     }
     let directory = TestDir::new("triage-session-dsh-plan");
@@ -466,20 +481,37 @@ async fn new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh() {
             engine: Some("dsh".to_owned()),
             image: None,
         };
-        let response =
-            super::start_session(axum::extract::State(Arc::clone(&state)), axum::Json(request)).await;
+        let response = super::start_session(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Json(request),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK, "{mode}");
         let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
         args.push(".args");
         let calls = std::fs::read_to_string(&args).unwrap();
-        let window = calls.lines().rfind(|line| line.starts_with("new-window")).unwrap();
-        assert!(window.contains("--model=@opus --plan=@opus:xhigh --thinking=xhigh"), "{window}");
-        assert!(window.contains("--config") && !window.contains("--plan-yolo"), "{window}");
+        let window = calls
+            .lines()
+            .rfind(|line| line.starts_with("new-window"))
+            .unwrap();
+        assert!(
+            window.contains("--model=@opus --plan=@opus:xhigh --thinking=xhigh"),
+            "{window}"
+        );
+        assert!(
+            window.contains("--config") && !window.contains("--plan-yolo"),
+            "{window}"
+        );
         let tag = calls
             .lines()
             .rfind(|line| line.starts_with("set-option -p -t") && line.contains("@triage_dsh_into"))
             .unwrap();
-        assert!(tag.ends_with(&format!(r#"@triage_dsh_into ["deepseek-v4-pro",null,{auto}]"#)), "{tag}");
+        assert!(
+            tag.ends_with(&format!(
+                r#"@triage_dsh_into ["deepseek-v4-pro",null,{auto}]"#
+            )),
+            "{tag}"
+        );
     }
 }
 
@@ -497,14 +529,22 @@ async fn new_session_with_a_note_dispatches_its_prompt_as_context() {
     let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
     let state = state(db, None);
     for (refused, error) in [
-        (serde_json::json!({"prompt": "Email: Pong", "note": "", "mode": "act"}), "unknown mode"),
-        (serde_json::json!({"prompt": "Email: Pong", "note": "", "task": "bogus"}), "unknown task"),
+        (
+            serde_json::json!({"prompt": "Email: Pong", "note": "", "mode": "act"}),
+            "unknown mode",
+        ),
+        (
+            serde_json::json!({"prompt": "Email: Pong", "note": "", "task": "bogus"}),
+            "unknown task",
+        ),
     ] {
         let request = serde_json::from_value(refused).unwrap();
         let response =
             super::start_session(axum::extract::State(state.clone()), axum::Json(request)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"], error);
     }
@@ -552,7 +592,8 @@ async fn new_session_expands_a_tilde_directory_and_refuses_a_relative_one() {
         "note": "Draft a reply.",
     }))
     .unwrap();
-    let response = super::start_session(axum::extract::State(state.clone()), axum::Json(request)).await;
+    let response =
+        super::start_session(axum::extract::State(state.clone()), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
     args.push(".args");
@@ -566,10 +607,14 @@ async fn new_session_expands_a_tilde_directory_and_refuses_a_relative_one() {
     let home = std::env::var("HOME").unwrap();
     assert!(launch.contains(&format!(" -c {home} -P ")), "{launch}");
 
-    let request = serde_json::from_value(serde_json::json!({"prompt": "Reply pong.", "cwd": "notes"})).unwrap();
+    let request =
+        serde_json::from_value(serde_json::json!({"prompt": "Reply pong.", "cwd": "notes"}))
+            .unwrap();
     let response = super::start_session(axum::extract::State(state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["error"], "working directory must be absolute: notes");
 }
@@ -728,7 +773,8 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
             name: Some("shot.png".to_owned()),
         }),
     };
-    let response = super::start_session(axum::extract::State(daemon_state), axum::Json(request)).await;
+    let response =
+        super::start_session(axum::extract::State(daemon_state), axum::Json(request)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let uploads = std::fs::read_dir(directory.0.join("uploads"))
@@ -740,8 +786,14 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
     let mut args = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
     args.push(".args");
     let launch = std::fs::read_to_string(&args).unwrap();
-    assert!(launch.lines().any(|line| line.starts_with("new-window")), "{launch}");
-    assert!(launch.contains(&format!("@{}", uploads[0].display())), "{launch}");
+    assert!(
+        launch.lines().any(|line| line.starts_with("new-window")),
+        "{launch}"
+    );
+    assert!(
+        launch.contains(&format!("@{}", uploads[0].display())),
+        "{launch}"
+    );
 
     let bad = super::SessionRequest {
         prompt: "Describe this.".to_owned(),
@@ -762,8 +814,7 @@ async fn new_session_stores_an_image_and_hands_it_to_omp() {
         }),
     };
     let bad_state = state(Db::open(&directory.0.join("second.sqlite")).unwrap(), None);
-    let rejected =
-        super::start_session(axum::extract::State(bad_state), axum::Json(bad)).await;
+    let rejected = super::start_session(axum::extract::State(bad_state), axum::Json(bad)).await;
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -790,15 +841,17 @@ async fn new_session_rejects_plan_into_effort_the_engine_cannot_take() {
             image: None,
         })
     };
-    for (engine, executor, effort) in [
-        ("omp", Some("provider/executor"), Some("sideways")),
-    ] {
+    for (engine, executor, effort) in [("omp", Some("provider/executor"), Some("sideways"))] {
         let response = super::start_session(
             axum::extract::State(state.clone()),
             request(engine, executor, effort),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{engine} {effort:?}");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{engine} {effort:?}"
+        );
     }
 }
 
@@ -1117,7 +1170,10 @@ fn finding_question_keeps_its_own_star_and_a_malformed_one_makes_no_card() {
     ))
     .unwrap();
     let queued = serde_json::to_value(&card).unwrap();
-    assert_eq!(queued["questions"][0]["star"]["situation"], "The key is 120 days old.");
+    assert_eq!(
+        queued["questions"][0]["star"]["situation"],
+        "The key is 120 days old."
+    );
     assert_eq!(queued["questions"][0]["star"]["action"], "Run rotate.sh.");
     assert!(queued["questions"][1].get("star").is_none());
     assert!(
@@ -1143,7 +1199,14 @@ fn finding_questions_are_optional_and_malformed_ones_make_no_card() {
         serde_json::json!([{"label": 3, "question": "Label is not text"}]),
     ] {
         let data = serde_json::json!({"title": "Broken", "questions": questions});
-        assert!(card_from_event(&event(crate::events::T_FINDING, "urn:test:finding-broken", data)).is_none());
+        assert!(
+            card_from_event(&event(
+                crate::events::T_FINDING,
+                "urn:test:finding-broken",
+                data
+            ))
+            .is_none()
+        );
     }
     let info = card_from_event(&event(
         crate::events::T_INFO,
@@ -1296,7 +1359,11 @@ async fn shell_files_revalidate_and_compress() {
     assert!(revalidated.raw_body.is_empty());
     assert_eq!(compressed.content_encoding.as_deref(), Some("gzip"));
     let queue = http_request(address, "GET", "/v1/queue", "").await;
-    assert_eq!(queue.body["shell"], etag.as_str(), "the queue names the shell the daemon serves");
+    assert_eq!(
+        queue.body["shell"],
+        etag.as_str(),
+        "the queue names the shell the daemon serves"
+    );
     server.abort();
 }
 
@@ -1328,12 +1395,28 @@ async fn ingest_rejects_malformed_finding_questions_and_stores_unknown_events() 
         "urn:test:malformed-questions",
         serde_json::json!({"title": "Broken", "questions": "not a list"}),
     );
-    let rejected = http_request(address, "POST", "/v1/ingest", &serde_json::to_string(&malformed).unwrap()).await;
+    let rejected = http_request(
+        address,
+        "POST",
+        "/v1/ingest",
+        &serde_json::to_string(&malformed).unwrap(),
+    )
+    .await;
     assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
     assert_eq!(rejected.body["error"], "invalid finding questions");
     assert_eq!(state.db.version().unwrap(), 0);
-    let unknown = event("custom.notice", "urn:test:unknown-questions", serde_json::json!({"questions": "not a list"}));
-    let stored = http_request(address, "POST", "/v1/ingest", &serde_json::to_string(&unknown).unwrap()).await;
+    let unknown = event(
+        "custom.notice",
+        "urn:test:unknown-questions",
+        serde_json::json!({"questions": "not a list"}),
+    );
+    let stored = http_request(
+        address,
+        "POST",
+        "/v1/ingest",
+        &serde_json::to_string(&unknown).unwrap(),
+    )
+    .await;
     assert_eq!(stored.status, StatusCode::ACCEPTED);
     assert_eq!(stored.body["stored"], true);
     assert!(state.db.queue(crate::events::now_ms()).unwrap().is_empty());
@@ -1353,7 +1436,10 @@ async fn dictation_settings_start_empty_and_keep_the_latest_save() {
     ] {
         let response = http_request(address, "POST", "/v1/dictation", &saved.to_string()).await;
         assert_eq!(response.status, StatusCode::OK, "{}", response.body);
-        assert_eq!(http_request(address, "GET", "/v1/dictation", "").await.body, saved);
+        assert_eq!(
+            http_request(address, "GET", "/v1/dictation", "").await.body,
+            saved
+        );
     }
     server.abort();
 }
@@ -1430,7 +1516,13 @@ async fn duplicate_queued_finding_folds_without_queueing() {
             serde_json::json!({"title": title}),
         );
         async move {
-            http_request(address, "POST", "/v1/ingest", &serde_json::to_string(&event).unwrap()).await
+            http_request(
+                address,
+                "POST",
+                "/v1/ingest",
+                &serde_json::to_string(&event).unwrap(),
+            )
+            .await
         }
     };
 
@@ -1445,21 +1537,31 @@ async fn duplicate_queued_finding_folds_without_queueing() {
         "jobs://runner1",
         "first",
         serde_json::json!({"title": "Alert flush failed"}),
-    )).unwrap().id;
+    ))
+    .unwrap()
+    .id;
     let duplicate_id = card_from_event(&event_with_id(
         crate::events::T_FINDING,
         "jobs://runner1",
         "duplicate",
         serde_json::json!({"title": "Alert flush failed"}),
-    )).unwrap().id;
+    ))
+    .unwrap()
+    .id;
     let queue = state.db.queue(crate::events::now_ms()).unwrap();
     let swipe = state.db.card(&duplicate_id).unwrap().unwrap().1.unwrap();
     assert_eq!(queue.len(), 1);
     assert_eq!(queue[0].id, first_id);
     assert_eq!(swipe.action, "done");
-    assert_eq!(swipe.reason.as_deref(), Some(format!("duplicate of {first_id}").as_str()));
+    assert_eq!(
+        swipe.reason.as_deref(),
+        Some(format!("duplicate of {first_id}").as_str())
+    );
 
-    assert_eq!(post("different", "Another alert").await.body["stored"], true);
+    assert_eq!(
+        post("different", "Another alert").await.body["stored"],
+        true
+    );
     assert_eq!(state.db.queue(crate::events::now_ms()).unwrap().len(), 2);
     server.abort();
 }
@@ -1467,27 +1569,60 @@ async fn duplicate_queued_finding_folds_without_queueing() {
 #[tokio::test]
 async fn report_route_handles_unknown_and_paneless_cards() {
     let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let card = card_from_event(&event(crate::events::T_INFO, "urn:test:report", serde_json::json!({"title": "Report"}))).unwrap();
+    let card = card_from_event(&event(
+        crate::events::T_INFO,
+        "urn:test:report",
+        serde_json::json!({"title": "Report"}),
+    ))
+    .unwrap();
     state.db.insert_card(&card).unwrap();
     let (address, server) = start_http_server(state.clone()).await;
     let unknown = http_request(address, "POST", "/v1/cards/missing/report", "{}").await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
-    let response = http_request(address, "POST", &format!("/v1/cards/{}/report", card.id), "{}").await;
+    let response = http_request(
+        address,
+        "POST",
+        &format!("/v1/cards/{}/report", card.id),
+        "{}",
+    )
+    .await;
     assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(response.body["error"], "card has no pane");
     assert!(state.db.card(&card.id).unwrap().unwrap().1.is_none());
     server.abort();
 }
 
-
 #[tokio::test]
 async fn report_route_rejects_handled_card() {
     let state = state(Db::open(Path::new(":memory:")).unwrap(), None);
-    let card = card_from_event(&event(crate::events::T_INFO, "urn:test:report-handled", serde_json::json!({"title": "Report"}))).unwrap();
+    let card = card_from_event(&event(
+        crate::events::T_INFO,
+        "urn:test:report-handled",
+        serde_json::json!({"title": "Report"}),
+    ))
+    .unwrap();
     state.db.insert_card(&card).unwrap();
-    state.db.swipe(&Swipe { card: card.id.clone(), action: "done".to_owned(), option: None, text: None, note: None, until_ms: None, reason: None, at_ms: crate::events::now_ms() }).unwrap();
+    state
+        .db
+        .swipe(&Swipe {
+            card: card.id.clone(),
+            action: "done".to_owned(),
+            option: None,
+            text: None,
+            note: None,
+            until_ms: None,
+            reason: None,
+            at_ms: crate::events::now_ms(),
+        })
+        .unwrap();
     let (address, server) = start_http_server(state.clone()).await;
-    let response = http_request(address, "POST", &format!("/v1/cards/{}/report", card.id), "{}").await;
+    let response = http_request(
+        address,
+        "POST",
+        &format!("/v1/cards/{}/report", card.id),
+        "{}",
+    )
+    .await;
     assert_eq!(response.status, StatusCode::CONFLICT);
     assert_eq!(response.body["error"], "card is not queued");
     server.abort();
@@ -2021,19 +2156,45 @@ async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     let state = state(db, None);
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{id}/dispatch");
-    let outside = http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","executor":"provider/x"}"#).await;
+    let outside = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"mode":"goal","task":"act","executor":"provider/x"}"#,
+    )
+    .await;
     assert_eq!(outside.status, StatusCode::BAD_REQUEST);
     assert_eq!(outside.body["error"], "executor needs mode plan-into");
-    let bad = http_request(address, "POST", &path, r#"{"mode":"plan-into","executor":"x; rm -rf ~"}"#).await;
+    let bad = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"mode":"plan-into","executor":"x; rm -rf ~"}"#,
+    )
+    .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
     assert_eq!(bad.body["error"], "invalid model x; rm -rf ~");
-    let thinking = http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","thinking":"sideways"}"#).await;
+    let thinking = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"mode":"goal","task":"act","thinking":"sideways"}"#,
+    )
+    .await;
     assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
     assert_eq!(thinking.body["error"], "unknown thinking level sideways");
-    let effort_outside =
-        http_request(address, "POST", &path, r#"{"mode":"goal","task":"act","executor_thinking":"low"}"#).await;
+    let effort_outside = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"mode":"goal","task":"act","executor_thinking":"low"}"#,
+    )
+    .await;
     assert_eq!(effort_outside.status, StatusCode::BAD_REQUEST);
-    assert_eq!(effort_outside.body["error"], "executor thinking needs mode plan-into");
+    assert_eq!(
+        effort_outside.body["error"],
+        "executor thinking needs mode plan-into"
+    );
     let bad_effort = http_request(
         address,
         "POST",
@@ -2042,14 +2203,19 @@ async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     )
     .await;
     assert_eq!(bad_effort.status, StatusCode::BAD_REQUEST);
-    assert_eq!(bad_effort.body["error"], "unknown execution thinking level sideways");
+    assert_eq!(
+        bad_effort.body["error"],
+        "unknown execution thinking level sideways"
+    );
     assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
     server.abort();
 }
 #[cfg(unix)]
 #[tokio::test]
 async fn finding_answer_launches_with_requested_mode_model_and_thinking() {
-    if run_with_fake_tmux_child("server::tests::finding_answer_launches_with_requested_mode_model_and_thinking") {
+    if run_with_fake_tmux_child(
+        "server::tests::finding_answer_launches_with_requested_mode_model_and_thinking",
+    ) {
         return;
     }
     use std::os::unix::fs::PermissionsExt;
@@ -2073,16 +2239,33 @@ case "$1" in list-panes) printf '' ;; esac
         serde_json::json!({"title": "Finding launch choices", "options": [{"label": "Do as recommended"}]}),
     )).unwrap();
     db.insert_card(&card).unwrap();
-    let state = state_with(db, crate::cards::Launch { session: Some("triage".to_owned()), model: None, thinking: None, ..crate::cards::Launch::default() });
+    let state = state_with(
+        db,
+        crate::cards::Launch {
+            session: Some("triage".to_owned()),
+            model: None,
+            thinking: None,
+            ..crate::cards::Launch::default()
+        },
+    );
     let (address, server) = start_http_server(state.clone()).await;
     let path = format!("/v1/cards/{}/answer", card.id);
-    let response = http_request(address, "POST", &path,
-        r#"{"option":0,"mode":"goal","task":"act","model":"provider/chosen","thinking":"high"}"#).await;
+    let response = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"option":0,"mode":"goal","task":"act","model":"provider/chosen","thinking":"high"}"#,
+    )
+    .await;
     let mut args_path = std::env::var_os("TRIAGE_BUGHUNT_1792294661_TMUX_LOG").unwrap();
     args_path.push(".args");
     let launch = std::fs::read_to_string(&args_path).unwrap();
     assert_eq!(response.status, StatusCode::OK);
-    assert!(launch.contains("--model=provider/chosen --plan=provider/chosen:high --thinking=high --goal"), "{launch}");
+    assert!(
+        launch
+            .contains("--model=provider/chosen --plan=provider/chosen:high --thinking=high --goal"),
+        "{launch}"
+    );
     assert!(state.db.card(&card.id).unwrap().unwrap().1.is_some());
     server.abort();
 }
@@ -2090,7 +2273,12 @@ case "$1" in list-panes) printf '' ;; esac
 #[tokio::test]
 async fn finding_answer_rejects_unknown_mode_and_thinking_level() {
     let db = Db::open(Path::new(":memory:")).unwrap();
-    let card = card_from_event(&event(crate::events::T_FINDING, "urn:test:finding-validation", serde_json::json!({"title": "Finding"}))).unwrap();
+    let card = card_from_event(&event(
+        crate::events::T_FINDING,
+        "urn:test:finding-validation",
+        serde_json::json!({"title": "Finding"}),
+    ))
+    .unwrap();
     db.insert_card(&card).unwrap();
     let id = card.id;
     let state = state(db, None);
@@ -2102,13 +2290,18 @@ async fn finding_answer_rejects_unknown_mode_and_thinking_level() {
     let task = http_request(address, "POST", &path, r#"{"option":0,"task":"plan"}"#).await;
     assert_eq!(task.status, StatusCode::BAD_REQUEST);
     assert_eq!(task.body["error"], "unknown task");
-    let thinking = http_request(address, "POST", &path, r#"{"option":0,"thinking":"sideways"}"#).await;
+    let thinking = http_request(
+        address,
+        "POST",
+        &path,
+        r#"{"option":0,"thinking":"sideways"}"#,
+    )
+    .await;
     assert_eq!(thinking.status, StatusCode::BAD_REQUEST);
     assert_eq!(thinking.body["error"], "unknown thinking level sideways");
     assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
     server.abort();
 }
-
 
 #[tokio::test]
 async fn new_session_rejects_unknown_mode_and_executor_outside_plan_into() {
@@ -2169,7 +2362,9 @@ async fn new_session_rejects_unknown_mode_and_executor_outside_plan_into() {
     .await;
     assert_eq!(stale.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(
-        stale.body["error"].as_str().is_some_and(|error| error.contains("unknown field `plan`")),
+        stale.body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("unknown field `plan`")),
         "{:?}",
         stale.body
     );
@@ -2264,6 +2459,13 @@ async fn new_session_defaults_to_plan_into_on_ompsdk() {
         },
     );
     let (address, server) = start_http_server(state).await;
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","executor":"x; rm -rf ~"}"#,
+    )
+    .await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
     assert_eq!(response.body["error"], "invalid model x; rm -rf ~");
     server.abort();
@@ -2281,6 +2483,13 @@ async fn new_session_keeps_goal_as_the_omp_default_mode() {
         },
     );
     let (address, server) = start_http_server(state).await;
+    let response = http_request(
+        address,
+        "POST",
+        "/v1/sessions",
+        r#"{"prompt":"Reply pong.","executor":"provider/x"}"#,
+    )
+    .await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
     assert_eq!(response.body["error"], "executor needs mode plan-into");
     server.abort();
@@ -2506,10 +2715,7 @@ async fn poll_broadcasts_when_deferred_card_becomes_due() {
         launch: crate::cards::Launch::default(),
         allowed_hosts: Vec::new(),
     });
-    let server = tokio::spawn(super::serve(
-        state.clone(),
-        "127.0.0.1:0".parse().unwrap(),
-    ));
+    let server = tokio::spawn(super::serve(state.clone(), "127.0.0.1:0".parse().unwrap()));
     assert!(
         tokio::time::timeout(Duration::from_millis(500), updates.recv())
             .await
@@ -2811,7 +3017,13 @@ esac
         .unwrap();
     };
     let snapshot = || -> Vec<String> {
-        super::MODELS.read().unwrap().models.iter().map(|model| model.selector.clone()).collect()
+        super::MODELS
+            .read()
+            .unwrap()
+            .models
+            .iter()
+            .map(|model| model.selector.clone())
+            .collect()
     };
     let mut loaded = None;
 
@@ -2841,7 +3053,9 @@ esac
 #[cfg(unix)]
 #[test]
 fn models_retries_failed_loads_without_another_config_change() {
-    if run_with_fake_tmux_child("server::tests::models_retries_failed_loads_without_another_config_change") {
+    if run_with_fake_tmux_child(
+        "server::tests::models_retries_failed_loads_without_another_config_change",
+    ) {
         return;
     }
     use std::os::unix::fs::PermissionsExt;
@@ -2886,8 +3100,16 @@ esac
     let snapshot = || {
         let catalog = super::MODELS.read().unwrap();
         (
-            catalog.models.iter().map(|model| model.selector.clone()).collect::<Vec<_>>(),
-            catalog.execution_models.iter().map(|model| model.selector.clone()).collect::<Vec<_>>(),
+            catalog
+                .models
+                .iter()
+                .map(|model| model.selector.clone())
+                .collect::<Vec<_>>(),
+            catalog
+                .execution_models
+                .iter()
+                .map(|model| model.selector.clone())
+                .collect::<Vec<_>>(),
         )
     };
     let mut loaded = None;
@@ -2896,7 +3118,13 @@ esac
     std::fs::write(&fail_cycle, "fail").unwrap();
     assert!(super::refresh_models(Some(agent.0.as_path()), &mut loaded));
     assert!(loaded.is_none());
-    assert_eq!(snapshot(), (vec!["@default".to_owned(), "@smol".to_owned()], Vec::<String>::new()));
+    assert_eq!(
+        snapshot(),
+        (
+            vec!["@default".to_owned(), "@smol".to_owned()],
+            Vec::<String>::new()
+        )
+    );
 
     std::fs::remove_file(&fail_models).unwrap();
     std::fs::remove_file(&fail_cycle).unwrap();
@@ -2995,20 +3223,30 @@ async fn dsh_models_follow_the_host_catalog() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let response = super::models(
         axum::extract::State(dsh_models_state(db, host, None)),
-        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+        axum::extract::Query(super::ModelsQuery {
+            engine: Some("dsh".to_owned()),
+        }),
     )
     .await;
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["default_mode"], "goal");
-    assert_eq!(parsed["thinking"], serde_json::json!(["off", "low", "high", "max"]));
+    assert_eq!(
+        parsed["thinking"],
+        serde_json::json!(["off", "low", "high", "max"])
+    );
     let selectors: Vec<&str> = parsed["models"]
         .as_array()
         .unwrap()
         .iter()
         .map(|model| model["selector"].as_str().unwrap())
         .collect();
-    assert_eq!(selectors, ["opencode-go/deepseek-v4.1-flash", "opencode-go/beam-free"]);
+    assert_eq!(
+        selectors,
+        ["opencode-go/deepseek-v4.1-flash", "opencode-go/beam-free"]
+    );
     let names: Vec<&str> = parsed["models"]
         .as_array()
         .unwrap()
@@ -3039,10 +3277,14 @@ async fn dsh_models_keep_a_daemon_model_the_host_offers() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let response = super::models(
         axum::extract::State(dsh_models_state(db, host, Some("opencode-go/beam-free"))),
-        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+        axum::extract::Query(super::ModelsQuery {
+            engine: Some("dsh".to_owned()),
+        }),
     )
     .await;
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["default"], "opencode-go/beam-free");
 }
@@ -3059,11 +3301,19 @@ async fn dsh_models_drop_a_daemon_model_the_host_no_longer_offers() {
     .await;
     let db = Db::open(Path::new(":memory:")).unwrap();
     let response = super::models(
-        axum::extract::State(dsh_models_state(db, host, Some("deepseek-official/deepseek-flash"))),
-        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+        axum::extract::State(dsh_models_state(
+            db,
+            host,
+            Some("deepseek-official/deepseek-flash"),
+        )),
+        axum::extract::Query(super::ModelsQuery {
+            engine: Some("dsh".to_owned()),
+        }),
     )
     .await;
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["default"], "opencode-go/deepseek-v4.1-flash");
 }
@@ -3074,14 +3324,21 @@ async fn dsh_models_are_empty_without_a_host() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let response = super::models(
         axum::extract::State(dsh_models_state(db, dir.0.join("missing.json"), None)),
-        axum::extract::Query(super::ModelsQuery { engine: Some("dsh".to_owned()) }),
+        axum::extract::Query(super::ModelsQuery {
+            engine: Some("dsh".to_owned()),
+        }),
     )
     .await;
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["models"], serde_json::json!([]));
     assert!(parsed["default"].is_null());
-    assert_eq!(parsed["thinking"], serde_json::json!(["off", "low", "high", "max"]));
+    assert_eq!(
+        parsed["thinking"],
+        serde_json::json!(["off", "low", "high", "max"])
+    );
 }
 
 #[tokio::test]
@@ -3089,7 +3346,9 @@ async fn models_refuse_an_unknown_engine() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let response = super::models(
         axum::extract::State(state(db, None)),
-        axum::extract::Query(super::ModelsQuery { engine: Some("bogus".to_owned()) }),
+        axum::extract::Query(super::ModelsQuery {
+            engine: Some("bogus".to_owned()),
+        }),
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -3107,17 +3366,29 @@ async fn omp_and_ompsdk_models_name_the_daemon_model_and_level() {
     for engine in ["ompsdk", "omp"] {
         let response = super::models(
             axum::extract::State(state.clone()),
-            axum::extract::Query(super::ModelsQuery { engine: Some(engine.to_owned()) }),
+            axum::extract::Query(super::ModelsQuery {
+                engine: Some(engine.to_owned()),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value =
-            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body["engine"], engine);
         assert_eq!(body["default"], "@opus", "{engine} names the daemon model");
-        assert_eq!(body["default_thinking"], "xhigh", "{engine} names the daemon level");
+        assert_eq!(
+            body["default_thinking"], "xhigh",
+            "{engine} names the daemon level"
+        );
+        assert_eq!(
+            body["default_mode"],
             if engine == "ompsdk" { "plan-into" } else { "goal" },
             "{engine} default mode"
+        );
     }
 }
 
@@ -3192,7 +3463,9 @@ async fn slow_launch_bridge(
         )
         .route(
             "/v1/pending",
-            axum::routing::get(|| async { axum::Json(serde_json::json!({"pid": 4242, "items": []})) }),
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"pid": 4242, "items": []}))
+            }),
         )
         .route(
             "/v1/launch",
@@ -3233,7 +3506,10 @@ fn dsh_launch_state(db: Db, host: PathBuf) -> Arc<AppState> {
 async fn new_session_answers_starting_before_a_slow_launch_finishes() {
     let (dir, host, launches) = slow_launch_bridge(
         std::time::Duration::from_secs(5),
-        (StatusCode::OK, serde_json::json!({"sessionId": "session-slow"})),
+        (
+            StatusCode::OK,
+            serde_json::json!({"sessionId": "session-slow"}),
+        ),
     )
     .await;
     let db = Db::open(&dir.0.join("triage.sqlite")).unwrap();
@@ -3263,7 +3539,10 @@ async fn new_session_answers_starting_before_a_slow_launch_finishes() {
 async fn new_session_answers_the_pane_a_fast_launch_returns() {
     let (dir, host, _launches) = slow_launch_bridge(
         std::time::Duration::ZERO,
-        (StatusCode::OK, serde_json::json!({"sessionId": "session-fast"})),
+        (
+            StatusCode::OK,
+            serde_json::json!({"sessionId": "session-fast"}),
+        ),
     )
     .await;
     let db = Db::open(&dir.0.join("triage.sqlite")).unwrap();
@@ -3305,7 +3584,10 @@ async fn a_launch_that_fails_after_start_lands_in_the_inbox() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let queued = state.db.queue(crate::events::now_ms()).unwrap();
-        if let Some(card) = queued.iter().find(|card| card.title == "Could not start the session") {
+        if let Some(card) = queued
+            .iter()
+            .find(|card| card.title == "Could not start the session")
+        {
             let body = card.body.as_deref().unwrap_or_default();
             assert!(body.contains("connection reset by peer"), "{body}");
             assert!(body.contains("Reply pong."), "{body}");
@@ -3322,7 +3604,12 @@ async fn a_launch_that_fails_after_start_lands_in_the_inbox() {
 
 #[tokio::test]
 async fn new_session_refuses_a_bad_mode_before_it_waits_for_the_launch() {
-    let db = Db::open(&TestDir::new("triage-session-bad-mode").0.join("triage.sqlite")).unwrap();
+    let db = Db::open(
+        &TestDir::new("triage-session-bad-mode")
+            .0
+            .join("triage.sqlite"),
+    )
+    .unwrap();
     let state = state(db, None);
     let (address, server) = start_http_server(Arc::clone(&state)).await;
     let response = http_request(
@@ -3333,25 +3620,37 @@ async fn new_session_refuses_a_bad_mode_before_it_waits_for_the_launch() {
     )
     .await;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
-    assert_eq!(response.body["error"], "executor thinking needs mode plan-into");
+    assert_eq!(
+        response.body["error"],
+        "executor thinking needs mode plan-into"
+    );
     server.abort();
 }
 
 #[tokio::test]
 async fn dsh_send_refuses_a_command_prefix_before_reaching_the_bridge() {
     let db = Db::open(Path::new(":memory:")).unwrap();
-    let launch = crate::cards::Launch { engine: crate::cards::Engine::Dsh, ..crate::cards::Launch::default() };
+    let launch = crate::cards::Launch {
+        engine: crate::cards::Engine::Dsh,
+        ..crate::cards::Launch::default()
+    };
     let (address, server) = start_http_server(state_with(db, launch)).await;
     let response = http_request(address, "POST", "/v1/dsh/x/send", r#"{"text":"/goal x"}"#).await;
     assert_eq!(response.status, StatusCode::CONFLICT);
-    assert_eq!(response.body["error"], "text starts with a blocked command prefix");
+    assert_eq!(
+        response.body["error"],
+        "text starts with a blocked command prefix"
+    );
     server.abort();
 }
 
 #[tokio::test]
 async fn dsh_open_without_a_host_says_dsh_is_not_running() {
     let db = Db::open(Path::new(":memory:")).unwrap();
-    let launch = crate::cards::Launch { engine: crate::cards::Engine::Dsh, ..crate::cards::Launch::default() };
+    let launch = crate::cards::Launch {
+        engine: crate::cards::Engine::Dsh,
+        ..crate::cards::Launch::default()
+    };
     let (address, server) = start_http_server(state_with(db, launch)).await;
     let response = http_request(address, "POST", "/v1/dsh/open", "{}").await;
     assert_eq!(response.status, StatusCode::CONFLICT);
@@ -3362,10 +3661,20 @@ async fn dsh_open_without_a_host_says_dsh_is_not_running() {
 #[tokio::test]
 async fn cli_route_refuses_cards_without_a_tracked_ompsdk_session() {
     let db = Db::open(Path::new(":memory:")).unwrap();
-    let mut omp = card_from_event(&event(crate::events::T_INFO, "urn:test:cli-omp", serde_json::json!({"title": "Report"}))).unwrap();
+    let mut omp = card_from_event(&event(
+        crate::events::T_INFO,
+        "urn:test:cli-omp",
+        serde_json::json!({"title": "Report"}),
+    ))
+    .unwrap();
     omp.source.uri = "omp://session/x".to_owned();
     db.insert_card(&omp).unwrap();
-    let mut ompsdk_card = card_from_event(&event(crate::events::T_INFO, "urn:test:cli-ompsdk", serde_json::json!({"title": "Report"}))).unwrap();
+    let mut ompsdk_card = card_from_event(&event(
+        crate::events::T_INFO,
+        "urn:test:cli-ompsdk",
+        serde_json::json!({"title": "Report"}),
+    ))
+    .unwrap();
     ompsdk_card.engine = Some("ompsdk".to_owned());
     ompsdk_card.source.uri = "ompsdk://session/sid-9".to_owned();
     db.insert_card(&ompsdk_card).unwrap();
@@ -3374,34 +3683,56 @@ async fn cli_route_refuses_cards_without_a_tracked_ompsdk_session() {
     let plain = http_request(address, "POST", &format!("/v1/cards/{}/cli", omp.id), "{}").await;
     assert_eq!(plain.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(plain.body["error"], "card has no ompsdk session");
-    let untracked = http_request(address, "POST", &format!("/v1/cards/{}/cli", ompsdk_card.id), "{}").await;
+    let untracked = http_request(
+        address,
+        "POST",
+        &format!("/v1/cards/{}/cli", ompsdk_card.id),
+        "{}",
+    )
+    .await;
     assert_eq!(untracked.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(untracked.body["error"], "ompsdk session is no longer tracked");
+    assert_eq!(
+        untracked.body["error"],
+        "ompsdk session is no longer tracked"
+    );
     assert!(state.db.card(&ompsdk_card.id).unwrap().unwrap().1.is_none());
     server.abort();
 }
 
 #[tokio::test]
 async fn models_serve_the_omp_catalog_for_the_ompsdk_engine() {
-    if run_with_fake_tmux_child("server::tests::models_serve_the_omp_catalog_for_the_ompsdk_engine") {
+    if run_with_fake_tmux_child("server::tests::models_serve_the_omp_catalog_for_the_ompsdk_engine")
+    {
         return;
     }
     {
         let mut catalog = super::MODELS.write().unwrap();
-        let one = super::Model { selector: "provider/one".to_owned(), name: "One".to_owned() };
+        let one = super::Model {
+            selector: "provider/one".to_owned(),
+            name: "One".to_owned(),
+        };
         catalog.models = vec![one.clone()];
         catalog.execution_models = vec![one];
     }
     let response = super::models(
         axum::extract::State(state(Db::open(Path::new(":memory:")).unwrap(), None)),
-        axum::extract::Query(super::ModelsQuery { engine: Some("ompsdk".to_owned()) }),
+        axum::extract::Query(super::ModelsQuery {
+            engine: Some("ompsdk".to_owned()),
+        }),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["engine"], "ompsdk");
     assert_eq!(body["models"][0]["selector"], "provider/one");
     assert_eq!(body["execution_models"][0]["selector"], "provider/one");
-    assert_eq!(body["thinking"], serde_json::json!(crate::cards::THINKING_LEVELS));
+    assert_eq!(
+        body["thinking"],
+        serde_json::json!(crate::cards::THINKING_LEVELS)
+    );
 }

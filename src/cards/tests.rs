@@ -5,13 +5,6 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::header::AUTHORIZATION;
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
-use serde_json::{Value, json};
-use std::collections::HashMap;
 
 const CHILD_TEST: &str = "TRIAGE_CARDS_CHILD_TEST";
 const CHILD_ROOT: &str = "TRIAGE_CARDS_CHILD_ROOT";
@@ -367,10 +360,19 @@ fn finding_card(root: &Path) -> Card {
         kind: Kind::Finding,
         priority: 1,
         created_ms: events::now_ms(),
-        source: Source { cwd: root.display().to_string(), ..Source::default() },
+        source: Source {
+            cwd: root.display().to_string(),
+            ..Source::default()
+        },
         title: "Finding".to_owned(),
         star: Star::default(),
-        options: ["Apply", "Defer"].into_iter().map(|label| CardOption { label: label.to_owned(), ..CardOption::default() }).collect(),
+        options: ["Apply", "Defer"]
+            .into_iter()
+            .map(|label| CardOption {
+                label: label.to_owned(),
+                ..CardOption::default()
+            })
+            .collect(),
         answerable: true,
         allow_other: false,
         questions: Vec::new(),
@@ -394,8 +396,15 @@ fn plan_card(pane: &tmux::Pane, index: usize) -> Card {
         title: format!("Plan ready: proposal-{index}"),
         star: Star::default(),
         options: vec![
-            CardOption { label: "Approve".to_owned(), recommended: true, ..CardOption::default() },
-            CardOption { label: "Refine".to_owned(), ..CardOption::default() },
+            CardOption {
+                label: "Approve".to_owned(),
+                recommended: true,
+                ..CardOption::default()
+            },
+            CardOption {
+                label: "Refine".to_owned(),
+                ..CardOption::default()
+            },
         ],
         answerable: true,
         allow_other: true,
@@ -432,7 +441,12 @@ fn info_card(id: &str, pane: &str) -> Card {
         kind: Kind::Info,
         priority: 1,
         created_ms: events::now_ms(),
-        source: Source { uri: format!("pane:{pane}"), label: pane.to_owned(), pane: Some(pane.to_owned()), ..Source::default() },
+        source: Source {
+            uri: format!("pane:{pane}"),
+            label: pane.to_owned(),
+            pane: Some(pane.to_owned()),
+            ..Source::default()
+        },
         title: "Earlier result".to_owned(),
         star: Star::default(),
         options: Vec::new(),
@@ -539,7 +553,10 @@ fn install_swipe_failure(path: &Path, name: &str, action: &str) -> Connection {
 /// A finding with three questions. Stock disallows custom text.
 #[cfg(unix)]
 fn question_finding_card(root: &Path) -> Card {
-    let option = |label: &str| CardOption { label: label.to_owned(), ..CardOption::default() };
+    let option = |label: &str| CardOption {
+        label: label.to_owned(),
+        ..CardOption::default()
+    };
     let question = |label: &str, options: Vec<CardOption>, allow_other: bool| CardQuestion {
         label: label.to_owned(),
         question: format!("{label}?"),
@@ -549,8 +566,16 @@ fn question_finding_card(root: &Path) -> Card {
     };
     Card {
         questions: vec![
-            question("Supplier", vec![option("Do as recommended"), option("Skip")], true),
-            question("Stock", vec![option("Investigate first"), option("Keep")], false),
+            question(
+                "Supplier",
+                vec![option("Do as recommended"), option("Skip")],
+                true,
+            ),
+            question(
+                "Stock",
+                vec![option("Investigate first"), option("Keep")],
+                false,
+            ),
             question("Note", vec![option("skip")], true),
         ],
         ..finding_card(root)
@@ -559,17 +584,27 @@ fn question_finding_card(root: &Path) -> Card {
 
 #[cfg(unix)]
 fn picked(option: usize) -> events::Answer {
-    events::Answer { option: Some(option), ..events::Answer::default() }
+    events::Answer {
+        option: Some(option),
+        ..events::Answer::default()
+    }
 }
 
 #[cfg(unix)]
 fn typed(text: &str) -> events::Answer {
-    events::Answer { text: Some(text.to_owned()), ..events::Answer::default() }
+    events::Answer {
+        text: Some(text.to_owned()),
+        ..events::Answer::default()
+    }
 }
 
 #[cfg(unix)]
 fn question_req(answers: Vec<events::Answer>, note: Option<&str>) -> AnswerReq {
-    AnswerReq { answers, note: note.map(str::to_owned), ..AnswerReq::default() }
+    AnswerReq {
+        answers,
+        note: note.map(str::to_owned),
+        ..AnswerReq::default()
+    }
 }
 
 #[test]
@@ -608,21 +643,48 @@ fn report_request_and_format() -> (String, String) {
 fn briefs_forbid_asking_for_a_send_and_shape_the_report_as_star() {
     let (_, format) = report_request_and_format();
     for text in [REPORT_STEP, format.as_str()] {
-        for step in ["S: the situation", "T: the task", "A: what you did", "R: the outcome", "`Remaining:`", "`Recommended action:`"] {
+        for step in [
+            "S: the situation",
+            "T: the task",
+            "A: what you did",
+            "R: the outcome",
+            "`Remaining:`",
+            "`Recommended action:`",
+        ] {
             assert!(text.contains(step), "{step} missing from {text}");
         }
     }
-    assert!(REPORT_STEP.contains("Never ask for, suggest or invite a send"), "{REPORT_STEP}");
-    assert!(REPORT_STEP.contains("overrides the action above and any skill"), "{REPORT_STEP}");
+    assert!(
+        REPORT_STEP.contains("Never ask for, suggest or invite a send"),
+        "{REPORT_STEP}"
+    );
+    assert!(
+        REPORT_STEP.contains("overrides the action above and any skill"),
+        "{REPORT_STEP}"
+    );
     let card = finding_card(Path::new("/tmp"));
-    let brief = dispatch_brief(&card, Start::Goal, Task::Act, Some("just draft and stop"), None);
+    let brief = dispatch_brief(
+        &card,
+        Start::Goal,
+        Task::Act,
+        Some("just draft and stop"),
+        None,
+    );
     assert!(brief.contains(REPORT_STEP), "{brief}");
     assert!(
         brief.contains(&format!("## Direction from the user (overrides the action and any skill)\n{ACT_DIRECTION}\n\njust draft and stop\n")),
         "{brief}"
     );
-    assert_eq!(headline_of("S: Rishav waits on a reply\nT: draft it\nA: one draft\nR: Draft verified in Drafts, nothing sent\n"), "Draft verified in Drafts, nothing sent");
-    assert_eq!(headline_of("Plain reply with no labels.\n"), "Plain reply with no labels.");
+    assert_eq!(
+        headline_of(
+            "S: Rishav waits on a reply\nT: draft it\nA: one draft\nR: Draft verified in Drafts, nothing sent\n"
+        ),
+        "Draft verified in Drafts, nothing sent"
+    );
+    assert_eq!(
+        headline_of("Plain reply with no labels.\n"),
+        "Plain reply with no labels."
+    );
 }
 
 #[test]
@@ -644,11 +706,22 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
         }
     }
     for brief in [&act, &session] {
-        assert!(brief.contains("Keep working until every part of the brief is finished or blocked."));
+        assert!(
+            brief.contains("Keep working until every part of the brief is finished or blocked.")
+        );
         assert!(brief.contains("`complete` means the whole requested outcome shipped"));
-        assert!(brief.contains("is part of the work, which a report never hands back"), "{brief}");
-        assert!(brief.contains("A command that timed out or failed is unfinished work."), "{brief}");
-        assert!(!brief.contains("full test gate, or Nick-owned approval"), "{brief}");
+        assert!(
+            brief.contains("is part of the work, which a report never hands back"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("A command that timed out or failed is unfinished work."),
+            "{brief}"
+        );
+        assert!(
+            !brief.contains("full test gate, or Nick-owned approval"),
+            "{brief}"
+        );
     }
     assert!(act.contains("Complete every part and every environment the request covers."));
     assert!(act.contains("make the normal call and let the harness answer."));
@@ -657,12 +730,21 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
     assert!(!investigation.contains("Proposed action"));
     let (request, format) = report_request_and_format();
     for rule in recommendation_rules {
-        assert!(format.contains(rule), "missing {rule:?} from the request's format");
+        assert!(
+            format.contains(rule),
+            "missing {rule:?} from the request's format"
+        );
     }
-    assert!(request.contains("Finish any open part of the task first"), "{request}");
+    assert!(
+        request.contains("Finish any open part of the task first"),
+        "{request}"
+    );
     assert!(!REPORT_STEP.contains("names the one change your instructions did not allow"));
     assert!(!format.contains("the one step that still needs user approval"));
-    assert!(format.contains("is part of the work, which a report never hands back"), "{format}");
+    assert!(
+        format.contains("is part of the work, which a report never hands back"),
+        "{format}"
+    );
 }
 
 // Nick's rule: a task changes only the direction text its brief carries and the title word that
@@ -670,7 +752,10 @@ fn briefs_require_the_whole_outcome_and_keep_recommendations_exceptional() {
 #[test]
 fn tasks_change_only_the_direction_and_title() {
     let card = finding_card(Path::new("/tmp"));
-    let option = CardOption { label: "Apply".to_owned(), ..CardOption::default() };
+    let option = CardOption {
+        label: "Apply".to_owned(),
+        ..CardOption::default()
+    };
     for start in [Start::Goal, Start::Plan, Start::PlanInto(None, None)] {
         let act = [
             dispatch_brief(&card, start, Task::Act, None, None),
@@ -688,7 +773,9 @@ fn tasks_change_only_the_direction_and_title() {
             for (brief, expected) in briefs.iter().zip(&act) {
                 let title = format!("# {}: ", launch_label(start, task));
                 let act_title = format!("# {}: ", launch_label(start, Task::Act));
-                let brief = brief.replace(task.direction(), ACT_DIRECTION).replacen(&title, &act_title, 1);
+                let brief = brief
+                    .replace(task.direction(), ACT_DIRECTION)
+                    .replacen(&title, &act_title, 1);
                 assert_eq!(&brief, expected, "{start:?} {task:?}");
             }
         }
@@ -707,7 +794,10 @@ fn a_note_follows_the_task_direction() {
         "{typed}"
     );
     let blank = dispatch_brief(&card, Start::Goal, Task::Act, Some("  \n"), None);
-    assert!(blank.contains(&format!("{ACT_DIRECTION}\n\n\n## References\n")), "{blank}");
+    assert!(
+        blank.contains(&format!("{ACT_DIRECTION}\n\n\n## References\n")),
+        "{blank}"
+    );
 }
 
 #[test]
@@ -744,13 +834,24 @@ fn investigate_first_option_briefs_a_read_only_answer() {
 fn a_context_brief_reads_like_a_card_dispatch() {
     let context = "Org: Child\n\n### Task\n\n** TODO Child\n";
     let look = context_brief(context, Start::Goal, Task::Investigate, "", None);
-    assert!(look.starts_with("# Investigate: Org: Child\n\n## Context\nOrg: Child\n"), "{look}");
-    assert!(look.contains(&format!("{GOAL_INSTRUCTION}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}")));
+    assert!(
+        look.starts_with("# Investigate: Org: Child\n\n## Context\nOrg: Child\n"),
+        "{look}"
+    );
+    assert!(look.contains(&format!(
+        "{GOAL_INSTRUCTION}\n\n{ENVOY_STATUS_CONTRACT}{REPORT_STEP}"
+    )));
     assert!(look.contains(&format!(
         "## Direction from the user (overrides the action and any skill)\n{INVESTIGATE_DIRECTION}\n"
     )));
 
-    let fix = context_brief(context, Start::Goal, Task::Fix, " \n", Some("/work".to_owned()));
+    let fix = context_brief(
+        context,
+        Start::Goal,
+        Task::Fix,
+        " \n",
+        Some("/work".to_owned()),
+    );
     assert!(fix.contains(&format!(
         "## Direction from the user (overrides the action and any skill)\n{FIX_DIRECTION}\n\n## Working directory\n`/work`"
     )), "{fix}");
@@ -758,40 +859,65 @@ fn a_context_brief_reads_like_a_card_dispatch() {
 
     let typed = context_brief(context, Start::Plan, Task::Act, "Only the docs", None);
     assert!(typed.starts_with("# Plan + Act: Org: Child\n"), "{typed}");
-    assert!(typed.contains(&format!("{ACT_DIRECTION}\n\nOnly the docs\n")) && typed.contains(PLAN_REPORT_STEP), "{typed}");
+    assert!(
+        typed.contains(&format!("{ACT_DIRECTION}\n\nOnly the docs\n"))
+            && typed.contains(PLAN_REPORT_STEP),
+        "{typed}"
+    );
 }
 #[test]
 fn finding_brief_plan_mode_includes_review_contract() {
     let card = finding_card(Path::new("/tmp"));
-    let option = CardOption { label: "Do as recommended".to_owned(), ..CardOption::default() };
+    let option = CardOption {
+        label: "Do as recommended".to_owned(),
+        ..CardOption::default()
+    };
     let brief = finding_brief(&card, &option, None, Start::Plan, Task::Act);
     assert!(brief.contains("## Action\n"));
     assert!(brief.contains(PLAN_INSTRUCTION));
-    assert!(brief.ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}\n{PLAN_REPORT_STEP}\n")));
+    assert!(brief.ends_with(&format!(
+        "{ENVOY_STATUS_CONTRACT}{REPORT_STEP}\n{PLAN_REPORT_STEP}\n"
+    )));
 }
 #[cfg(unix)]
 #[test]
 fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
-    if let Some(root) = child_root("finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay") {
+    if let Some(root) =
+        child_root("finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay")
+    {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let card = finding_card(&root);
         db.insert_card(&card).unwrap();
         let result = answer(
             &db,
             &card,
-            &AnswerReq { option: Some(0), mode: Some("plan".to_owned()), ..AnswerReq::default() },
+            &AnswerReq {
+                option: Some(0),
+                mode: Some("plan".to_owned()),
+                ..AnswerReq::default()
+            },
             &in_session("session"),
-        None,
+            None,
         );
         let brief_path = fs::read_dir(root.join("briefs"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("triage-brief-"))
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("triage-brief-")
+            })
             .unwrap();
         let overlay_path = fs::read_dir(root.join("briefs"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("plan-mode-"))
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("plan-mode-")
+            })
             .unwrap();
         let brief = fs::read_to_string(&brief_path).unwrap();
         let launch = fs::read_to_string(root.join("tmux.log"))
@@ -805,7 +931,12 @@ fn finding_answer_plan_mode_writes_reviewable_brief_and_config_overlay() {
         assert!(brief.contains(PLAN_INSTRUCTION));
         assert!(brief.contains(PLAN_REPORT_STEP));
         let heading = format!("# {}", card.title);
-        assert!(launch.contains(&format!("--config '{}' '{}' @'{}'", overlay_path.display(), heading, brief_path.display())));
+        assert!(launch.contains(&format!(
+            "--config '{}' '{}' @'{}'",
+            overlay_path.display(),
+            heading,
+            brief_path.display()
+        )));
         assert_eq!(new_window_count(&root), 1);
         return;
     }
@@ -840,7 +971,9 @@ fn plan_briefs_make_the_plan_repeat_the_status_contract_for_a_fresh_session() {
         "{composed}"
     );
     assert!(!dispatch_brief(&card, Start::Goal, Task::Act, None, None).contains(PLAN_REPORT_STEP));
-    assert!(!session_brief("Reply with pong.", Start::Goal, Task::Fix, None).contains(PLAN_REPORT_STEP));
+    assert!(
+        !session_brief("Reply with pong.", Start::Goal, Task::Fix, None).contains(PLAN_REPORT_STEP)
+    );
     assert!(
         dispatch_brief(&card, Start::Goal, Task::Act, None, None)
             .ends_with(&format!("{ENVOY_STATUS_CONTRACT}{REPORT_STEP}"))
@@ -868,8 +1001,14 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
             label: "Apply".to_owned(),
             ..CardOption::default()
         };
-        let first = write_brief(&configured_db, finding_brief(&short_card, &option, None, Start::Goal, Task::Act));
-        let second = write_brief(&configured_db, finding_brief(&short_card, &option, None, Start::Goal, Task::Act));
+        let first = write_brief(
+            &configured_db,
+            finding_brief(&short_card, &option, None, Start::Goal, Task::Act),
+        );
+        let second = write_brief(
+            &configured_db,
+            finding_brief(&short_card, &option, None, Start::Goal, Task::Act),
+        );
         let expected_directory = configured.join("briefs");
         let first_path = first.as_ref().ok();
         let second_path = second.as_ref().ok();
@@ -894,7 +1033,10 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
             id: format!("finding-{}", "x".repeat(300)),
             ..finding_card(&root)
         };
-        let long_brief = write_brief(&configured_db, finding_brief(&long_card, &option, None, Start::Goal, Task::Act));
+        let long_brief = write_brief(
+            &configured_db,
+            finding_brief(&long_card, &option, None, Start::Goal, Task::Act),
+        );
         let long_id_uses_bounded_path = long_brief
             .as_ref()
             .is_ok_and(|path| path.parent() == Some(expected_directory.as_path()));
@@ -903,7 +1045,10 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
         fs::create_dir_all(&relative).unwrap();
         std::env::set_current_dir(&relative).unwrap();
         let relative_db = Db::open(Path::new("triage.db")).unwrap();
-        let relative_brief = write_brief(&relative_db, finding_brief(&short_card, &option, None, Start::Goal, Task::Act));
+        let relative_brief = write_brief(
+            &relative_db,
+            finding_brief(&short_card, &option, None, Start::Goal, Task::Act),
+        );
         let expected_relative_parent = fs::canonicalize(&relative).unwrap().join("briefs");
         let relative_db_path_is_canonical = relative_brief.as_ref().is_ok_and(|path| {
             path.is_absolute() && path.parent() == Some(expected_relative_parent.as_path())
@@ -930,7 +1075,7 @@ fn finding_briefs_use_private_unique_paths_for_long_ids_and_database_paths() {
                 &symlink_card,
                 &answer_req(0, None),
                 &in_session("session"),
-            None,
+                None,
             );
             let link_remains = fs::symlink_metadata(&legacy_path)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink());
@@ -1293,7 +1438,12 @@ fn queue_html_ask(root: &Path, html: &str) -> (Db, usize, Card) {
     let db = Db::open(&root.join("triage.db")).unwrap();
     let mut tracker = Tracker::default();
     let written = tracker.tick(&db).written;
-    let card = db.queue(events::now_ms()).unwrap().into_iter().next().unwrap();
+    let card = db
+        .queue(events::now_ms())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     (db, written, card)
 }
 
@@ -1301,7 +1451,10 @@ fn queue_html_ask(root: &Path, html: &str) -> (Db, usize, Card) {
 #[test]
 fn html_radio_other_types_custom_text_then_submits_once() {
     if let Some(root) = child_root("html_radio_other_types_custom_text_then_submits_once") {
-        write_html_screens(&root, &[("0", include_str!("../../tests/fixtures/ask_dialog.txt"))]);
+        write_html_screens(
+            &root,
+            &[("0", include_str!("../../tests/fixtures/ask_dialog.txt"))],
+        );
         let (db, written, card) = queue_html_ask(&root, HTML_RADIO_FORM);
         let request = AnswerReq {
             text: Some("Rotate it Tuesday".to_owned()),
@@ -1348,7 +1501,10 @@ fn html_radio_other_types_custom_text_then_submits_once() {
 #[test]
 fn html_two_fields_answer_in_form_order_then_submit_once() {
     if let Some(root) = child_root("html_two_fields_answer_in_form_order_then_submit_once") {
-        write_html_screens(&root, &[("0", include_str!("../../tests/fixtures/ask_dialog.txt"))]);
+        write_html_screens(
+            &root,
+            &[("0", include_str!("../../tests/fixtures/ask_dialog.txt"))],
+        );
         let (db, written, card) = queue_html_ask(&root, HTML_TWO_FIELD_FORM);
         let request = AnswerReq {
             answers: vec![
@@ -1388,7 +1544,10 @@ fn html_two_fields_answer_in_form_order_then_submit_once() {
                     && swipe.text.as_deref()
                         == Some("Rotate the deploy key: Investigate first; Reason: Old key, rotated Tuesday")
             });
-        assert!(typed_both, "result: {result:?}\nswipe: {swipe:?}\nkeys:\n{keys}");
+        assert!(
+            typed_both,
+            "result: {result:?}\nswipe: {swipe:?}\nkeys:\n{keys}"
+        );
         return;
     }
 
@@ -1412,10 +1571,14 @@ fn html_select_rejects_custom_text_before_any_key() {
             ..AnswerReq::default()
         };
         let result = answer(&db, &card, &request, &Launch::default(), None);
-        let rejected = result.as_ref().err().map(String::as_str) == Some("select does not accept Other");
+        let rejected =
+            result.as_ref().err().map(String::as_str) == Some("select does not accept Other");
         let no_key_sent = !root.join("tmux-keys.log").exists();
         let unanswered = db.card(&card.id).unwrap().unwrap().1.is_none();
-        assert!(written == 1 && rejected && no_key_sent && unanswered, "result: {result:?}");
+        assert!(
+            written == 1 && rejected && no_key_sent && unanswered,
+            "result: {result:?}"
+        );
         return;
     }
 
@@ -1436,9 +1599,13 @@ fn html_checkbox_group_is_unanswerable_without_tmux_input() {
         let (db, written, card) = queue_html_ask(&root, HTML_CHECKBOX_FORM);
         let unanswerable = !card.answerable;
         let result = answer(&db, &card, &answer_req(0, None), &Launch::default(), None);
-        let rejected = result.as_ref().err().map(String::as_str) == Some("ask card is not answerable");
+        let rejected =
+            result.as_ref().err().map(String::as_str) == Some("ask card is not answerable");
         let no_key_sent = !root.join("tmux-keys.log").exists();
-        assert!(written == 1 && unanswerable && rejected && no_key_sent, "result: {result:?}");
+        assert!(
+            written == 1 && unanswerable && rejected && no_key_sent,
+            "result: {result:?}"
+        );
         return;
     }
 
@@ -1755,7 +1922,10 @@ fn reply_card_redacts_secrets_in_title_and_body() {
             .expect("reply card");
         let body = card.body.as_deref().unwrap_or_default();
         assert_eq!(card.title, "Done: Rotated ….");
-        assert!(!body.contains(&access_key) && !body.contains(&token), "{body}");
+        assert!(
+            !body.contains(&access_key) && !body.contains(&token),
+            "{body}"
+        );
         assert!(body.contains("Bearer …,"), "{body}");
         assert!(body.contains(&hash) && body.contains(path), "{body}");
         return;
@@ -1922,23 +2092,36 @@ fn report_trail_follows_this_panes_latest_launch_and_keeps_the_first_topic() {
 
     let fix = finding_card(scratch.path());
     db.insert_card(&fix).unwrap();
-    launch(
-        &fix.id,
-        "acting %12",
-        born + 5,
-        None,
-        Some("Fix"),
-        None,
-    );
+    launch(&fix.id, "acting %12", born + 5, None, Some("Fix"), None);
     assert_eq!(trail(), (fix.title.clone(), "Fix".to_owned()));
     assert!(!investigation(), "a Fix launch owes no next step");
     // Only a label that opens with Investigate is an investigation. Plan + Investigate and an
     // old Investigate + fix label are not.
-    launch(&fix.id, "acting %12", born + 6, None, Some("Plan + Investigate"), None);
-    assert!(!investigation(), "a Plan + Investigate launch owes no next step");
-    launch(&fix.id, "acting %12", born + 7, None, Some("Investigate + fix"), None);
+    launch(
+        &fix.id,
+        "acting %12",
+        born + 6,
+        None,
+        Some("Plan + Investigate"),
+        None,
+    );
+    assert!(
+        !investigation(),
+        "a Plan + Investigate launch owes no next step"
+    );
+    launch(
+        &fix.id,
+        "acting %12",
+        born + 7,
+        None,
+        Some("Investigate + fix"),
+        None,
+    );
     assert_eq!(trail(), (fix.title.clone(), "Investigate + fix".to_owned()));
-    assert!(!investigation(), "an old Investigate + fix launch owes no next step");
+    assert!(
+        !investigation(),
+        "an old Investigate + fix launch owes no next step"
+    );
 }
 
 // On 2026-11-01 the %46 card reported an access-audit investigation whose answer ended
@@ -2046,9 +2229,15 @@ fn investigation_step_waits_on_its_card_instead_of_a_plan_brief() {
         .unwrap();
         assert_eq!(Tracker::default().tick(&db).written, 1);
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
-        assert!(keys.is_empty(), "the tracker typed into the finished session: {keys}");
+        assert!(
+            keys.is_empty(),
+            "the tracker typed into the finished session: {keys}"
+        );
         let (card, swipe) = db.card("done:%12:assistant-report").unwrap().unwrap();
-        assert!(swipe.is_none(), "the step was answered without the user: {swipe:?}");
+        assert!(
+            swipe.is_none(),
+            "the step was answered without the user: {swipe:?}"
+        );
         assert_eq!(card.star.action, "Add both as read collaborators.");
         assert_eq!(new_window_count(&root), 0);
         return;
@@ -2063,7 +2252,6 @@ fn investigation_step_waits_on_its_card_instead_of_a_plan_brief() {
         Some(&bin),
     );
 }
-
 
 #[test]
 fn act_complete_report_with_a_step_opens_instead_of_closing() {
@@ -2115,7 +2303,10 @@ fn act_complete_report_with_a_step_opens_instead_of_closing() {
             .find(|card| card.id == "done:%12:assistant-report");
         let card = card.unwrap();
         assert_eq!(written, 1);
-        assert_eq!(card.star.action, "next cold-email task, read the field data first.");
+        assert_eq!(
+            card.star.action,
+            "next cold-email task, read the field data first."
+        );
         assert_eq!(card.body.as_deref(), Some("Skill updated."));
         assert_eq!(card.status, Some(events::CardStatus::StepOpen));
         assert_eq!(card.level.as_deref(), Some("warn"));
@@ -2238,7 +2429,8 @@ fn agent_done_report_that_closes_with_none_earns_a_done_card() {
 #[test]
 fn agent_done_report_closed_by_none_reads_done() {
     let turn = reply_turn(
-        "ENVOY_STATUS: agent-done\n\nBlock key shipped and pushed.\n\nRecommended action: none.".to_owned(),
+        "ENVOY_STATUS: agent-done\n\nBlock key shipped and pushed.\n\nRecommended action: none."
+            .to_owned(),
         None,
         false,
         true,
@@ -2252,7 +2444,8 @@ fn agent_done_report_closed_by_none_reads_done() {
 #[test]
 fn agent_done_report_with_an_open_step_keeps_the_warning() {
     let turn = reply_turn(
-        "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.".to_owned(),
+        "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release."
+            .to_owned(),
         None,
         false,
         true,
@@ -2289,15 +2482,26 @@ fn a_report_with_a_remaining_item_keeps_its_card_open() {
     let turn = reply_turn(report("agent-done", "none"), None, false, true);
     assert_eq!(turn.status, events::CardStatus::Complete);
     assert_eq!(turn.title, "Done: Suite passes on 4f1c2aa.");
-    assert_eq!(reply_turn(report("complete", "none"), None, false, true).status, events::CardStatus::Complete);
+    assert_eq!(
+        reply_turn(report("complete", "none"), None, false, true).status,
+        events::CardStatus::Complete
+    );
 
-    assert_eq!(reply_turn(report("complete", open), None, true, true).status, events::CardStatus::StepOpen);
-    let fix = report("complete", "none")
-        .replace("Recommended action: none", "Recommended action: Remove the cron entry.");
+    assert_eq!(
+        reply_turn(report("complete", open), None, true, true).status,
+        events::CardStatus::StepOpen
+    );
+    let fix = report("complete", "none").replace(
+        "Recommended action: none",
+        "Recommended action: Remove the cron entry.",
+    );
     let turn = reply_turn(fix, None, true, true);
     assert_eq!(turn.status, events::CardStatus::Complete);
     assert_eq!(turn.action, "Remove the cron entry.");
-    assert_eq!(reply_turn(report("incomplete", open), None, false, true).status, events::CardStatus::Incomplete);
+    assert_eq!(
+        reply_turn(report("incomplete", open), None, false, true).status,
+        events::CardStatus::Incomplete
+    );
 }
 
 // Nick asked on 2026-11-22 to read the full summary under the STAR report. A summary after a
@@ -2317,9 +2521,11 @@ fn a_star_report_followed_by_its_summary_keeps_both_on_a_complete_card() {
     assert_eq!(turn.title, "Done: Cards show both.");
     assert!(turn.action.is_empty(), "action: {}", turn.action);
     let body = turn.body.unwrap();
-    assert!(body.starts_with("S: Reports were hard to read.") && body.ends_with(summary), "{body}");
+    assert!(
+        body.starts_with("S: Reports were hard to read.") && body.ends_with(summary),
+        "{body}"
+    );
 }
-
 
 #[test]
 fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
@@ -2337,7 +2543,10 @@ fn agent_done_report_without_a_recommended_action_keeps_the_warning() {
 fn carried_agent_done_report_takes_the_closing_step() {
     let turn = reply_turn(
         "Closing note.\n\nRecommended action: Publish the release.".to_owned(),
-        Some("ENVOY_STATUS: agent-done\n\nWaited on the suite.\n\nRecommended action: none.".to_owned()),
+        Some(
+            "ENVOY_STATUS: agent-done\n\nWaited on the suite.\n\nRecommended action: none."
+                .to_owned(),
+        ),
         false,
         true,
     );
@@ -2352,7 +2561,8 @@ fn every_reply_states_its_outcome_for_the_card_status() {
         reply_turn(text.to_owned(), report.map(str::to_owned), false, true).status
     };
     let complete = "ENVOY_STATUS: complete\n\nShipped.";
-    let step_open = "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.";
+    let step_open =
+        "ENVOY_STATUS: agent-done\n\nPush still open.\n\nRecommended action: Push the release.";
     let closed = "ENVOY_STATUS: agent-done\n\nShipped.\n\nRecommended action: none.";
     let incomplete = "ENVOY_STATUS: incomplete\n\nBlocked on the account.";
     let no_body = "ENVOY_STATUS: complete";
@@ -2390,7 +2600,12 @@ fn a_reply_from_a_session_that_owes_no_report_reads_reply() {
     let broken = reply_turn("ENVOY_STATUS: complete".to_owned(), None, false, false);
     assert_eq!(broken.status, events::CardStatus::NoFinalReport);
     // A report reads as its outcome whether or not one was owed.
-    let report = reply_turn("ENVOY_STATUS: complete\n\nShipped.".to_owned(), None, false, false);
+    let report = reply_turn(
+        "ENVOY_STATUS: complete\n\nShipped.".to_owned(),
+        None,
+        false,
+        false,
+    );
     assert_eq!(report.status, events::CardStatus::Complete);
 }
 
@@ -2403,15 +2618,36 @@ fn launched_reply_without_status_line_offers_report_request() {
         fs::create_dir_all(root.join("tmux-screens")).unwrap();
         fs::write(root.join("tmux-screens/0"), "──────\n  ←←  \n──────\n").unwrap();
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "All done. Listing live.")]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[assistant_text_line(
+                "assistant-report",
+                "All done. Listing live.",
+            )],
+        );
         let db = Db::open(&root.join("triage.db")).unwrap();
         let mut finding = finding_card(&root);
         finding.title = "The delivery team has an unexpected CI grant".to_owned();
         db.insert_card(&finding).unwrap();
-        db.swipe(&Swipe { card: finding.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some("launched %12".to_owned()), at_ms: events::now_ms() }).unwrap();
+        db.swipe(&Swipe {
+            card: finding.id.clone(),
+            action: "done".to_owned(),
+            option: Some(0),
+            text: None,
+            note: None,
+            until_ms: None,
+            reason: Some("launched %12".to_owned()),
+            at_ms: events::now_ms(),
+        })
+        .unwrap();
         Tracker::default().tick(&db);
         let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
-        assert!(card.report_due && card.star.situation == finding.title, "card: {card:?}");
+        assert!(
+            card.report_due && card.star.situation == finding.title,
+            "card: {card:?}"
+        );
         assert_eq!(request_report(&db, &card, &Launch::default()), Ok(()));
         let swipe = db.card(&card.id).unwrap().unwrap().1.unwrap();
         assert_eq!(swipe.text.as_deref(), Some("Request final report"));
@@ -2419,15 +2655,26 @@ fn launched_reply_without_status_line_offers_report_request() {
         // The pane gets one line that names the format file. The rules stay in the file.
         let format = root.join("report-format.md");
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
-        assert!(keys.contains(&format!("its format is at {}.", format.display())), "{keys}");
+        assert!(
+            keys.contains(&format!("its format is at {}.", format.display())),
+            "{keys}"
+        );
         assert!(!keys.contains("Recommended action"), "{keys}");
         let rules = fs::read_to_string(&format).unwrap();
-        assert!(rules.contains(ENVOY_STATUS_CONTRACT) && rules.ends_with(REPORT_STEP), "{rules}");
+        assert!(
+            rules.contains(ENVOY_STATUS_CONTRACT) && rules.ends_with(REPORT_STEP),
+            "{rules}"
+        );
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("launched_reply_without_status_line_offers_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "launched_reply_without_status_line_offers_report_request",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 #[cfg(unix)]
 #[test]
@@ -2438,12 +2685,30 @@ fn a_report_without_a_status_line_asks_its_session_once() {
         fs::create_dir_all(root.join("tmux-screens")).unwrap();
         fs::write(root.join("tmux-screens/0"), "──────\n  ←←  \n──────\n").unwrap();
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "All done. Listing live.")]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[assistant_text_line(
+                "assistant-report",
+                "All done. Listing live.",
+            )],
+        );
         let db = Db::open(&root.join("triage.db")).unwrap();
         let mut finding = finding_card(&root);
         finding.title = "The delivery team has an unexpected CI grant".to_owned();
         db.insert_card(&finding).unwrap();
-        db.swipe(&Swipe { card: finding.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some("launched %12".to_owned()), at_ms: events::now_ms() }).unwrap();
+        db.swipe(&Swipe {
+            card: finding.id.clone(),
+            action: "done".to_owned(),
+            option: Some(0),
+            text: None,
+            note: None,
+            until_ms: None,
+            reason: Some("launched %12".to_owned()),
+            at_ms: events::now_ms(),
+        })
+        .unwrap();
         let mut tracker = Tracker::default();
         tracker.tick(&db);
         let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
@@ -2452,18 +2717,31 @@ fn a_report_without_a_status_line_asks_its_session_once() {
             Some(events::CardStatus::NoFinalReport),
             "a reply with no status line is not a final report: {card:?}"
         );
-        let asks = || fs::read_to_string(root.join("tmux-keys.log")).unwrap().matches("needs a final report").count();
+        let asks = || {
+            fs::read_to_string(root.join("tmux-keys.log"))
+                .unwrap()
+                .matches("needs a final report")
+                .count()
+        };
         assert_eq!(asks(), 0, "the card alone asks nothing");
         tracker.chase_missing_reports(&db, &Launch::default());
         assert_eq!(asks(), 1, "the session is asked for the report it owes");
-        assert!(db.card(&card.id).unwrap().unwrap().1.is_none(), "the card stays queued for the answer");
+        assert!(
+            db.card(&card.id).unwrap().unwrap().1.is_none(),
+            "the card stays queued for the answer"
+        );
         tracker.chase_missing_reports(&db, &Launch::default());
         assert_eq!(asks(), 1, "a session is asked once");
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("a_report_without_a_status_line_asks_its_session_once", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "a_report_without_a_status_line_asks_its_session_once",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 // Regression: on 2026-11-16 a session Nick started by hand reported its work and then answered
@@ -2478,25 +2756,45 @@ fn a_typed_question_after_the_report_is_not_asked_for_another() {
         fs::create_dir_all(root.join("tmux-screens")).unwrap();
         fs::write(root.join("tmux-screens/0"), "──────\n  ←←  \n──────\n").unwrap();
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[
-            user_line("u1", "set up the tui"),
-            assistant_text_line("assistant-report", "ENVOY_STATUS: complete\nR: The TUI runs.\nRemaining: none\nRecommended action: none"),
-            user_line("u2", "how use it"),
-            assistant_text_line("assistant-answer", "Run it from the repo root."),
-        ]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[
+                user_line("u1", "set up the tui"),
+                assistant_text_line(
+                    "assistant-report",
+                    "ENVOY_STATUS: complete\nR: The TUI runs.\nRemaining: none\nRecommended action: none",
+                ),
+                user_line("u2", "how use it"),
+                assistant_text_line("assistant-answer", "Run it from the repo root."),
+            ],
+        );
         let db = Db::open(&root.join("triage.db")).unwrap();
         let mut tracker = Tracker::default();
         tracker.tick(&db);
         let card = db.card("done:%12:assistant-answer").unwrap().unwrap().0;
         assert_eq!(card.status, Some(events::CardStatus::Reply), "{card:?}");
-        assert!(card.report_due, "the user can still ask for a report by hand: {card:?}");
+        assert!(
+            card.report_due,
+            "the user can still ask for a report by hand: {card:?}"
+        );
         tracker.chase_missing_reports(&db, &Launch::default());
-        assert_eq!(fs::read_to_string(root.join("tmux-keys.log")).unwrap(), " ", "triage types nothing into the pane");
+        assert_eq!(
+            fs::read_to_string(root.join("tmux-keys.log")).unwrap(),
+            " ",
+            "triage types nothing into the pane"
+        );
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("a_typed_question_after_the_report_is_not_asked_for_another", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "a_typed_question_after_the_report_is_not_asked_for_another",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[cfg(unix)]
@@ -2505,7 +2803,12 @@ fn unlaunched_reply_also_offers_report_request() {
     if let Some(root) = child_root("unlaunched_reply_also_offers_report_request") {
         fs::write(root.join("tmux-waiting"), b"").unwrap();
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_text_line("assistant-report", "A plain reply.")]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[assistant_text_line("assistant-report", "A plain reply.")],
+        );
         let db = Db::open(&root.join("triage.db")).unwrap();
         Tracker::default().tick(&db);
         let card = db.card("done:%12:assistant-report").unwrap().unwrap().0;
@@ -2514,7 +2817,12 @@ fn unlaunched_reply_also_offers_report_request() {
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("unlaunched_reply_also_offers_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "unlaunched_reply_also_offers_report_request",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 #[cfg(unix)]
 #[test]
@@ -2522,18 +2830,49 @@ fn error_reply_does_not_offer_report_request() {
     if let Some(root) = child_root("error_reply_does_not_offer_report_request") {
         fs::write(root.join("tmux-waiting"), b"").unwrap();
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_entry("assistant-error", "error", None, Some("provider failed"))]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[assistant_entry(
+                "assistant-error",
+                "error",
+                None,
+                Some("provider failed"),
+            )],
+        );
         let db = Db::open(&root.join("triage.db")).unwrap();
         let finding = finding_card(&root);
         db.insert_card(&finding).unwrap();
-        db.swipe(&Swipe { card: finding.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some("launched %12".to_owned()), at_ms: events::now_ms() }).unwrap();
+        db.swipe(&Swipe {
+            card: finding.id.clone(),
+            action: "done".to_owned(),
+            option: Some(0),
+            text: None,
+            note: None,
+            until_ms: None,
+            reason: Some("launched %12".to_owned()),
+            at_ms: events::now_ms(),
+        })
+        .unwrap();
         Tracker::default().tick(&db);
-        assert!(!db.card("done:%12:assistant-error").unwrap().unwrap().0.report_due);
+        assert!(
+            !db.card("done:%12:assistant-error")
+                .unwrap()
+                .unwrap()
+                .0
+                .report_due
+        );
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("error_reply_does_not_offer_report_request", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "error_reply_does_not_offer_report_request",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[cfg(unix)]
@@ -2740,7 +3079,10 @@ fn mass_vanish_keeps_info_cards() {
         fs::write(root.join("tmux-missing-pane"), b"").unwrap();
         tracker.tick(&db);
         let queue = db.queue(events::now_ms()).unwrap();
-        let ids = queue.iter().map(|card| card.id.as_str()).collect::<Vec<_>>();
+        let ids = queue
+            .iter()
+            .map(|card| card.id.as_str())
+            .collect::<Vec<_>>();
         let swipes = [
             swipe_reason(&db, "done:%12:a1"),
             swipe_reason(&db, "done:%13:a2"),
@@ -2828,7 +3170,12 @@ fn vanished_pane_that_died_mid_turn_raises_one_warning_card() {
             &transcript,
             &[
                 user_line("u1", "Dump the rows."),
-                assistant_entry("t1", "toolUse", Some("Dumping rows now.\n\nRecommended action: Restore the session."), None),
+                assistant_entry(
+                    "t1",
+                    "toolUse",
+                    Some("Dumping rows now.\n\nRecommended action: Restore the session."),
+                    None,
+                ),
             ],
         );
         fs::write(root.join("tmux-working"), b"").unwrap();
@@ -3120,7 +3467,11 @@ fn background_wait_defers_info_card() {
         assert_eq!(tracker.tick(&db).written, 0, "wait row shown");
         // omp drops the row as the job finishes, before the job's result reaches the transcript.
         fs::remove_file(screens.join("0")).unwrap();
-        assert_eq!(tracker.tick(&db).written, 0, "row gone, transcript unchanged");
+        assert_eq!(
+            tracker.tick(&db).written,
+            0,
+            "row gone, transcript unchanged"
+        );
         append(
             serde_json::json!({
                 "type": "custom_message",
@@ -3131,10 +3482,18 @@ fn background_wait_defers_info_card() {
             .to_string(),
         );
         assert_eq!(tracker.tick(&db).written, 0, "job result delivered");
-        append(assistant_entry("a2", "stop", Some("Background job finished."), None));
+        append(assistant_entry(
+            "a2",
+            "stop",
+            Some("Background job finished."),
+            None,
+        ));
         assert_eq!(tracker.tick(&db).written, 1, "closing reply");
         assert_eq!(
-            done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(),
+            done_cards(&db)
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect::<Vec<_>>(),
             ["done:%12:a2"]
         );
         assert!(db.card("done:%12:a1").unwrap().is_none());
@@ -3221,7 +3580,9 @@ fn report_survives_background_wake() {
                 assistant_entry(
                     "a1",
                     "stop",
-                    Some("ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Publish the release."),
+                    Some(
+                        "ENVOY_STATUS: complete\n\nShipped.\n\nRecommended action: Publish the release.",
+                    ),
                     None,
                 ),
                 wake,
@@ -3237,10 +3598,19 @@ fn report_survives_background_wake() {
         let mut tracker = Tracker::default();
         let written = tracker.tick(&db).written;
         let queue = done_cards(&db);
-        assert!(written == 1 && queue.len() == 1 && queue[0].id == "done:%12:a2", "queue: {queue:?}");
+        assert!(
+            written == 1 && queue.len() == 1 && queue[0].id == "done:%12:a2",
+            "queue: {queue:?}"
+        );
         assert_eq!(queue[0].title, "Agent done: Shipped.");
-        assert_eq!(queue[0].body.as_deref(), Some("Shipped.\n\n---\n\nBackground job finished."));
-        assert_eq!(queue[0].star.action, "Publish the release.\n\nRestart the worker.");
+        assert_eq!(
+            queue[0].body.as_deref(),
+            Some("Shipped.\n\n---\n\nBackground job finished.")
+        );
+        assert_eq!(
+            queue[0].star.action,
+            "Publish the release.\n\nRestart the worker."
+        );
         assert_eq!(queue[0].level.as_deref(), Some("warn"));
         assert_eq!(queue[0].status, Some(events::CardStatus::StepOpen));
         return;
@@ -3332,16 +3702,28 @@ fn live_service_holds_reply_card() {
         fs::write(root.join("tmux-waiting"), b"").unwrap();
         let session = "01a1b6cd-0000-7000-8000-000000000001";
         let transcript = root.join(format!("2026-11-07T16-18-24-308Z_{session}.jsonl"));
-        write_transcript(&root, "/dev/pts/12", &transcript, &[
-            user_line("u1", "Retry the build."),
-            assistant_entry("a1", "stop", Some("Build still running; the service reports when it finishes."), None),
-        ]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[
+                user_line("u1", "Retry the build."),
+                assistant_entry(
+                    "a1",
+                    "stop",
+                    Some("Build still running; the service reports when it finishes."),
+                    None,
+                ),
+            ],
+        );
         let service = root.join(".omp/run/daemons/0000000000000000/daemons/build");
         fs::create_dir_all(&service).unwrap();
         fs::write(service.join("spec.json"), r#"{"name":"build"}"#).unwrap();
         let meta = |state: &str, exited_at: Option<u64>, pending: bool| {
             let mut daemon = serde_json::json!({"name":"build","state":state,"owner":session,"pid":if state == "running" { serde_json::json!(std::process::id()) } else { serde_json::Value::Null },"startedAt":events::now_ms()});
-            if let Some(exited_at) = exited_at { daemon["exitedAt"] = exited_at.into(); }
+            if let Some(exited_at) = exited_at {
+                daemon["exitedAt"] = exited_at.into();
+            }
             serde_json::json!({"daemon":daemon,"completionEvents":true,"pendingCompletions":if pending { serde_json::json!([{"name":"build"}]) } else { serde_json::json!([]) }}).to_string()
         };
         fs::write(service.join("meta.json"), meta("running", None, false)).unwrap();
@@ -3350,7 +3732,11 @@ fn live_service_holds_reply_card() {
         assert_eq!(tracker.tick(&db).written, 0);
         assert!(done_cards(&db).is_empty());
 
-        fs::write(service.join("meta.json"), meta("exited", Some(events::now_ms() as u64), true)).unwrap();
+        fs::write(
+            service.join("meta.json"),
+            meta("exited", Some(events::now_ms() as u64), true),
+        )
+        .unwrap();
         assert_eq!(tracker.tick(&db).written, 0);
         assert!(done_cards(&db).is_empty());
 
@@ -3358,21 +3744,41 @@ fn live_service_holds_reply_card() {
         lines.push_str(&serde_json::json!({"type":"custom_message","id":"c1","customType":"launch-completion","content":"Supervised process build exited with exit code 0."}).to_string());
         lines.push('\n');
         fs::write(&transcript, lines).unwrap();
-        fs::write(service.join("meta.json"), meta("exited", Some(events::now_ms() as u64), false)).unwrap();
+        fs::write(
+            service.join("meta.json"),
+            meta("exited", Some(events::now_ms() as u64), false),
+        )
+        .unwrap();
         assert_eq!(tracker.tick(&db).written, 0);
         assert!(done_cards(&db).is_empty());
 
         let mut lines = fs::read_to_string(&transcript).unwrap();
-        lines.push_str(&assistant_entry("a2", "stop", Some("Build finished green."), None));
+        lines.push_str(&assistant_entry(
+            "a2",
+            "stop",
+            Some("Build finished green."),
+            None,
+        ));
         lines.push('\n');
         fs::write(&transcript, lines).unwrap();
         assert_eq!(tracker.tick(&db).written, 1);
-        assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a2"]);
+        assert_eq!(
+            done_cards(&db)
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect::<Vec<_>>(),
+            ["done:%12:a2"]
+        );
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("live_service_holds_reply_card", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "live_service_holds_reply_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[cfg(unix)]
@@ -3390,16 +3796,34 @@ fn active_goal_holds_reply_card_until_grace_ends() {
         let mut tracker = Tracker::default();
         assert_eq!(tracker.tick(&db).written, 0);
         assert!(done_cards(&db).is_empty());
-        let old = std::time::SystemTime::now().checked_sub(Duration::from_secs(60)).unwrap();
-        fs::File::options().write(true).open(&transcript).unwrap().set_modified(old).unwrap();
+        let old = std::time::SystemTime::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
         assert_eq!(tracker.tick(&db).written, 1);
-        assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a1"]);
+        assert_eq!(
+            done_cards(&db)
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect::<Vec<_>>(),
+            ["done:%12:a1"]
+        );
         assert!(!done_cards(&db)[0].report_due);
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("active_goal_holds_reply_card_until_grace_ends", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "active_goal_holds_reply_card_until_grace_ends",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[cfg(unix)]
@@ -3429,7 +3853,12 @@ fn final_report_cards_despite_pending_turn() {
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("final_report_cards_despite_pending_turn", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "final_report_cards_despite_pending_turn",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[cfg(unix)]
@@ -3440,25 +3869,55 @@ fn torn_wait_row_holds_card() {
         let screens = root.join("tmux-capture-seq");
         fs::create_dir_all(&screens).unwrap();
         fs::write(screens.join("0"), "  ⎋ Waiting fo\n\n───\n\n───\n status\n").unwrap();
-        fs::write(screens.join("rest"), include_str!("../../tests/fixtures/async_wait.txt")).unwrap();
+        fs::write(
+            screens.join("rest"),
+            include_str!("../../tests/fixtures/async_wait.txt"),
+        )
+        .unwrap();
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[assistant_entry("a1", "stop", Some("Ending turn to await bg_5."), None)]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[assistant_entry(
+                "a1",
+                "stop",
+                Some("Ending turn to await bg_5."),
+                None,
+            )],
+        );
         let db = Db::open(&root.join("triage.db")).unwrap();
         let mut tracker = Tracker::default();
         assert_eq!(tracker.tick(&db).written, 0);
         assert!(done_cards(&db).is_empty());
         fs::write(screens.join("rest"), "───\n\n───\n status\n").unwrap();
-        assert_eq!(tracker.tick(&db).written, 0, "row gone, transcript unchanged");
+        assert_eq!(
+            tracker.tick(&db).written,
+            0,
+            "row gone, transcript unchanged"
+        );
         assert!(done_cards(&db).is_empty());
         // A run that settles without a wake reports after the grace expires.
-        tracker.paused_info.get_mut("%12").unwrap().2 = Instant::now().checked_sub(WAIT_ROW_GRACE).unwrap();
+        tracker.paused_info.get_mut("%12").unwrap().2 =
+            Instant::now().checked_sub(WAIT_ROW_GRACE).unwrap();
         assert_eq!(tracker.tick(&db).written, 1);
-        assert_eq!(done_cards(&db).iter().map(|card| card.id.as_str()).collect::<Vec<_>>(), ["done:%12:a1"]);
+        assert_eq!(
+            done_cards(&db)
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect::<Vec<_>>(),
+            ["done:%12:a1"]
+        );
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("torn_wait_row_holds_card", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "torn_wait_row_holds_card",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[cfg(unix)]
@@ -3856,7 +4315,7 @@ fn concurrent_ask_answers_send_one_key_sequence() {
                         &first_card,
                         &answer_req(0, None),
                         &Launch::default(),
-                    None,
+                        None,
                     ),
                 ))
                 .unwrap();
@@ -3874,7 +4333,7 @@ fn concurrent_ask_answers_send_one_key_sequence() {
                         &second_card,
                         &answer_req(0, None),
                         &Launch::default(),
-                    None,
+                        None,
                     ),
                 ))
                 .unwrap();
@@ -3988,7 +4447,7 @@ fn status_only_report_warns_and_preserves_info_ack() {
             &old,
             &answer_req(0, Some("preserved API note")),
             &Launch::default(),
-        None,
+            None,
         );
         let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
         let mut written = 0;
@@ -4278,7 +4737,9 @@ fn dsh_plan_opens_an_omp_planner_tagged_with_the_dsh_choice() {
                 "{window}"
             );
             assert_eq!(
-                fs::read_to_string(root.join("tmux-into-%42")).unwrap().trim(),
+                fs::read_to_string(root.join("tmux-into-%42"))
+                    .unwrap()
+                    .trim(),
                 format!(r#"["deepseek-v4-pro","high",{auto}]"#)
             );
             let brief = window.rsplit("@'").next().unwrap().trim_end_matches('\'');
@@ -4304,7 +4765,11 @@ fn dsh_plan_opens_an_omp_planner_tagged_with_the_dsh_choice() {
 fn approving_a_dsh_plan_hands_the_plan_file_to_a_dsh_session() {
     if let Some(root) = child_root("approving_a_dsh_plan_hands_the_plan_file_to_a_dsh_session") {
         fs::write(root.join("tmux-plan-review"), b"").unwrap();
-        fs::write(root.join("tmux-into-%12"), br#"["deepseek-v4-pro","high",false]"#).unwrap();
+        fs::write(
+            root.join("tmux-into-%12"),
+            br#"["deepseek-v4-pro","high",false]"#,
+        )
+        .unwrap();
         let plan_path = root.join("dsh-plan.md");
         fs::write(&plan_path, "# Fix the redirect\n\n1. Edit the redirect.\n").unwrap();
         let db = Db::open(&root.join("triage.db")).unwrap();
@@ -4333,7 +4798,11 @@ fn approving_a_dsh_plan_hands_the_plan_file_to_a_dsh_session() {
             .unwrap()
             .trim_end_matches(['.', '\'', '"', '`']);
         let brief = fs::read_to_string(brief_path).unwrap();
-        assert!(brief.contains("Carry out this approved plan") && brief.contains("1. Edit the redirect."), "{brief}");
+        assert!(
+            brief.contains("Carry out this approved plan")
+                && brief.contains("1. Edit the redirect."),
+            "{brief}"
+        );
         let swipe = current_swipe(&db, &plan.id);
         assert_eq!(swipe.action, "done");
         assert_eq!(swipe.option, Some(0));
@@ -4414,11 +4883,16 @@ fn the_daemon_approves_a_dsh_plan_into_plan_without_review() {
         );
         let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
         assert!(log.contains("kill-pane -t %12"), "{log}");
-        assert!(!log.contains("kill-pane -t %13") && !log.contains("kill-pane -t %14"), "{log}");
+        assert!(
+            !log.contains("kill-pane -t %13") && !log.contains("kill-pane -t %14"),
+            "{log}"
+        );
         assert!(db.card(&plans[1].id).unwrap().unwrap().1.is_none());
         assert!(db.card(&plans[2].id).unwrap().unwrap().1.is_none());
         assert_eq!(
-            fs::read_to_string(root.join("tmux-into-%14")).unwrap().trim(),
+            fs::read_to_string(root.join("tmux-into-%14"))
+                .unwrap()
+                .trim(),
             r#"["deepseek-v4-pro","high",false]"#
         );
         assert_eq!(approve_plans_into_dsh(&db, &launch), 0);
@@ -4500,8 +4974,14 @@ fn finding_answer_with_a_long_brief_launches_within_tmux_limit() {
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(new_window_count(&root), 1);
         assert!(log.contains("Carry out the triage brief saved at "));
-        assert!(!log.contains("situation situation"), "the brief body reached tmux");
-        assert_eq!(current_swipe(&db, &card.id).reason.as_deref(), Some("launched %42"));
+        assert!(
+            !log.contains("situation situation"),
+            "the brief body reached tmux"
+        );
+        assert_eq!(
+            current_swipe(&db, &card.id).reason.as_deref(),
+            Some("launched %42")
+        );
         return;
     }
 
@@ -4941,7 +5421,14 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         let refine = plan_card(&pane, 3);
         let other = plan_card(&pane, 4);
         let refine_with_executor = plan_card(&pane, 5);
-        for card in [&approve, &empty, &unknown, &refine, &other, &refine_with_executor] {
+        for card in [
+            &approve,
+            &empty,
+            &unknown,
+            &refine,
+            &other,
+            &refine_with_executor,
+        ] {
             db.insert_card(card).unwrap();
         }
 
@@ -4954,7 +5441,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
         let unknown_result = answer(
             &db,
@@ -4964,7 +5451,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
         let executor_refine_result = answer(
             &db,
@@ -4976,9 +5463,15 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
-        let approve_result = answer(&db, &approve, &answer_req(0, None), &Launch::default(), None);
+        let approve_result = answer(
+            &db,
+            &approve,
+            &answer_req(0, None),
+            &Launch::default(),
+            None,
+        );
         let reopen = || {
             fs::write(root.join("tmux-plan-review"), b"").unwrap();
             fs::write(root.join("tmux-plan-mode"), b"").unwrap();
@@ -4995,7 +5488,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
         reopen();
         let other_result = answer(
@@ -5006,7 +5499,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
         let approve_swipe = current_swipe(&db, &approve.id);
         let refine_swipe = current_swipe(&db, &refine.id);
@@ -5043,7 +5536,9 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         assert_eq!(other_swipe.option, None);
         assert!(!keys.contains("Escape"), "{keys}");
         assert_eq!(
-            keys.lines().filter(|line| *line == "send-keys -t %12 Down").count(),
+            keys.lines()
+                .filter(|line| *line == "send-keys -t %12 Down")
+                .count(),
             6
         );
         assert!(refine_pick < text && text < next_enter, "{keys}");
@@ -5064,7 +5559,8 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
 #[cfg(unix)]
 #[test]
 fn plan_refine_refuses_a_review_that_approved_instead_of_refining() {
-    if let Some(root) = child_root("plan_refine_refuses_a_review_that_approved_instead_of_refining") {
+    if let Some(root) = child_root("plan_refine_refuses_a_review_that_approved_instead_of_refining")
+    {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let pane = pane(&root, "%12", "/dev/pts/12", "π > session");
         let screens = root.join("tmux-capture-seq");
@@ -5098,7 +5594,7 @@ fn plan_refine_refuses_a_review_that_approved_instead_of_refining() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
 
@@ -5107,7 +5603,12 @@ fn plan_refine_refuses_a_review_that_approved_instead_of_refining() {
             Some("plan review approved the plan instead of refining")
         );
         assert!(db.card(&card.id).unwrap().unwrap().1.is_none());
-        assert_eq!(keys.lines().filter(|line| *line == "send-keys -t %12 Enter").count(), 1);
+        assert_eq!(
+            keys.lines()
+                .filter(|line| *line == "send-keys -t %12 Enter")
+                .count(),
+            1
+        );
         assert!(!keys.contains("Down"), "{keys}");
         assert!(!keys.contains("Add a rollback step"), "{keys}");
         return;
@@ -5142,7 +5643,11 @@ fn plan_refine_without_a_refine_row_escapes_then_types_the_note() {
                       ╰────────────────╯\n";
         fs::write(screens.join("0"), review).unwrap();
         fs::write(screens.join("1"), review).unwrap();
-        fs::write(screens.join("rest"), "⬢ Opus 5.5 · ◕ xhigh · 🗺 Plan · 🗑 scratch\n").unwrap();
+        fs::write(
+            screens.join("rest"),
+            "⬢ Opus 5.5 · ◕ xhigh · 🗺 Plan · 🗑 scratch\n",
+        )
+        .unwrap();
         let card = plan_card(&pane, 0);
         db.insert_card(&card).unwrap();
 
@@ -5160,8 +5665,12 @@ fn plan_refine_without_a_refine_row_escapes_then_types_the_note() {
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap_or_default();
 
         assert!(result.is_ok(), "{result:?}\n{keys}");
-        let escape = keys.find("Escape").unwrap_or_else(|| panic!("no Escape sent: {keys}"));
-        let note = keys.find("Add a rollback step").unwrap_or_else(|| panic!("note not sent: {keys}"));
+        let escape = keys
+            .find("Escape")
+            .unwrap_or_else(|| panic!("no Escape sent: {keys}"));
+        let note = keys
+            .find("Add a rollback step")
+            .unwrap_or_else(|| panic!("note not sent: {keys}"));
         assert!(escape < note, "{keys}");
         assert!(!keys.contains("Down") && !keys.contains("Up"), "{keys}");
         return;
@@ -5192,9 +5701,16 @@ fn plan_approval_selects_execution_model_before_enter() {
                 "slow" => "smol ┆ default ◀ slow ▶",
                 _ => unreachable!(),
             };
-            format!("╭─ Plan Review ─╮\n│ continue with ◂ {track} ▸\n│ ↑/↓ select · ⏎ confirm · ←/→ model\n")
+            format!(
+                "╭─ Plan Review ─╮\n│ continue with ◂ {track} ▸\n│ ↑/↓ select · ⏎ confirm · ←/→ model\n"
+            )
         };
-        for (index, selected) in ["default", "slow", "default", "default", "default", "default"].iter().enumerate() {
+        for (index, selected) in [
+            "default", "slow", "default", "default", "default", "default",
+        ]
+        .iter()
+        .enumerate()
+        {
             fs::write(screens.join(index.to_string()), review(selected)).unwrap();
         }
         let selected = plan_card(&pane, 0);
@@ -5211,37 +5727,56 @@ fn plan_approval_selects_execution_model_before_enter() {
         let selected_result = answer(
             &db,
             &selected,
-            &AnswerReq { option: Some(0), executor: Some("@slow".to_owned()), ..AnswerReq::default() },
+            &AnswerReq {
+                option: Some(0),
+                executor: Some("@slow".to_owned()),
+                ..AnswerReq::default()
+            },
             &Launch::default(),
-        None,
+            None,
         );
         let unavailable_result = answer(
             &db,
             &unavailable,
-            &AnswerReq { option: Some(0), executor: Some("@missing".to_owned()), ..AnswerReq::default() },
+            &AnswerReq {
+                option: Some(0),
+                executor: Some("@missing".to_owned()),
+                ..AnswerReq::default()
+            },
             &Launch::default(),
-        None,
+            None,
         );
         let default_result = answer(
             &db,
             &default,
-            &AnswerReq { option: Some(0), executor: Some("@default".to_owned()), ..AnswerReq::default() },
+            &AnswerReq {
+                option: Some(0),
+                executor: Some("@default".to_owned()),
+                ..AnswerReq::default()
+            },
             &Launch::default(),
-        None,
+            None,
         );
         let mismatch_result = answer(
             &db,
             &mismatch,
-            &AnswerReq { option: Some(0), executor: Some("@slow".to_owned()), ..AnswerReq::default() },
+            &AnswerReq {
+                option: Some(0),
+                executor: Some("@slow".to_owned()),
+                ..AnswerReq::default()
+            },
             &Launch::default(),
-        None,
+            None,
         );
         let blank_result = answer(
             &db,
             &blank,
-            &AnswerReq { option: Some(0), ..AnswerReq::default() },
+            &AnswerReq {
+                option: Some(0),
+                ..AnswerReq::default()
+            },
             &Launch::default(),
-        None,
+            None,
         );
         let effort_result = answer(
             &db,
@@ -5253,7 +5788,7 @@ fn plan_approval_selects_execution_model_before_enter() {
                 ..AnswerReq::default()
             },
             &Launch::default(),
-        None,
+            None,
         );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let keys: Vec<_> = keys.lines().collect();
@@ -5271,15 +5806,24 @@ fn plan_approval_selects_execution_model_before_enter() {
             effort_result.as_ref().err().map(String::as_str),
             Some("an omp plan review keeps the role's own thinking level")
         );
-        assert_eq!(keys, [
-            "send-keys -t %12 Right",
-            "send-keys -t %12 Enter",
-            "send-keys -t %12 Enter",
-            "send-keys -t %12 Right",
-            "send-keys -t %12 Enter",
-        ]);
-        assert_eq!(current_swipe(&db, &selected.id).text.as_deref(), Some("@slow"));
-        assert_eq!(current_swipe(&db, &default.id).text.as_deref(), Some("@default"));
+        assert_eq!(
+            keys,
+            [
+                "send-keys -t %12 Right",
+                "send-keys -t %12 Enter",
+                "send-keys -t %12 Enter",
+                "send-keys -t %12 Right",
+                "send-keys -t %12 Enter",
+            ]
+        );
+        assert_eq!(
+            current_swipe(&db, &selected.id).text.as_deref(),
+            Some("@slow")
+        );
+        assert_eq!(
+            current_swipe(&db, &default.id).text.as_deref(),
+            Some("@default")
+        );
         assert!(current_swipe(&db, &blank.id).text.is_none());
         assert!(db.card(&unavailable.id).unwrap().unwrap().1.is_none());
         assert!(db.card(&mismatch.id).unwrap().unwrap().1.is_none());
@@ -5503,7 +6047,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             &in_session("session"),
             Start::Goal,
             Task::Fix,
-        None,
+            None,
         );
         let launched = start_session(
             &db,
@@ -5512,7 +6056,7 @@ fn start_session_rejects_blank_prompt_and_launches_brief() {
             &in_session("session"),
             Start::Goal,
             Task::Fix,
-        None,
+            None,
         );
         let brief = fs::read_dir(root.join("briefs"))
             .unwrap()
@@ -5556,7 +6100,7 @@ fn start_session_plan_mode_uses_overlay_config_before_the_prompt_brief() {
             &in_session("session"),
             Start::Plan,
             Task::Act,
-        None,
+            None,
         );
         let mut brief_path = None;
         let mut overlay_path = None;
@@ -5630,12 +6174,16 @@ fn the_plan_model_takes_the_launch_thinking_level() {
         launch_flags(Some("@opus:max"), Some("xhigh")).unwrap(),
         "--model=@opus:max --plan=@opus:max --thinking=xhigh "
     );
-    assert_eq!(launch_flags(Some("@opus"), None).unwrap(), "--model=@opus --plan=@opus ");
+    assert_eq!(
+        launch_flags(Some("@opus"), None).unwrap(),
+        "--model=@opus --plan=@opus "
+    );
 }
 
 #[test]
 fn plan_into_command_hands_the_plan_to_the_execution_model() {
-    let directory = std::env::temp_dir().join(format!("triage-plan-command-{}", uuid::Uuid::new_v4()));
+    let directory =
+        std::env::temp_dir().join(format!("triage-plan-command-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&directory).unwrap();
     let brief = directory.join("brief.md");
     fs::write(&brief, "# Ship the fix\n\nDo the work.\n").unwrap();
@@ -5655,20 +6203,72 @@ fn plan_into_command_hands_the_plan_to_the_execution_model() {
         )
     );
     let blank = omp_command(&brief, None, None, Start::PlanInto(Some(" "), None), None).unwrap();
-    assert_eq!(blank, format!("omp --plan-yolo '# Ship the fix' @'{}'", brief.display()));
-    let default_with_effort = omp_command(&brief, None, None, Start::PlanInto(None, Some("medium")), None).unwrap();
-    assert_eq!(default_with_effort, format!("omp --plan-yolo --plan-yolo-into=@smol:medium '# Ship the fix' @'{}'", brief.display()));
-    assert!(omp_command(&brief, None, None, Start::PlanInto(Some("x; rm -rf ~"), None), None).is_err());
-    let leveled = omp_command(&brief, None, None, Start::PlanInto(Some("@smol"), Some("low")), None).unwrap();
-    assert_eq!(leveled, format!("omp --plan-yolo --plan-yolo-into=@smol:low '# Ship the fix' @'{}'", brief.display()));
-    let named = omp_command(&brief, None, None, Start::PlanInto(Some("provider/executor:max"), Some("low")), None).unwrap();
-    assert_eq!(named, format!("omp --plan-yolo --plan-yolo-into=provider/executor:max '# Ship the fix' @'{}'", brief.display()));
+    assert_eq!(
+        blank,
+        format!("omp --plan-yolo '# Ship the fix' @'{}'", brief.display())
+    );
+    let default_with_effort = omp_command(
+        &brief,
+        None,
+        None,
+        Start::PlanInto(None, Some("medium")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        default_with_effort,
+        format!(
+            "omp --plan-yolo --plan-yolo-into=@smol:medium '# Ship the fix' @'{}'",
+            brief.display()
+        )
+    );
+    assert!(
+        omp_command(
+            &brief,
+            None,
+            None,
+            Start::PlanInto(Some("x; rm -rf ~"), None),
+            None
+        )
+        .is_err()
+    );
+    let leveled = omp_command(
+        &brief,
+        None,
+        None,
+        Start::PlanInto(Some("@smol"), Some("low")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        leveled,
+        format!(
+            "omp --plan-yolo --plan-yolo-into=@smol:low '# Ship the fix' @'{}'",
+            brief.display()
+        )
+    );
+    let named = omp_command(
+        &brief,
+        None,
+        None,
+        Start::PlanInto(Some("provider/executor:max"), Some("low")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        named,
+        format!(
+            "omp --plan-yolo --plan-yolo-into=provider/executor:max '# Ship the fix' @'{}'",
+            brief.display()
+        )
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn plan_command_prefixes_brief_heading() {
-    let directory = std::env::temp_dir().join(format!("triage-plan-heading-{}", uuid::Uuid::new_v4()));
+    let directory =
+        std::env::temp_dir().join(format!("triage-plan-heading-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&directory).unwrap();
     let brief = directory.join("brief.md");
     fs::write(&brief, "\n# Act: Ship it\n\nDo the work.\n").unwrap();
@@ -5676,7 +6276,10 @@ fn plan_command_prefixes_brief_heading() {
     let command = omp_command(&brief, None, None, Start::Plan, None).unwrap();
 
     assert!(command.contains("'# Act: Ship it' @'"), "{command}");
-    assert!(command.ends_with(&format!("@'{}'", brief.display())), "{command}");
+    assert!(
+        command.ends_with(&format!("@'{}'", brief.display())),
+        "{command}"
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -5684,12 +6287,18 @@ fn plan_command_prefixes_brief_heading() {
 fn execution_effort_belongs_to_each_engine() {
     assert_eq!(executor_effort(Engine::Dsh, Some(" max ")), Ok(Some("max")));
     // dsh reports each model's own effort ids, so a model may offer medium or xhigh.
-    assert_eq!(executor_effort(Engine::Dsh, Some("medium")), Ok(Some("medium")));
+    assert_eq!(
+        executor_effort(Engine::Dsh, Some("medium")),
+        Ok(Some("medium"))
+    );
     assert_eq!(
         executor_effort(Engine::Dsh, Some("turbo")),
         Err("unknown execution effort turbo".to_owned())
     );
-    assert_eq!(executor_effort(Engine::Omp, Some("medium")), Ok(Some("medium")));
+    assert_eq!(
+        executor_effort(Engine::Omp, Some("medium")),
+        Ok(Some("medium"))
+    );
     assert_eq!(
         executor_effort(Engine::Omp, Some("turbo")),
         Err("unknown execution thinking level turbo".to_owned())
@@ -5707,6 +6316,12 @@ fn start_parse_refuses_an_execution_effort_outside_plan_into() {
         Err("executor thinking needs mode plan-into".to_owned())
     );
     assert!(matches!(
+        Start::parse(
+            Some("plan-into"),
+            Engine::Omp,
+            Some("deepseek-flash"),
+            Some("low")
+        ),
         Ok(Start::PlanInto(Some("deepseek-flash"), Some("low")))
     ));
 }
@@ -5722,6 +6337,10 @@ fn a_launch_without_a_mode_starts_in_its_engines_default_mode() {
     );
     assert_eq!(Start::parse(None, Engine::Omp, None, None), Ok(Start::Goal));
     assert_eq!(Start::parse(None, Engine::Dsh, None, None), Ok(Start::Goal));
+    assert_eq!(
+        Start::parse(Some("goal"), Engine::Ompsdk, None, None),
+        Ok(Start::Goal)
+    );
 }
 
 #[test]
@@ -5757,7 +6376,10 @@ fn goal_command_names_the_brief_in_its_objective() {
     fs::write(&brief, format!("{heading}\n\n{}\n", "BODY ".repeat(20_000))).unwrap();
     let long = omp_command(&brief, None, None, Start::Goal, None).unwrap();
     assert!(long.len() < 1024, "{} bytes", long.len());
-    assert!(long.contains(&format!("saved at {}.", brief.display())), "{long}");
+    assert!(
+        long.contains(&format!("saved at {}.", brief.display())),
+        "{long}"
+    );
     assert!(long.contains('…') && !long.contains("BODY"), "{long}");
     fs::remove_dir_all(&directory).unwrap();
 }
@@ -5778,13 +6400,32 @@ fn an_image_rides_the_omp_command() {
         name: "shot.png".to_owned(),
     };
     let goal = omp_command(&brief, None, None, Start::Goal, Some(&image)).unwrap();
-    assert!(goal.contains(&format!("Attached image: @{}.", image_path.display())), "{goal}");
+    assert!(
+        goal.contains(&format!("Attached image: @{}.", image_path.display())),
+        "{goal}"
+    );
     let plan = omp_command(&brief, None, None, Start::Plan, Some(&image)).unwrap();
-    assert!(plan.ends_with(&format!("@'{}'", image_path.display())), "{plan}");
-    let into = omp_command(&brief, None, None, Start::PlanInto(None, None), Some(&image)).unwrap();
-    assert!(into.ends_with(&format!("@'{}'", image_path.display())), "{into}");
+    assert!(
+        plan.ends_with(&format!("@'{}'", image_path.display())),
+        "{plan}"
+    );
+    let into = omp_command(
+        &brief,
+        None,
+        None,
+        Start::PlanInto(None, None),
+        Some(&image),
+    )
+    .unwrap();
+    assert!(
+        into.ends_with(&format!("@'{}'", image_path.display())),
+        "{into}"
+    );
     let no_image = omp_command(&brief, None, None, Start::Goal, None).unwrap();
-    assert!(!no_image.contains(&image_path.display().to_string()), "{no_image}");
+    assert!(
+        !no_image.contains(&image_path.display().to_string()),
+        "{no_image}"
+    );
     fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -5886,7 +6527,7 @@ fn tracker_ask_completion_preserves_api_note() {
                     &answer_card,
                     &answer_req(0, Some("preserved API note")),
                     &Launch::default(),
-                None,
+                    None,
                 ))
                 .unwrap();
         });
@@ -6041,9 +6682,7 @@ fn tracker_creates_plan_card_and_reconciles_closed_and_superseded_proposals() {
 #[cfg(unix)]
 #[test]
 fn tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged() {
-    if let Some(root) =
-        child_root("tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged")
-    {
+    if let Some(root) = child_root("tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged") {
         let transcript = root.join("session.jsonl");
         let lines = include_str!("../../tests/fixtures/transcript_propose.jsonl")
             .lines()
@@ -6060,13 +6699,21 @@ fn tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged() {
         let mut tracker = Tracker::default();
 
         tracker.tick(&db);
-        let plain = db.card("plan:%12:toolu_bdrk_01F9sZDXkT5zNBmzjiCthZTN").unwrap().unwrap().0;
+        let plain = db
+            .card("plan:%12:toolu_bdrk_01F9sZDXkT5zNBmzjiCthZTN")
+            .unwrap()
+            .unwrap()
+            .0;
         assert_eq!(plain.engine, None);
         assert!(plain.refs.is_empty());
         assert_eq!(plain.options[0].description, None);
 
         // The planner was launched for dsh, so its next proposal is a dsh plan.
-        fs::write(root.join("tmux-into-%12"), br#"["deepseek-v4-pro",null,false]"#).unwrap();
+        fs::write(
+            root.join("tmux-into-%12"),
+            br#"["deepseek-v4-pro",null,false]"#,
+        )
+        .unwrap();
         let second_call = serde_json::json!({
                 "type": "message",
                 "message": {
@@ -6093,7 +6740,11 @@ fn tracker_marks_a_plan_for_dsh_only_when_its_planner_is_tagged() {
         let dsh_plan = db.card("plan:%12:plan-call-2").unwrap().unwrap().0;
         assert_eq!(dsh_plan.engine.as_deref(), Some("dsh"));
         assert_eq!(dsh_plan.refs.len(), 1);
-        assert!(dsh_plan.refs[0].ends_with("second-plan.md"), "{:?}", dsh_plan.refs);
+        assert!(
+            dsh_plan.refs[0].ends_with("second-plan.md"),
+            "{:?}",
+            dsh_plan.refs
+        );
         assert_eq!(
             dsh_plan.options[0].description.as_deref(),
             Some("A dsh session carries out the plan.")
@@ -6158,7 +6809,11 @@ fn tracker_reports_a_plan_review_it_cannot_turn_into_a_card() {
         let cards = unreadable(&db);
         assert_eq!(cards.len(), 1, "{cards:?}");
         assert_eq!(cards[0].kind, Kind::Info);
-        assert!(cards[0].refs[0].ends_with("lost-plan.md"), "{:?}", cards[0].refs);
+        assert!(
+            cards[0].refs[0].ends_with("lost-plan.md"),
+            "{:?}",
+            cards[0].refs
+        );
         return;
     }
 
@@ -6402,14 +7057,14 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
             &card,
             &answer_req(1, Some("review")),
             &in_session("session"),
-        None,
+            None,
         );
         let changed_note = answer(
             &db,
             &card,
             &answer_req(0, Some("changed")),
             &in_session("session"),
-        None,
+            None,
         );
         let changed_mode = answer(
             &db,
@@ -6422,7 +7077,7 @@ fn finding_retry_reuses_pending_pane_after_tag_failure_and_rejects_changed_choic
                 ..AnswerReq::default()
             },
             &in_session("session"),
-        None,
+            None,
         );
         let launches_before_retry = new_window_count(&root);
         let retry_result = answer(&db, &card, &original, &in_session("session"), None);
@@ -6471,7 +7126,10 @@ fn finding_questions_skip_and_keep_record_done_without_a_launch() {
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(swipe.action, "done");
         assert_eq!(swipe.option, None);
-        assert_eq!(swipe.text.as_deref(), Some("1. Supplier: Skip; 2. Stock: Keep; 3. Note: skip"));
+        assert_eq!(
+            swipe.text.as_deref(),
+            Some("1. Supplier: Skip; 2. Stock: Keep; 3. Note: skip")
+        );
         assert_eq!(swipe.note.as_deref(), Some("review"));
         assert_eq!(swipe.reason.as_deref(), Some("answered"));
         assert_eq!(new_window_count(&root), 0);
@@ -6491,7 +7149,9 @@ fn finding_questions_skip_and_keep_record_done_without_a_launch() {
 #[cfg(unix)]
 #[test]
 fn finding_question_answers_are_validated_before_anything_is_recorded() {
-    if let Some(root) = child_root("finding_question_answers_are_validated_before_anything_is_recorded") {
+    if let Some(root) =
+        child_root("finding_question_answers_are_validated_before_anything_is_recorded")
+    {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let card = question_finding_card(&root);
         db.insert_card(&card).unwrap();
@@ -6504,7 +7164,10 @@ fn finding_question_answers_are_validated_before_anything_is_recorded() {
                 },
                 "finding questions take answers, not a top-level option or text",
             ),
-            (question_req(vec![picked(0)], None), "finding answer needs one answer per question"),
+            (
+                question_req(vec![picked(0)], None),
+                "finding answer needs one answer per question",
+            ),
             (
                 question_req(vec![picked(2), picked(0), picked(0)], None),
                 "option is out of range or selects Other",
@@ -6526,9 +7189,15 @@ fn finding_question_answers_are_validated_before_anything_is_recorded() {
             ),
         ];
         for (request, message) in rejected {
-            assert_eq!(answer(&db, &card, &request, &in_session("session"), None).unwrap_err(), message);
+            assert_eq!(
+                answer(&db, &card, &request, &in_session("session"), None).unwrap_err(),
+                message
+            );
         }
-        assert!(db.card(&card.id).unwrap().unwrap().1.is_none(), "a rejected answer leaves the card queued");
+        assert!(
+            db.card(&card.id).unwrap().unwrap().1.is_none(),
+            "a rejected answer leaves the card queued"
+        );
         assert_eq!(new_window_count(&root), 0);
         return;
     }
@@ -6546,7 +7215,9 @@ fn finding_question_answers_are_validated_before_anything_is_recorded() {
 #[cfg(unix)]
 #[test]
 fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_image() {
-    if let Some(root) = child_root("finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_image") {
+    if let Some(root) = child_root(
+        "finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_image",
+    ) {
         let db = Db::open(&root.join("triage.db")).unwrap();
         let card = question_finding_card(&root);
         db.insert_card(&card).unwrap();
@@ -6558,7 +7229,10 @@ fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_i
             media_type: "image/png".to_owned(),
             name: "shot.png".to_owned(),
         };
-        let request = question_req(vec![picked(0), picked(0), typed("Keep the audit log")], Some("review all"));
+        let request = question_req(
+            vec![picked(0), picked(0), typed("Keep the audit log")],
+            Some("review all"),
+        );
         let result = answer(&db, &card, &request, &in_session("session"), Some(&image));
         let swipe = current_swipe(&db, &card.id);
         let briefs: Vec<PathBuf> = fs::read_dir(root.join("briefs"))
@@ -6570,19 +7244,37 @@ fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_i
         assert_eq!(swipe.option, None);
         assert_eq!(
             swipe.text.as_deref(),
-            Some("Act: 1. Supplier: Do as recommended; 2. Stock: Investigate first; 3. Note: Other: Keep the audit log")
+            Some(
+                "Act: 1. Supplier: Do as recommended; 2. Stock: Investigate first; 3. Note: Other: Keep the audit log"
+            )
         );
         assert_eq!(swipe.note.as_deref(), Some("review all"));
         assert_eq!(swipe.reason.as_deref(), Some("launched %42"));
         assert_eq!(new_window_count(&root), 1);
         let log = fs::read_to_string(root.join("tmux.log")).unwrap_or_default();
-        assert!(log.contains(&format!("Attached image: @{}", image.path.display())), "{log}");
+        assert!(
+            log.contains(&format!("Attached image: @{}", image.path.display())),
+            "{log}"
+        );
         assert_eq!(briefs.len(), 1);
         let brief = fs::read_to_string(&briefs[0]).unwrap();
-        assert!(brief.contains("### 1. Supplier\nSupplier?\nDecision: Do as recommended\nDirection: \n"), "{brief}");
-        assert!(brief.contains("### 2. Stock\nStock?\nDecision: Investigate first\nDirection: \n"), "{brief}");
-        assert!(brief.contains("### 3. Note\nNote?\nDecision: Other\nDirection: Keep the audit log\n"), "{brief}");
-        assert!(brief.contains(FINDING_ANSWER_RULES) && brief.contains(GOAL_INSTRUCTION), "{brief}");
+        assert!(
+            brief
+                .contains("### 1. Supplier\nSupplier?\nDecision: Do as recommended\nDirection: \n"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("### 2. Stock\nStock?\nDecision: Investigate first\nDirection: \n"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("### 3. Note\nNote?\nDecision: Other\nDirection: Keep the audit log\n"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains(FINDING_ANSWER_RULES) && brief.contains(GOAL_INSTRUCTION),
+            "{brief}"
+        );
         assert!(brief.contains(&format!("## Direction from the user (overrides the action and any skill)\n{ACT_DIRECTION}\n\nreview all\n")), "{brief}");
         return;
     }
@@ -6600,15 +7292,26 @@ fn finding_questions_with_actions_launch_one_brief_with_every_decision_and_the_i
 #[cfg(unix)]
 #[test]
 fn finding_question_retry_reuses_the_launch_only_for_the_same_answers() {
-    if let Some(root) = child_root("finding_question_retry_reuses_the_launch_only_for_the_same_answers") {
+    if let Some(root) =
+        child_root("finding_question_retry_reuses_the_launch_only_for_the_same_answers")
+    {
         fs::write(root.join("tmux-fail-first-tag"), b"").unwrap();
         let db = Db::open(&root.join("triage.db")).unwrap();
         let card = question_finding_card(&root);
         db.insert_card(&card).unwrap();
         let launch = in_session("session");
-        let original = question_req(vec![picked(0), picked(0), typed("Keep the audit log")], Some("review all"));
-        let other_decision = question_req(vec![picked(0), picked(1), typed("Keep the audit log")], Some("review all"));
-        let other_note = question_req(vec![picked(0), picked(0), typed("Keep the audit log")], Some("changed"));
+        let original = question_req(
+            vec![picked(0), picked(0), typed("Keep the audit log")],
+            Some("review all"),
+        );
+        let other_decision = question_req(
+            vec![picked(0), picked(1), typed("Keep the audit log")],
+            Some("review all"),
+        );
+        let other_note = question_req(
+            vec![picked(0), picked(0), typed("Keep the audit log")],
+            Some("changed"),
+        );
         let first = answer(&db, &card, &original, &launch, None);
         let pending = current_swipe(&db, &card.id);
         let changed_decision = answer(&db, &card, &other_decision, &launch, None);
@@ -6618,8 +7321,14 @@ fn finding_question_retry_reuses_the_launch_only_for_the_same_answers() {
         let completed = current_swipe(&db, &card.id);
         assert!(first.is_err(), "{first:?}");
         assert_eq!(pending.reason.as_deref(), Some("launching %42"));
-        assert_eq!(changed_decision.unwrap_err(), "finding pane was launched with a different answer");
-        assert_eq!(changed_note.unwrap_err(), "finding pane was launched with a different answer");
+        assert_eq!(
+            changed_decision.unwrap_err(),
+            "finding pane was launched with a different answer"
+        );
+        assert_eq!(
+            changed_note.unwrap_err(),
+            "finding pane was launched with a different answer"
+        );
         assert_eq!(launches_before_retry, 1);
         assert!(retry.is_ok(), "{retry:?}");
         assert_eq!(completed.action, "done");
@@ -6715,7 +7424,15 @@ fn assistant_text_line(id: &str, text: &str) -> String {
 fn interrupted_dispatched_pane_does_not_raise_unreported() {
     if let Some(root) = child_root("interrupted_dispatched_pane_does_not_raise_unreported") {
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[user_brief_line(), assistant_entry("a1", "aborted", None, None)]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[
+                user_brief_line(),
+                assistant_entry("a1", "aborted", None, None),
+            ],
+        );
         fs::write(root.join("tmux-dead"), b"").unwrap();
         let db = Db::open(&root.join("triage.db")).unwrap();
         let written = Tracker::default().tick(&db).written;
@@ -6725,23 +7442,46 @@ fn interrupted_dispatched_pane_does_not_raise_unreported() {
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("interrupted_dispatched_pane_does_not_raise_unreported", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "interrupted_dispatched_pane_does_not_raise_unreported",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 #[cfg(unix)]
 #[test]
 fn stopped_dispatched_pane_still_raises_unreported() {
     if let Some(root) = child_root("stopped_dispatched_pane_still_raises_unreported") {
         let transcript = root.join("transcript.jsonl");
-        write_transcript(&root, "/dev/pts/12", &transcript, &[user_brief_line(), assistant_entry("a1", "stop", Some("Still incomplete."), None)]);
+        write_transcript(
+            &root,
+            "/dev/pts/12",
+            &transcript,
+            &[
+                user_brief_line(),
+                assistant_entry("a1", "stop", Some("Still incomplete."), None),
+            ],
+        );
         fs::write(root.join("tmux-dead"), b"").unwrap();
         let db = Db::open(&root.join("triage.db")).unwrap();
         Tracker::default().tick(&db);
-        assert!(db.queue(events::now_ms()).unwrap().iter().any(|card| card.title == "Unreported: Still incomplete."));
+        assert!(
+            db.queue(events::now_ms())
+                .unwrap()
+                .iter()
+                .any(|card| card.title == "Unreported: Still incomplete.")
+        );
         return;
     }
     let scratch = Scratch::new();
     let bin = fake_tmux(scratch.path());
-    run_child("stopped_dispatched_pane_still_raises_unreported", scratch.path(), Some(scratch.path()), Some(&bin));
+    run_child(
+        "stopped_dispatched_pane_still_raises_unreported",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
 }
 
 #[test]
@@ -7412,7 +8152,10 @@ fn session_id_is_read_from_the_transcript_name() {
         Some("01a1bd4b-9f6f-74e6-bf2d-8d1618a31655")
     );
     assert_eq!(session_id("/tmp/notes.txt"), None);
-    assert_eq!(session_id("/tmp/2026-11-08T22-33-32-271Z_not-a-uuid.jsonl"), None);
+    assert_eq!(
+        session_id("/tmp/2026-11-08T22-33-32-271Z_not-a-uuid.jsonl"),
+        None
+    );
 }
 
 #[cfg(unix)]
@@ -7528,9 +8271,10 @@ impl BridgeData {
             self.reads.push(uri.to_string());
         }
         match (method.as_str(), path.as_str()) {
-            ("GET", "/v1/sessions") if self.list_fails => {
-                (StatusCode::SERVICE_UNAVAILABLE, json!({"error": "session/list: timeout"}))
-            }
+            ("GET", "/v1/sessions") if self.list_fails => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error": "session/list: timeout"}),
+            ),
             ("GET", "/v1/sessions") => (
                 StatusCode::OK,
                 json!({"pid": self.pid, "items": self.sessions, "planDecisions": self.plan_decisions}),
@@ -7538,7 +8282,10 @@ impl BridgeData {
             ("GET", "/v1/pending") if self.syncing => {
                 (StatusCode::SERVICE_UNAVAILABLE, json!({"error": "syncing"}))
             }
-            ("GET", "/v1/pending") => (StatusCode::OK, json!({"pid": self.pid, "items": self.pending})),
+            ("GET", "/v1/pending") => (
+                StatusCode::OK,
+                json!({"pid": self.pid, "items": self.pending}),
+            ),
             ("GET", "/v1/state") if self.state_error.is_some() => {
                 (StatusCode::BAD_GATEWAY, json!({"error": self.state_error}))
             }
@@ -7574,19 +8321,19 @@ impl BridgeData {
                 }
                 if path == "/v1/launch" && self.refuse_workspace && !value["workspace"].is_null() {
                     self.posts.push((path.clone(), value));
-                    return (StatusCode::BAD_REQUEST, json!({"error": "cwd must be an absolute path"}));
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": "cwd must be an absolute path"}),
+                    );
                 }
                 if path == "/v1/launch" {
                     let started = self.slow_launch_started.take();
-                    let sid = value["sessionId"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .or_else(|| {
-                            started
-                                .as_ref()
-                                .and_then(|started| started["sessionId"].as_str())
-                                .map(str::to_owned)
-                        });
+                    let sid = value["sessionId"].as_str().map(str::to_owned).or_else(|| {
+                        started
+                            .as_ref()
+                            .and_then(|started| started["sessionId"].as_str())
+                            .map(str::to_owned)
+                    });
                     if let Some(started) = started {
                         self.sessions.push(started);
                     }
@@ -7600,7 +8347,9 @@ impl BridgeData {
                 }
                 if path == "/v1/ask" {
                     let reply = match self.name_answer.clone() {
-                        Some(text) => json!({"sessionId": "session-name", "text": text, "reason": "completed"}),
+                        Some(text) => {
+                            json!({"sessionId": "session-name", "text": text, "reason": "completed"})
+                        }
                         None => json!({"error": "no route"}),
                     };
                     self.posts.push((path, value));
@@ -7616,7 +8365,10 @@ impl BridgeData {
                     );
                 }
                 let reply = if path == "/v1/launch" {
-                    let launched = value["sessionId"].as_str().unwrap_or(&self.launch_id).to_owned();
+                    let launched = value["sessionId"]
+                        .as_str()
+                        .unwrap_or(&self.launch_id)
+                        .to_owned();
                     json!({"sessionId": launched})
                 } else {
                     json!({"ok": true})
@@ -7629,7 +8381,9 @@ impl BridgeData {
     }
 
     fn listed(&self, sid: &str) -> bool {
-        self.sessions.iter().any(|item| item["sessionId"].as_str() == Some(sid))
+        self.sessions
+            .iter()
+            .any(|item| item["sessionId"].as_str() == Some(sid))
     }
 }
 
@@ -7650,8 +8404,16 @@ async fn bridge_route(
     body: Bytes,
 ) -> Response {
     let bearer = format!("Bearer {BRIDGE_SECRET}");
-    if headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()) != Some(bearer.as_str()) {
-        return (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "unauthorized"}))).into_response();
+    if headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        != Some(bearer.as_str())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
     // Holds the archive back outside the store lock, so the route still answers other calls.
     let delay = store.lock().unwrap().archive_delay;
@@ -7688,7 +8450,9 @@ impl FakeBridge {
                 .block_on(async move {
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                     address_tx.send(listener.local_addr().unwrap()).unwrap();
-                    let router = axum::Router::new().fallback(bridge_route).with_state(served);
+                    let router = axum::Router::new()
+                        .fallback(bridge_route)
+                        .with_state(served);
                     axum::serve(listener, router)
                         .with_graceful_shutdown(async move {
                             let _ = stop_rx.await;
@@ -7700,7 +8464,13 @@ impl FakeBridge {
         let api = format!("http://{}", address_rx.recv().unwrap());
         let host = root.join("dsh-host.json");
         write_host(&host, &api, BRIDGE_SECRET);
-        Self { store, api, host, stop: Some(stop), thread: Some(thread) }
+        Self {
+            store,
+            api,
+            host,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
     }
 
     fn host(&self) -> &Path {
@@ -7708,7 +8478,11 @@ impl FakeBridge {
     }
 
     fn launch(&self) -> Launch {
-        Launch { engine: Engine::Dsh, dsh_host: Some(self.host.clone()), ..Launch::default() }
+        Launch {
+            engine: Engine::Dsh,
+            dsh_host: Some(self.host.clone()),
+            ..Launch::default()
+        }
     }
 
     fn edit(&self, edit: impl FnOnce(&mut BridgeData)) {
@@ -7727,7 +8501,13 @@ impl FakeBridge {
     }
 
     fn reads(&self, prefix: &str) -> usize {
-        self.store.lock().unwrap().reads.iter().filter(|read| read.starts_with(prefix)).count()
+        self.store
+            .lock()
+            .unwrap()
+            .reads
+            .iter()
+            .filter(|read| read.starts_with(prefix))
+            .count()
     }
 
     fn requests(&self) -> usize {
@@ -7747,7 +8527,11 @@ impl Drop for FakeBridge {
 }
 
 fn write_host(path: &Path, api: &str, secret: &str) {
-    fs::write(path, json!({"api": api, "secret": secret, "pid": 4242}).to_string()).unwrap();
+    fs::write(
+        path,
+        json!({"api": api, "secret": secret, "pid": 4242}).to_string(),
+    )
+    .unwrap();
 }
 
 fn dsh_db(scratch: &Scratch) -> Db {
@@ -7833,7 +8617,10 @@ fn dsh_card_at(db: &Db, id: &str, kind: Kind, created_ms: i64) -> Card {
         },
         title: "Gate fix is done".to_owned(),
         star: Star::default(),
-        options: vec![CardOption { label: "Acknowledge".to_owned(), ..CardOption::default() }],
+        options: vec![CardOption {
+            label: "Acknowledge".to_owned(),
+            ..CardOption::default()
+        }],
         answerable: true,
         allow_other: false,
         questions: Vec::new(),
@@ -7879,9 +8666,15 @@ fn completed_dsh_turn_queues_one_report_card_and_polls_on_a_cadence() {
     assert_eq!(card.body.as_deref(), Some("Goal ok"));
     assert_eq!(bridge.reads("/v1/events"), 1);
     let requests = bridge.requests();
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 1_000), 0);
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 1_000),
+        0
+    );
     assert_eq!(bridge.requests(), requests);
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000),
+        0
+    );
     assert_eq!(bridge.reads("/v1/events"), 1);
     assert_eq!(done_cards(&db).len(), 1);
 }
@@ -7893,9 +8686,18 @@ fn unlaunched_dsh_reply_also_offers_report_request() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.events.insert(SID.to_owned(), vec![reply_event(3, "A plain DSH reply."), turn_end(4, "completed")]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(3, "A plain DSH reply."),
+                turn_end(4, "completed"),
+            ],
+        );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
     assert!(card.report_due, "{card:?}");
 }
@@ -7912,13 +8714,20 @@ fn dsh_report_with_a_remaining_item_keeps_its_card_open() {
             turn_end(4, "completed"),
         ]);
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
     assert_eq!(card.status, Some(events::CardStatus::StepOpen));
     assert_eq!(card.title, "Agent done: Suite passes on 4f1c2aa.");
     assert_eq!(card.level.as_deref(), Some("warn"));
     assert!(card.star.action.is_empty());
-    assert!(card.body.as_deref().is_some_and(|body| body.ends_with("Remaining: Push 4f1c2aa, held by the hook.")));
+    assert!(
+        card.body
+            .as_deref()
+            .is_some_and(|body| body.ends_with("Remaining: Push 4f1c2aa, held by the hook."))
+    );
 }
 
 #[test]
@@ -7928,13 +8737,22 @@ fn dsh_status_selection_uses_the_shared_final_report_parser() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.events.insert(SID.to_owned(), vec![
-            reply_event(2, "Preamble.\nENVOY_STATUS: complete\nThis is not the final result."),
-            reply_event(3, "**ENVOY_STATUS: complete**\n\nR: The shipped result."),
-            turn_end(4, "completed"),
-        ]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(
+                    2,
+                    "Preamble.\nENVOY_STATUS: complete\nThis is not the final result.",
+                ),
+                reply_event(3, "**ENVOY_STATUS: complete**\n\nR: The shipped result."),
+                turn_end(4, "completed"),
+            ],
+        );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().0;
     assert_eq!(card.status, Some(events::CardStatus::Complete));
     assert_eq!(card.title, "Done: The shipped result.");
@@ -7957,11 +8775,16 @@ fn dsh_goal_closing_carries_the_previous_turns_report() {
             turn_end(6, "completed"),
         ]);
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("done:dsh:{SID}:6")).unwrap().unwrap().0;
     assert_eq!(card.status, Some(events::CardStatus::Complete));
     assert_eq!(card.title, "Done: Draft is ready.");
-    assert!(card.body.as_deref().is_some_and(|body| body.contains("R: Draft is ready.") && body.contains("Goal marked complete.")));
+    assert!(card.body.as_deref().is_some_and(
+        |body| body.contains("R: Draft is ready.") && body.contains("Goal marked complete.")
+    ));
     assert!(!card.report_due);
 }
 
@@ -7974,16 +8797,22 @@ fn dsh_goal_closing_does_not_cross_another_closing_turn() {
     completed["goalPhase"] = json!("complete");
     bridge.edit(|data| {
         data.sessions = vec![completed];
-        data.events.insert(SID.to_owned(), vec![
-            reply_event(2, "ENVOY_STATUS: complete\n\nR: Old goal result."),
-            json!({"seq": 3, "type": "tool/result", "name": "update_goal"}),
-            turn_end(4, "completed"),
-            reply_event(5, "New goal closing message."),
-            json!({"seq": 6, "type": "tool/result", "name": "update_goal"}),
-            turn_end(7, "completed"),
-        ]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(2, "ENVOY_STATUS: complete\n\nR: Old goal result."),
+                json!({"seq": 3, "type": "tool/result", "name": "update_goal"}),
+                turn_end(4, "completed"),
+                reply_event(5, "New goal closing message."),
+                json!({"seq": 6, "type": "tool/result", "name": "update_goal"}),
+                turn_end(7, "completed"),
+            ],
+        );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("done:dsh:{SID}:7")).unwrap().unwrap().0;
     assert_eq!(card.status, Some(events::CardStatus::NoFinalReport));
     assert_eq!(card.body.as_deref(), Some("New goal closing message."));
@@ -8001,13 +8830,25 @@ fn completed_dsh_goal_reports_when_running_flag_is_stale() {
         data.sessions = vec![completed];
         data.events.insert(
             SID.to_owned(),
-            vec![reply_event(3, "ENVOY_STATUS: complete\nGoal finished."), turn_end(4, "completed")],
+            vec![
+                reply_event(3, "ENVOY_STATUS: complete\nGoal finished."),
+                turn_end(4, "completed"),
+            ],
         );
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
-    assert!(db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap().1.is_none());
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
+    assert!(
+        db.card(&format!("done:dsh:{SID}:4"))
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none()
+    );
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000),
+        0
+    );
 }
 
 #[test]
@@ -8042,8 +8883,17 @@ fn completed_dsh_goal_waits_for_its_closing_turn_while_running() {
             turn_end(7, "completed"),
         ]);
     });
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 1);
-    assert!(db.card(&format!("done:dsh:{SID}:7")).unwrap().unwrap().1.is_none());
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000),
+        1
+    );
+    assert!(
+        db.card(&format!("done:dsh:{SID}:7"))
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none()
+    );
 }
 
 #[test]
@@ -8083,14 +8933,20 @@ fn closing_a_dsh_report_does_not_raise_the_archived_turn_again() {
             SID.to_owned(),
             vec![
                 reply_event(2, "Writing the file."),
-                reply_event(3, "ENVOY_STATUS: complete\nGoal ok\n\nRecommended action: none."),
+                reply_event(
+                    3,
+                    "ENVOY_STATUS: complete\nGoal ok\n\nRecommended action: none.",
+                ),
                 turn_end(4, "completed"),
             ],
         );
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
-    let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().expect("report card");
+    let (card, _) = db
+        .card(&format!("done:dsh:{SID}:4"))
+        .unwrap()
+        .expect("report card");
     // Acknowledge & close archives the session. dsh finishes the archive by injecting a
     // notice, starting a turn, and blocking it, so the transcript gains a turn end with no
     // reply of its own.
@@ -8102,12 +8958,31 @@ fn closing_a_dsh_report_does_not_raise_the_archived_turn_again() {
             .or_default()
             .push(turn_end(5, "blocked"));
     });
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
-    assert!(done_cards(&db).is_empty(), "the closed report came back: {:?}", done_cards(&db));
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000),
+        0
+    );
+    assert!(
+        done_cards(&db).is_empty(),
+        "the closed report came back: {:?}",
+        done_cards(&db)
+    );
     assert!(db.card(&format!("done:dsh:{SID}:5")).unwrap().is_none());
     // A daemon restart forgets the poll memo, so the archived turn is read again from scratch.
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW + 6_000), 0);
-    assert!(done_cards(&db).is_empty(), "a restart brought the closed report back: {:?}", done_cards(&db));
+    assert_eq!(
+        dsh_tick(
+            &mut Tracker::default(),
+            &db,
+            Some(bridge.host()),
+            NOW + 6_000
+        ),
+        0
+    );
+    assert!(
+        done_cards(&db).is_empty(),
+        "a restart brought the closed report back: {:?}",
+        done_cards(&db)
+    );
 }
 
 #[test]
@@ -8149,15 +9024,24 @@ fn plan_mode_turn_with_a_status_line_does_not_read_done() {
         data.events.insert(
             SID.to_owned(),
             vec![
-                reply_event(3, "ENVOY_STATUS: complete\nPlanned the split. No code changed."),
+                reply_event(
+                    3,
+                    "ENVOY_STATUS: complete\nPlanned the split. No code changed.",
+                ),
                 turn_end(4, "completed"),
             ],
         );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
     assert_eq!(card.status, Some(events::CardStatus::PlanReady));
-    assert_eq!(card.title, "Plan ready: Planned the split. No code changed.");
+    assert_eq!(
+        card.title,
+        "Plan ready: Planned the split. No code changed."
+    );
     assert!(!card.title.starts_with("Done:"), "{card:?}");
 }
 
@@ -8176,10 +9060,16 @@ fn plan_mode_turn_without_a_heading_takes_the_reply_line() {
             ],
         );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
     assert_eq!(card.title, "Plan ready: A plan without a title");
-    assert_eq!(card.body.as_deref(), Some("A plan without a title\n- step one"));
+    assert_eq!(
+        card.body.as_deref(),
+        Some("A plan without a title\n- step one")
+    );
 }
 
 #[test]
@@ -8196,7 +9086,10 @@ fn plan_mode_error_turn_keeps_its_stop_card() {
             ],
         );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let (card, _) = db.card(&format!("done:dsh:{SID}:4")).unwrap().unwrap();
     assert!(card.title.starts_with("Stopped with error"), "{card:?}");
     assert_eq!(card.level.as_deref(), Some("warn"));
@@ -8205,8 +9098,14 @@ fn plan_mode_error_turn_keeps_its_stop_card() {
 /// A turn that ended in plan mode on a host that decides plans: the card the session waits on.
 fn plan_decided_card(bridge: &FakeBridge, db: &Db) -> Card {
     bridge.edit(|data| data.plan_decisions = true);
-    assert_eq!(dsh_tick(&mut Tracker::default(), db, Some(bridge.host()), NOW), 1);
-    db.card(&format!("plan-ready:dsh:{SID}:4")).unwrap().expect("plan card").0
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), db, Some(bridge.host()), NOW),
+        1
+    );
+    db.card(&format!("plan-ready:dsh:{SID}:4"))
+        .unwrap()
+        .expect("plan card")
+        .0
 }
 
 #[test]
@@ -8230,7 +9129,11 @@ fn a_host_that_decides_plans_turns_a_plan_mode_turn_into_a_plan_card() {
     assert_eq!(card.kind, Kind::Plan);
     assert_eq!(card.title, "Plan ready: Keep autorules sessions out");
     assert_eq!(card.body.as_deref(), Some(plan));
-    let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
+    let labels: Vec<&str> = card
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
     assert_eq!(labels, ["Approve", "Refine"]);
     assert!(card.options[0].recommended && card.answerable && card.allow_other);
     assert!(card.tool_call_id.is_none() && !card.report_due, "{card:?}");
@@ -8245,7 +9148,13 @@ fn the_plan_card_approve_takes_the_execution_model_and_leaves_plan_mode() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![plan_session(4)];
-        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it\n\nDo it."), turn_end(4, "completed")]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(3, "# Ship it\n\nDo it."),
+                turn_end(4, "completed"),
+            ],
+        );
     });
     let card = plan_decided_card(&bridge, &db);
     answer(
@@ -8281,13 +9190,23 @@ fn the_plan_card_refine_sends_its_feedback_back_to_planning() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![plan_session(4)];
-        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it\n\nDo it."), turn_end(4, "completed")]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![
+                reply_event(3, "# Ship it\n\nDo it."),
+                turn_end(4, "completed"),
+            ],
+        );
     });
     let card = plan_decided_card(&bridge, &db);
     answer(
         &db,
         &card,
-        &AnswerReq { option: Some(1), text: Some("Add a rollback step.".to_owned()), ..AnswerReq::default() },
+        &AnswerReq {
+            option: Some(1),
+            text: Some("Add a rollback step.".to_owned()),
+            ..AnswerReq::default()
+        },
         &bridge.launch(),
         None,
     )
@@ -8311,7 +9230,10 @@ fn a_later_turn_of_the_session_supersedes_its_plan_card() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![plan_session(4)];
-        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it"), turn_end(4, "completed")]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![reply_event(3, "# Ship it"), turn_end(4, "completed")],
+        );
     });
     let card = plan_decided_card(&bridge, &db);
     bridge.edit(|data| {
@@ -8321,9 +9243,20 @@ fn a_later_turn_of_the_session_supersedes_its_plan_card() {
             turn_end(8, "completed"),
         ]);
     });
-    dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW + 3_000);
+    dsh_tick(
+        &mut Tracker::default(),
+        &db,
+        Some(bridge.host()),
+        NOW + 3_000,
+    );
     assert_eq!(swipe_reason(&db, &card.id).as_deref(), Some("superseded"));
-    assert!(db.card(&format!("done:dsh:{SID}:8")).unwrap().unwrap().1.is_none());
+    assert!(
+        db.card(&format!("done:dsh:{SID}:8"))
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none()
+    );
 }
 
 #[test]
@@ -8333,12 +9266,23 @@ fn a_plan_card_closes_when_its_session_leaves_the_host() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![plan_session(4)];
-        data.events.insert(SID.to_owned(), vec![reply_event(3, "# Ship it"), turn_end(4, "completed")]);
+        data.events.insert(
+            SID.to_owned(),
+            vec![reply_event(3, "# Ship it"), turn_end(4, "completed")],
+        );
     });
     let card = plan_decided_card(&bridge, &db);
     bridge.edit(|data| data.sessions.clear());
-    dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW + 3_000);
-    assert_eq!(swipe_reason(&db, &card.id).as_deref(), Some("session closed"));
+    dsh_tick(
+        &mut Tracker::default(),
+        &db,
+        Some(bridge.host()),
+        NOW + 3_000,
+    );
+    assert_eq!(
+        swipe_reason(&db, &card.id).as_deref(),
+        Some("session closed")
+    );
 }
 
 #[test]
@@ -8350,10 +9294,16 @@ fn aborted_dsh_turn_queues_no_report_card() {
         data.sessions = vec![session(3)];
         data.events.insert(
             SID.to_owned(),
-            vec![reply_event(2, "Stopped by the user."), turn_end(3, "aborted")],
+            vec![
+                reply_event(2, "Stopped by the user."),
+                turn_end(3, "aborted"),
+            ],
         );
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 0);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        0
+    );
     assert!(done_cards(&db).is_empty());
 }
 
@@ -8374,19 +9324,29 @@ fn active_dsh_goal_holds_its_report_until_the_grace_ends() {
         until_ms: None,
         reason: Some(format!("launched dsh:{SID}")),
         at_ms: NOW,
-    }).unwrap();
+    })
+    .unwrap();
     bridge.edit(|data| {
         data.sessions = vec![goal];
         data.events.insert(
             SID.to_owned(),
-            vec![reply_event(2, "Gate attempt 1 still in flight."), turn_end(3, "completed")],
+            vec![
+                reply_event(2, "Gate attempt 1 still in flight."),
+                turn_end(3, "completed"),
+            ],
         );
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 0);
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 10_000), 0);
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 10_000),
+        0
+    );
     assert!(done_cards(&db).is_empty());
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 31_000), 1);
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 31_000),
+        1
+    );
     let ids: Vec<String> = done_cards(&db).into_iter().map(|card| card.id).collect();
     assert_eq!(ids, vec![format!("done:dsh:{SID}:3")]);
     let card = db.card(&ids[0]).unwrap().unwrap().0;
@@ -8423,13 +9383,20 @@ fn report_from_an_ignored_workspace_queues_no_card() {
         data.sessions = vec![finished];
         data.events.insert(
             SID.to_owned(),
-            vec![reply_event(3, "AUTORULES-VERDICT keep"), turn_end(4, "completed")],
+            vec![
+                reply_event(3, "AUTORULES-VERDICT keep"),
+                turn_end(4, "completed"),
+            ],
         );
     });
     let mut tracker = ignored_tracker(&root, &["autorules"]);
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 0);
     assert!(done_cards(&db).is_empty());
-    assert_eq!(bridge.reads("/v1/events"), 0, "an ignored session is never read");
+    assert_eq!(
+        bridge.reads("/v1/events"),
+        0,
+        "an ignored session is never read"
+    );
 }
 
 #[test]
@@ -8443,7 +9410,10 @@ fn report_from_another_workspace_still_queues_a_card() {
         data.sessions = vec![finished];
         data.events.insert(
             SID.to_owned(),
-            vec![reply_event(3, "ENVOY_STATUS: complete"), turn_end(4, "completed")],
+            vec![
+                reply_event(3, "ENVOY_STATUS: complete"),
+                turn_end(4, "completed"),
+            ],
         );
     });
     let mut tracker = ignored_tracker(&root, &["autorules"]);
@@ -8461,7 +9431,10 @@ fn question_in_an_ignored_workspace_queues_no_ask_card() {
     let asking = workspace_session(0, &root, "autorules");
     bridge.edit(|data| {
         data.sessions = vec![asking];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question("q1", "Color", "Which color?", &["Red"], false)],
+        )];
     });
     let mut tracker = ignored_tracker(&root, &["autorules"]);
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 0);
@@ -8479,7 +9452,10 @@ fn empty_ignore_list_tracks_every_workspace() {
         data.sessions = vec![finished];
         data.events.insert(
             SID.to_owned(),
-            vec![reply_event(3, "AUTORULES-VERDICT keep"), turn_end(4, "completed")],
+            vec![
+                reply_event(3, "AUTORULES-VERDICT keep"),
+                turn_end(4, "completed"),
+            ],
         );
     });
     let mut tracker = Tracker::default();
@@ -8493,13 +9469,29 @@ fn dsh_question_queues_an_ask_card_with_its_options() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red", "Blue"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question(
+                "q1",
+                "Color",
+                "Which color?",
+                &["Red", "Blue"],
+                false,
+            )],
+        )];
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().unwrap().0;
     assert_eq!(card.kind, Kind::Ask);
     assert_eq!(card.title, "Which color?");
-    let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
+    let labels: Vec<&str> = card
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
     assert_eq!(labels, ["Red", "Blue"]);
     assert!(card.answerable && card.allow_other, "{card:?}");
     assert_eq!(card.tool_call_id.as_deref(), Some("ev-1"));
@@ -8523,12 +9515,23 @@ fn dsh_multi_question_ask_lists_each_question_by_its_header() {
             ],
         )];
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("ask:dsh:{SID}:ev-2")).unwrap().unwrap().0;
-    let labels: Vec<&str> = card.questions.iter().map(|asked| asked.label.as_str()).collect();
+    let labels: Vec<&str> = card
+        .questions
+        .iter()
+        .map(|asked| asked.label.as_str())
+        .collect();
     assert_eq!(labels, ["Color", "Size"]);
     assert_eq!(card.questions[1].question, "Which size?");
-    let sizes: Vec<&str> = card.questions[1].options.iter().map(|option| option.label.as_str()).collect();
+    let sizes: Vec<&str> = card.questions[1]
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
     assert_eq!(sizes, ["S", "L"]);
 }
 
@@ -8539,9 +9542,15 @@ fn dsh_multi_select_question_is_not_answerable_from_the_card() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-3", vec![question("q1", "Tags", "Which tags?", &["a", "b"], true)])];
+        data.pending = vec![ask(
+            "ev-3",
+            vec![question("q1", "Tags", "Which tags?", &["a", "b"], true)],
+        )];
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
     let card = db.card(&format!("ask:dsh:{SID}:ev-3")).unwrap().unwrap().0;
     assert!(!card.answerable);
 }
@@ -8553,13 +9562,25 @@ fn dsh_question_answered_in_the_web_ui_resolves_its_card() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red", "Blue"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question(
+                "q1",
+                "Color",
+                "Which color?",
+                &["Red", "Blue"],
+                false,
+            )],
+        )];
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
     bridge.edit(|data| data.pending.clear());
     dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000);
-    assert_eq!(swipe_reason(&db, &format!("ask:dsh:{SID}:ev-1")).as_deref(), Some("answered in dsh"));
+    assert_eq!(
+        swipe_reason(&db, &format!("ask:dsh:{SID}:ev-1")).as_deref(),
+        Some("answered in dsh")
+    );
 }
 
 #[test]
@@ -8569,7 +9590,16 @@ fn dsh_host_restart_resolves_open_questions_as_restarted() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red", "Blue"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question(
+                "q1",
+                "Color",
+                "Which color?",
+                &["Red", "Blue"],
+                false,
+            )],
+        )];
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
@@ -8578,7 +9608,10 @@ fn dsh_host_restart_resolves_open_questions_as_restarted() {
         data.pending.clear();
     });
     dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000);
-    assert_eq!(swipe_reason(&db, &format!("ask:dsh:{SID}:ev-1")).as_deref(), Some("dsh host restarted"));
+    assert_eq!(
+        swipe_reason(&db, &format!("ask:dsh:{SID}:ev-1")).as_deref(),
+        Some("dsh host restarted")
+    );
 }
 
 #[test]
@@ -8588,7 +9621,16 @@ fn dsh_bridge_syncing_resolves_no_open_card() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red", "Blue"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question(
+                "q1",
+                "Color",
+                "Which color?",
+                &["Red", "Blue"],
+                false,
+            )],
+        )];
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
@@ -8596,8 +9638,17 @@ fn dsh_bridge_syncing_resolves_no_open_card() {
         data.syncing = true;
         data.pending.clear();
     });
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 0);
-    assert!(db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().unwrap().1.is_none());
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000),
+        0
+    );
+    assert!(
+        db.card(&format!("ask:dsh:{SID}:ev-1"))
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none()
+    );
 }
 
 #[test]
@@ -8611,16 +9662,30 @@ fn dsh_plan_review_queues_a_plan_card_with_its_detail_redacted() {
         data.sessions = vec![session(0)];
         data.pending = vec![plan_review("ev-p1", "call-p1", &detail)];
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 1);
-    let card = db.card(&format!("plan:dsh:{SID}:call-p1")).unwrap().unwrap().0;
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        1
+    );
+    let card = db
+        .card(&format!("plan:dsh:{SID}:call-p1"))
+        .unwrap()
+        .unwrap()
+        .0;
     assert_eq!(card.kind, Kind::Plan);
     assert_eq!(card.title, "Plan ready: Ship the importer");
-    let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
+    let labels: Vec<&str> = card
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
     assert_eq!(labels, ["Approve", "Refine"]);
     assert!(card.options[0].recommended && card.answerable && card.allow_other);
     assert_eq!(card.tool_call_id.as_deref(), Some("ev-p1"));
     let body = card.body.unwrap_or_default();
-    assert!(body.contains("Upload with key") && !body.contains(&key), "{body}");
+    assert!(
+        body.contains("Upload with key") && !body.contains(&key),
+        "{body}"
+    );
 }
 
 #[test]
@@ -8634,10 +9699,21 @@ fn newer_dsh_plan_review_supersedes_the_older_card() {
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
-    bridge.edit(|data| data.pending = vec![plan_review("ev-p2", "call-p2", "# Ship the importer v2")]);
+    bridge.edit(|data| {
+        data.pending = vec![plan_review("ev-p2", "call-p2", "# Ship the importer v2")]
+    });
     dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000);
-    assert_eq!(swipe_reason(&db, &format!("plan:dsh:{SID}:call-p1")).as_deref(), Some("superseded"));
-    assert!(db.card(&format!("plan:dsh:{SID}:call-p2")).unwrap().unwrap().1.is_none());
+    assert_eq!(
+        swipe_reason(&db, &format!("plan:dsh:{SID}:call-p1")).as_deref(),
+        Some("superseded")
+    );
+    assert!(
+        db.card(&format!("plan:dsh:{SID}:call-p2"))
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none()
+    );
 }
 
 #[test]
@@ -8648,16 +9724,57 @@ fn dsh_answer_ask_posts_the_picked_label_or_typed_text() {
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
         data.pending = vec![
-            ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red", "Blue"], false)]),
-            ask("ev-2", vec![question("q1", "Color", "Which color?", &["Red", "Blue"], false)]),
+            ask(
+                "ev-1",
+                vec![question(
+                    "q1",
+                    "Color",
+                    "Which color?",
+                    &["Red", "Blue"],
+                    false,
+                )],
+            ),
+            ask(
+                "ev-2",
+                vec![question(
+                    "q1",
+                    "Color",
+                    "Which color?",
+                    &["Red", "Blue"],
+                    false,
+                )],
+            ),
         ];
     });
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW), 2);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(bridge.host()), NOW),
+        2
+    );
     let picked = db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().unwrap().0;
     let typed = db.card(&format!("ask:dsh:{SID}:ev-2")).unwrap().unwrap().0;
     let launch = bridge.launch();
-    answer(&db, &picked, &AnswerReq { option: Some(1), ..AnswerReq::default() }, &launch, None).unwrap();
-    answer(&db, &typed, &AnswerReq { text: Some("Green".to_owned()), ..AnswerReq::default() }, &launch, None).unwrap();
+    answer(
+        &db,
+        &picked,
+        &AnswerReq {
+            option: Some(1),
+            ..AnswerReq::default()
+        },
+        &launch,
+        None,
+    )
+    .unwrap();
+    answer(
+        &db,
+        &typed,
+        &AnswerReq {
+            text: Some("Green".to_owned()),
+            ..AnswerReq::default()
+        },
+        &launch,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         bridge.posts("/v1/answer"),
         vec![
@@ -8665,7 +9782,10 @@ fn dsh_answer_ask_posts_the_picked_label_or_typed_text() {
             json!({"eventId": "ev-2", "value": {"answers": [{"id": "q1", "selected": [], "custom": "Green"}]}, "executor": null, "effort": null}),
         ]
     );
-    assert_eq!(swipe_reason(&db, &picked.id).as_deref(), Some("sent to dsh"));
+    assert_eq!(
+        swipe_reason(&db, &picked.id).as_deref(),
+        Some("sent to dsh")
+    );
 }
 
 #[test]
@@ -8679,14 +9799,22 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
     });
     let mut tracker = Tracker::default();
     assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW), 1);
-    let first = db.card(&format!("plan:dsh:{SID}:call-p1")).unwrap().unwrap().0;
+    let first = db
+        .card(&format!("plan:dsh:{SID}:call-p1"))
+        .unwrap()
+        .unwrap()
+        .0;
     let launch = bridge.launch();
     let refused = answer(
         &db,
         &first,
-        &AnswerReq { option: Some(0), executor: Some("@smol".to_owned()), ..AnswerReq::default() },
+        &AnswerReq {
+            option: Some(0),
+            executor: Some("@smol".to_owned()),
+            ..AnswerReq::default()
+        },
         &launch,
-    None,
+        None,
     );
     assert_eq!(refused, Err("unknown dsh model @smol".to_owned()));
     assert!(bridge.posts("/v1/answer").is_empty());
@@ -8701,22 +9829,37 @@ fn dsh_plan_approve_takes_the_execution_model_and_refine_sends_feedback() {
             ..AnswerReq::default()
         },
         &launch,
-    None,
+        None,
     )
     .unwrap();
     assert_eq!(
         bridge.posts("/v1/answer"),
-        vec![json!({"eventId": "ev-p1", "value": {"answers": [{"id": "plan-review", "selected": ["Approve"]}]}, "executor": "deepseek-v4-pro", "effort": "off"})]
+        vec![
+            json!({"eventId": "ev-p1", "value": {"answers": [{"id": "plan-review", "selected": ["Approve"]}]}, "executor": "deepseek-v4-pro", "effort": "off"})
+        ]
     );
-    bridge.edit(|data| data.pending = vec![plan_review("ev-p2", "call-p2", "# Ship the importer v2")]);
-    assert_eq!(dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000), 1);
-    let second = db.card(&format!("plan:dsh:{SID}:call-p2")).unwrap().unwrap().0;
+    bridge.edit(|data| {
+        data.pending = vec![plan_review("ev-p2", "call-p2", "# Ship the importer v2")]
+    });
+    assert_eq!(
+        dsh_tick(&mut tracker, &db, Some(bridge.host()), NOW + 3_000),
+        1
+    );
+    let second = db
+        .card(&format!("plan:dsh:{SID}:call-p2"))
+        .unwrap()
+        .unwrap()
+        .0;
     answer(
         &db,
         &second,
-        &AnswerReq { option: Some(1), text: Some("Add a rollback step.".to_owned()), ..AnswerReq::default() },
+        &AnswerReq {
+            option: Some(1),
+            text: Some("Add a rollback step.".to_owned()),
+            ..AnswerReq::default()
+        },
         &launch,
-    None,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -8733,14 +9876,28 @@ fn dsh_goal_launch_names_the_session_itself() {
     // A goal launch gives dsh no user message to name from, so triage names it from the
     // brief. A host with no naming route leaves the brief's own task line, cut on a word
     // boundary, never the mid-word cut the bridge would make of 60.
-    let title = "Launch kept dying at startup: the database was locked and the retry logged nothing";
-    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
+    let title =
+        "Launch kept dying at startup: the database was locked and the retry logged nothing";
+    let pane = start_session(
+        &db,
+        title,
+        "/work/project",
+        &bridge.launch(),
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
-    assert_eq!(launches[0]["title"], "Launch kept dying at startup: the database was locked and");
+    assert_eq!(
+        launches[0]["title"],
+        "Launch kept dying at startup: the database was locked and"
+    );
     assert!(
-        launches[0]["prompt"].as_str().is_some_and(|prompt| prompt.starts_with(&format!("{title}: Read the brief at "))),
+        launches[0]["prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.starts_with(&format!("{title}: Read the brief at "))),
         "{}",
         launches[0]
     );
@@ -8753,7 +9910,15 @@ fn dsh_goal_launch_pins_the_name_read_out_of_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.name_answer = Some("Fix session titles\n".to_owned()));
     let title = "DIRECTION FROM THE USER: this kind of session title is bad";
-    let pane = start_session(&db, title, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
+    let pane = start_session(
+        &db,
+        title,
+        "/work/project",
+        &bridge.launch(),
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     // The name comes from the model that read the brief, on the fast route, in the
     // workspace triage ignores.
@@ -8763,13 +9928,19 @@ fn dsh_goal_launch_pins_the_name_read_out_of_the_brief() {
     assert_eq!(asks[0]["model"], "deepseek-official/deepseek-flash");
     assert_eq!(asks[0]["effort"], "off");
     assert!(
-        asks[0]["prompt"].as_str().is_some_and(|prompt| prompt.contains("Give the task in this brief a name")
+        asks[0]["prompt"].as_str().is_some_and(|prompt| prompt
+            .contains("Give the task in this brief a name")
             && prompt.contains("this kind of session title is bad")),
         "{}",
         asks[0]
     );
     // The ask leaves a session behind, so triage archives the one that answered.
-    assert!(bridge.posts("/v1/archive").iter().any(|body| body["sessionId"] == "session-name"));
+    assert!(
+        bridge
+            .posts("/v1/archive")
+            .iter()
+            .any(|body| body["sessionId"] == "session-name")
+    );
     assert_eq!(bridge.posts("/v1/launch")[0]["title"], "Fix session titles");
 }
 
@@ -8779,9 +9950,20 @@ fn dsh_goal_launch_cuts_its_title_on_a_word_boundary() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let words = "naming a session from a title that runs well past the sidebar width and then some";
-    let pane = start_session(&db, words, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
+    let pane = start_session(
+        &db,
+        words,
+        "/work/project",
+        &bridge.launch(),
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
-    let title = bridge.posts("/v1/launch")[0]["title"].as_str().unwrap().to_owned();
+    let title = bridge.posts("/v1/launch")[0]["title"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(title.chars().count() <= 60, "{title}");
     assert!(words.starts_with(&title), "{title}");
     assert!(!title.ends_with('…'), "{title}");
@@ -8793,9 +9975,20 @@ fn dsh_goal_launch_cuts_its_title_on_a_word_boundary() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let cjk = "会话标题".repeat(40);
-    let pane = start_session(&db, &cjk, "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
+    let pane = start_session(
+        &db,
+        &cjk,
+        "/work/project",
+        &bridge.launch(),
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
-    let title = bridge.posts("/v1/launch")[0]["title"].as_str().unwrap().to_owned();
+    let title = bridge.posts("/v1/launch")[0]["title"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(title.len() <= 80, "{title}");
     assert!(cjk.starts_with(&title), "{title}");
 }
@@ -8805,7 +9998,15 @@ fn dsh_goal_launch_without_a_model_leaves_the_host_default() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
-    let pane = start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None);
+    let pane = start_session(
+        &db,
+        "Ship it",
+        "/work/project",
+        &bridge.launch(),
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -8942,7 +10143,15 @@ fn dsh_launch_never_lists_the_host_sessions() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None),
+        start_session(
+            &db,
+            "Ship it",
+            "/work/project",
+            &bridge.launch(),
+            Start::Goal,
+            Task::Fix,
+            None
+        ),
         Ok("dsh:session-new".to_owned())
     );
     // `session/list` projects every session and is the slowest call the host has. A launch
@@ -9002,7 +10211,15 @@ fn dsh_launch_reports_an_error_that_started_no_session() {
         data.launch_error = Some("workspace is invalid".to_owned());
     });
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None),
+        start_session(
+            &db,
+            "Ship it",
+            "/work/project",
+            &bridge.launch(),
+            Start::Goal,
+            Task::Fix,
+            None
+        ),
         Err("workspace is invalid".to_owned())
     );
     assert_eq!(bridge.posts("/v1/launch").len(), 1);
@@ -9023,7 +10240,15 @@ fn dsh_launch_archives_the_session_a_refused_launch_created() {
     // The bridge names the session it created before the launch failed. Keeping it would
     // leave a duplicate behind the retry, so the failed launch archives it.
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &bridge.launch(), Start::Goal, Task::Fix, None),
+        start_session(
+            &db,
+            "Ship it",
+            "/work/project",
+            &bridge.launch(),
+            Start::Goal,
+            Task::Fix,
+            None
+        ),
         Err("session/model-unavailable: Select an available model".to_owned())
     );
     let archived = bridge.posts("/v1/archive");
@@ -9035,9 +10260,20 @@ fn dsh_launch_archives_the_session_a_refused_launch_created() {
 fn dsh_launch_without_a_host_file_says_dsh_is_not_running() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
-    let launch = Launch { engine: Engine::Dsh, ..Launch::default() };
+    let launch = Launch {
+        engine: Engine::Dsh,
+        ..Launch::default()
+    };
     assert_eq!(
-        start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, Task::Fix, None),
+        start_session(
+            &db,
+            "Ship it",
+            "/work/project",
+            &launch,
+            Start::Goal,
+            Task::Fix,
+            None
+        ),
         Err("dsh is not running".to_owned())
     );
 }
@@ -9049,13 +10285,31 @@ fn dsh_act_on_an_idle_session_prompts_it_with_the_brief() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
-    assert!(prompts[0]["text"].as_str().is_some_and(|text| text.starts_with("Read the brief at ")), "{prompts:?}");
+    assert!(
+        prompts[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Read the brief at ")),
+        "{prompts:?}"
+    );
     assert!(bridge.posts("/v1/launch").is_empty());
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+    assert_eq!(
+        swipe_reason(&db, &card.id),
+        Some(format!("launched dsh:{SID}"))
+    );
 }
 
 // The report card's next-step buttons ask for `new_window`, which names a tmux window. A dsh
@@ -9067,16 +10321,42 @@ fn dsh_next_step_dispatch_continues_the_cards_session() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.sessions = vec![session(4)]);
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, true).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        true,
+    )
+    .unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
-    assert!(bridge.posts("/v1/launch").is_empty(), "{:?}", bridge.posts("/v1/launch"));
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+    assert!(
+        bridge.posts("/v1/launch").is_empty(),
+        "{:?}",
+        bridge.posts("/v1/launch")
+    );
+    assert_eq!(
+        swipe_reason(&db, &card.id),
+        Some(format!("launched dsh:{SID}"))
+    );
 
     let card = dsh_card(&db, &format!("done:dsh:{SID}:5"), Kind::Info);
-    let error = dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, true)
-        .unwrap_err();
+    let error = dispatch(
+        &db,
+        &card,
+        Start::Plan,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        true,
+    )
+    .unwrap_err();
     // A dsh plan runs in an omp planner. The server routes it there before this dispatch.
     assert_eq!(error, "a dsh session starts in goal mode");
     assert_eq!(bridge.posts("/v1/launch").len(), 0);
@@ -9114,7 +10394,8 @@ fn dsh_dispatch_carries_the_image() {
     assert_eq!(prompts[0]["image"]["name"], "shot.png");
 
     bridge.edit(|data| {
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+        data.states
+            .insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:5"), Kind::Info);
     dispatch(
@@ -9143,18 +10424,37 @@ fn dsh_dispatch_to_a_running_session_queues_the_brief_in_it() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+        data.states
+            .insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap();
     // dsh queues a prompt for the session's next turn, so a running session keeps the work
     // the card came from instead of opening a second session on the same brief.
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
-    assert!(prompts[0]["text"].as_str().is_some_and(|text| text.starts_with("Read the brief at ")), "{prompts:?}");
+    assert!(
+        prompts[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Read the brief at ")),
+        "{prompts:?}"
+    );
     assert!(bridge.posts("/v1/launch").is_empty());
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("launched dsh:{SID}")));
+    assert_eq!(
+        swipe_reason(&db, &card.id),
+        Some(format!("launched dsh:{SID}"))
+    );
 }
 
 #[test]
@@ -9164,10 +10464,23 @@ fn dsh_dispatch_to_a_session_waiting_for_an_answer_queues_the_brief_in_it() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": ["question"]}));
+        data.states.insert(
+            SID.to_owned(),
+            json!({"running": true, "pendingInput": ["question"]}),
+        );
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Investigate, None, &bridge.launch(), None, false).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Investigate,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap();
     let prompts = bridge.posts("/v1/prompt");
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
@@ -9180,7 +10493,17 @@ fn dsh_dispatch_starts_a_new_session_when_the_card_session_is_gone() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap();
     assert!(bridge.posts("/v1/prompt").is_empty());
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -9198,7 +10521,17 @@ fn dsh_dispatch_starts_a_new_session_when_the_prompt_is_refused() {
         data.prompt_refusal = Some((409, "session is busy".to_owned()));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap();
     // A refused prompt was never queued, so the brief still starts.
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -9216,8 +10549,17 @@ fn dsh_dispatch_reports_a_prompt_error_that_is_not_a_refusal() {
         data.prompt_refusal = Some((502, "dsh bridge unreachable: timeout".to_owned()));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    let error = dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false)
-        .unwrap_err();
+    let error = dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap_err();
     assert_eq!(error, "dsh bridge unreachable: timeout");
     // A prompt that may have been queued must not start a second session on the same brief.
     assert!(bridge.posts("/v1/launch").is_empty());
@@ -9231,7 +10573,8 @@ fn dsh_busy_report_request_retries_after_backoff() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+        data.states
+            .insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card_at(&db, &format!("done:dsh:{SID}:4"), Kind::Info, NOW);
     let mut tracker = Tracker::default();
@@ -9241,7 +10584,10 @@ fn dsh_busy_report_request_retries_after_backoff() {
     tracker.chase_missing_reports_at(&db, &launch, NOW + 29_999);
     assert!(bridge.posts("/v1/prompt").is_empty());
     bridge.edit(|data| {
-        data.states.insert(SID.to_owned(), json!({"running": false, "pendingInput": []}));
+        data.states.insert(
+            SID.to_owned(),
+            json!({"running": false, "pendingInput": []}),
+        );
     });
     tracker.chase_missing_reports_at(&db, &launch, NOW + 30_000);
     assert_eq!(bridge.posts("/v1/prompt").len(), 1, "card: {card:?}");
@@ -9281,7 +10627,14 @@ fn one_ask_per_session_window() {
 }
 
 /// Ends one dsh turn on `text` and returns the card the poll writes for it.
-fn dsh_reply(bridge: &FakeBridge, tracker: &mut Tracker, db: &Db, cursor: i64, now: i64, text: &str) -> Card {
+fn dsh_reply(
+    bridge: &FakeBridge,
+    tracker: &mut Tracker,
+    db: &Db,
+    cursor: i64,
+    now: i64,
+    text: &str,
+) -> Card {
     bridge.edit(|data| {
         data.sessions = vec![session(cursor)];
         data.events
@@ -9290,7 +10643,10 @@ fn dsh_reply(bridge: &FakeBridge, tracker: &mut Tracker, db: &Db, cursor: i64, n
             .extend([reply_event(cursor - 1, text), turn_end(cursor, "completed")]);
     });
     dsh_tick(tracker, db, Some(bridge.host()), now);
-    db.card(&format!("done:dsh:{SID}:{cursor}")).unwrap().unwrap().0
+    db.card(&format!("done:dsh:{SID}:{cursor}"))
+        .unwrap()
+        .unwrap()
+        .0
 }
 
 // The stored cards say what a dsh session still owes, because the bridge lists no user messages.
@@ -9300,19 +10656,68 @@ fn a_dsh_session_owes_one_report_for_each_brief() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     let mut tracker = Tracker::default();
-    let report = dsh_reply(&bridge, &mut tracker, &db, 4, NOW, "ENVOY_STATUS: complete\nR: Gate fixed.\nRemaining: none\nRecommended action: none");
-    assert_eq!(report.status, Some(events::CardStatus::Complete), "{report:?}");
-    let answer = dsh_reply(&bridge, &mut tracker, &db, 6, NOW + 3_000, "It runs from the repo root.");
+    let report = dsh_reply(
+        &bridge,
+        &mut tracker,
+        &db,
+        4,
+        NOW,
+        "ENVOY_STATUS: complete\nR: Gate fixed.\nRemaining: none\nRecommended action: none",
+    );
+    assert_eq!(
+        report.status,
+        Some(events::CardStatus::Complete),
+        "{report:?}"
+    );
+    let answer = dsh_reply(
+        &bridge,
+        &mut tracker,
+        &db,
+        6,
+        NOW + 3_000,
+        "It runs from the repo root.",
+    );
     assert_eq!(answer.status, Some(events::CardStatus::Reply), "{answer:?}");
-    assert!(answer.report_due, "the user can still ask for a report by hand: {answer:?}");
+    assert!(
+        answer.report_due,
+        "the user can still ask for a report by hand: {answer:?}"
+    );
     tracker.chase_missing_reports(&db, &bridge.launch());
-    assert!(bridge.posts("/v1/prompt").is_empty(), "a reply after the report is not asked for another");
+    assert!(
+        bridge.posts("/v1/prompt").is_empty(),
+        "a reply after the report is not asked for another"
+    );
     // A brief sent into the same session owes a report of its own.
-    db.swipe(&Swipe { card: answer.id.clone(), action: "done".to_owned(), option: Some(0), text: None, note: None, until_ms: None, reason: Some(format!("launched dsh:{SID}")), at_ms: events::now_ms() }).unwrap();
-    let unreported = dsh_reply(&bridge, &mut tracker, &db, 8, NOW + 6_000, "The second fix is in.");
-    assert_eq!(unreported.status, Some(events::CardStatus::NoFinalReport), "{unreported:?}");
+    db.swipe(&Swipe {
+        card: answer.id.clone(),
+        action: "done".to_owned(),
+        option: Some(0),
+        text: None,
+        note: None,
+        until_ms: None,
+        reason: Some(format!("launched dsh:{SID}")),
+        at_ms: events::now_ms(),
+    })
+    .unwrap();
+    let unreported = dsh_reply(
+        &bridge,
+        &mut tracker,
+        &db,
+        8,
+        NOW + 6_000,
+        "The second fix is in.",
+    );
+    assert_eq!(
+        unreported.status,
+        Some(events::CardStatus::NoFinalReport),
+        "{unreported:?}"
+    );
     tracker.chase_missing_reports(&db, &bridge.launch());
-    assert_eq!(bridge.posts("/v1/prompt").len(), 1, "the new brief is asked for its report");
+    assert_eq!(
+        bridge.posts("/v1/prompt").len(),
+        1,
+        "the new brief is asked for its report"
+    );
 }
 
 #[test]
@@ -9325,8 +10730,17 @@ fn dsh_dispatch_reports_a_failed_state_read_and_starts_no_session() {
         data.state_error = Some("session/list: timeout".to_owned());
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    let error = dispatch(&db, &card, Start::Goal, Task::Act, None, &bridge.launch(), None, false)
-        .unwrap_err();
+    let error = dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap_err();
     assert_eq!(error, "session/list: timeout");
     // The session may still be there. The brief must not start a second one.
     assert!(bridge.posts("/v1/launch").is_empty());
@@ -9341,11 +10755,21 @@ fn dsh_plan_on_a_running_session_is_refused_because_dsh_starts_in_goal_mode() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+        data.states
+            .insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    let error = dispatch(&db, &card, Start::Plan, Task::Act, None, &bridge.launch(), None, false)
-        .unwrap_err();
+    let error = dispatch(
+        &db,
+        &card,
+        Start::Plan,
+        Task::Act,
+        None,
+        &bridge.launch(),
+        None,
+        false,
+    )
+    .unwrap_err();
     assert_eq!(error, "a dsh session starts in goal mode");
     assert!(bridge.posts("/v1/launch").is_empty());
     assert!(bridge.posts("/v1/prompt").is_empty());
@@ -9362,8 +10786,14 @@ fn dsh_close_archives_the_session_and_resolves_its_other_cards() {
     close(&db, &done, Some("thanks"), &bridge.launch()).unwrap();
     assert_eq!(bridge.posts("/v1/archive"), vec![json!({"sessionId": SID})]);
     assert!(bridge.posts("/v1/cancel").is_empty());
-    assert_eq!(swipe_reason(&db, &done.id), Some(format!("closed dsh:{SID}")));
-    assert_eq!(swipe_reason(&db, &ask_card.id), Some(format!("closed dsh:{SID}")));
+    assert_eq!(
+        swipe_reason(&db, &done.id),
+        Some(format!("closed dsh:{SID}"))
+    );
+    assert_eq!(
+        swipe_reason(&db, &ask_card.id),
+        Some(format!("closed dsh:{SID}"))
+    );
 }
 
 #[test]
@@ -9383,8 +10813,14 @@ fn dsh_close_resolves_the_card_while_a_slow_archive_finishes() {
         "close waited for the whole archive: {:?}",
         started.elapsed()
     );
-    assert!(bridge.posts("/v1/archive").is_empty(), "the archive answered inside the grace");
-    assert_eq!(swipe_reason(&db, &done.id), Some(format!("closed dsh:{SID}")));
+    assert!(
+        bridge.posts("/v1/archive").is_empty(),
+        "the archive answered inside the grace"
+    );
+    assert_eq!(
+        swipe_reason(&db, &done.id),
+        Some(format!("closed dsh:{SID}"))
+    );
     // dsh still finishes the archive after the card closed.
     let deadline = Instant::now() + Duration::from_secs(15);
     while bridge.posts("/v1/archive").is_empty() && Instant::now() < deadline {
@@ -9403,9 +10839,16 @@ fn dsh_close_keeps_the_card_queued_when_the_archive_fails_fast() {
         data.archive_error = Some("session/archive: refused".to_owned());
     });
     let done = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    assert!(close(&db, &done, None, &bridge.launch()).is_err(), "a refused archive must fail the close");
+    assert!(
+        close(&db, &done, None, &bridge.launch()).is_err(),
+        "a refused archive must fail the close"
+    );
     assert_eq!(bridge.posts("/v1/archive").len(), 1);
-    assert_eq!(swipe_reason(&db, &done.id), None, "a refused archive must not record the close");
+    assert_eq!(
+        swipe_reason(&db, &done.id),
+        None,
+        "a refused archive must not record the close"
+    );
 }
 
 #[test]
@@ -9415,10 +10858,14 @@ fn dsh_report_request_is_refused_while_the_session_runs() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(4)];
-        data.states.insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
+        data.states
+            .insert(SID.to_owned(), json!({"running": true, "pendingInput": []}));
     });
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    assert_eq!(request_report(&db, &card, &bridge.launch()), Err("session is busy".to_owned()));
+    assert_eq!(
+        request_report(&db, &card, &bridge.launch()),
+        Err("session is busy".to_owned())
+    );
     assert!(bridge.posts("/v1/prompt").is_empty());
     assert!(db.card(&card.id).unwrap().unwrap().1.is_none());
 }
@@ -9435,7 +10882,10 @@ fn dsh_report_request_prompts_an_idle_session_for_its_final_report() {
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0]["sessionId"], SID);
     assert_eq!(prompts[0]["text"], report_request(&db).unwrap());
-    assert_eq!(swipe_reason(&db, &card.id), Some(format!("report requested dsh:{SID}")));
+    assert_eq!(
+        swipe_reason(&db, &card.id),
+        Some(format!("report requested dsh:{SID}"))
+    );
 }
 
 #[test]
@@ -9452,7 +10902,10 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
         source: Source::default(),
         title: "Gate is red".to_owned(),
         star: Star::default(),
-        options: vec![CardOption { label: "Act on it".to_owned(), ..CardOption::default() }],
+        options: vec![CardOption {
+            label: "Act on it".to_owned(),
+            ..CardOption::default()
+        }],
         answerable: true,
         allow_other: false,
         questions: Vec::new(),
@@ -9479,9 +10932,14 @@ fn answer_finding_reuses_the_dsh_session_it_already_launched() {
     answer(
         &db,
         &finding,
-        &AnswerReq { option: Some(0), mode: Some("goal".to_owned()), task: Some("act".to_owned()), ..AnswerReq::default() },
+        &AnswerReq {
+            option: Some(0),
+            mode: Some("goal".to_owned()),
+            task: Some("act".to_owned()),
+            ..AnswerReq::default()
+        },
         &bridge.launch(),
-    None,
+        None,
     )
     .unwrap();
     assert!(bridge.posts("/v1/launch").is_empty());
@@ -9498,11 +10956,17 @@ fn dsh_bridge_with_a_wrong_secret_creates_no_cards() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question("q1", "Color", "Which color?", &["Red"], false)],
+        )];
     });
     let wrong = scratch.path().join("wrong-host.json");
     write_host(&wrong, &bridge.api, "not-the-secret");
-    assert_eq!(dsh_tick(&mut Tracker::default(), &db, Some(wrong.as_path()), NOW), 0);
+    assert_eq!(
+        dsh_tick(&mut Tracker::default(), &db, Some(wrong.as_path()), NOW),
+        0
+    );
     assert_eq!(bridge.requests(), 0);
     assert!(db.card(&format!("ask:dsh:{SID}:ev-1")).unwrap().is_none());
 }
@@ -9514,7 +10978,10 @@ fn dsh_tick_without_a_host_file_reads_nothing() {
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| {
         data.sessions = vec![session(0)];
-        data.pending = vec![ask("ev-1", vec![question("q1", "Color", "Which color?", &["Red"], false)])];
+        data.pending = vec![ask(
+            "ev-1",
+            vec![question("q1", "Color", "Which color?", &["Red"], false)],
+        )];
     });
     assert_eq!(dsh_tick(&mut Tracker::default(), &db, None, NOW), 0);
     assert_eq!(bridge.requests(), 0);
@@ -9526,7 +10993,10 @@ fn startup_delay_grows_with_each_attempt_within_its_jitter() {
     let command = "omp --model=@kimi --goal 'Reply DONE'";
     for (tries, base) in [(0u8, 1000u64), (1, 2000), (2, 4000), (3, 8000), (4, 8000)] {
         let delay = startup_delay(command, tries).as_millis() as u64;
-        assert!((base..base + STARTUP_JITTER_MS + 1).contains(&delay), "attempt {tries}: {delay} ms");
+        assert!(
+            (base..base + STARTUP_JITTER_MS + 1).contains(&delay),
+            "attempt {tries}: {delay} ms"
+        );
     }
     assert_ne!(
         startup_delay(command, 0),
@@ -9552,7 +11022,9 @@ fn watched_launch(root: &Path, command: &str, tries: u8, seen: Instant) -> (Trac
             due: None,
         },
     );
-    tracker.startup_panes.insert("%12".to_owned(), command.to_owned());
+    tracker
+        .startup_panes
+        .insert("%12".to_owned(), command.to_owned());
     (tracker, db)
 }
 
@@ -9581,7 +11053,10 @@ fn startup_death_relaunches_after_its_backoff() {
             .is_some_and(|entry| entry.due.is_some() && entry.tries == 1);
         assert_eq!(first, 0);
         assert!(scheduled, "the startup death waits out its backoff");
-        assert!(!root.join("tmux-new-window-count").exists(), "no window before the backoff");
+        assert!(
+            !root.join("tmux-new-window-count").exists(),
+            "no window before the backoff"
+        );
 
         thread::sleep(Duration::from_millis(1600));
         tracker.tick(&db);
@@ -9610,11 +11085,17 @@ fn startup_death_without_a_busy_log_is_forgotten() {
     if let Some(root) = child_root("startup_death_without_a_busy_log_is_forgotten") {
         let command = "omp --model=@kimi --goal 'Reply DONE'";
         fs::write(root.join("tmux-pane-12-gone"), b"").unwrap();
-        write_busy_log(&root, r#"{"level":"error","err":{"message":"No model selected."}}"#);
+        write_busy_log(
+            &root,
+            r#"{"level":"error","err":{"message":"No model selected."}}"#,
+        );
         let (mut tracker, db) = watched_launch(&root, command, 0, Instant::now());
 
         assert_eq!(tracker.tick(&db).written, 0);
-        assert!(tracker.startup.get(command).is_none(), "another crash is not repeated");
+        assert!(
+            tracker.startup.get(command).is_none(),
+            "another crash is not repeated"
+        );
         assert!(!root.join("tmux-new-window-count").exists());
         return;
     }
@@ -9647,7 +11128,12 @@ fn startup_retries_stop_with_a_card() {
         assert_eq!(queue.len(), 1);
         assert!(queue[0].id.starts_with("startup:%12:"), "{}", queue[0].id);
         assert_eq!(queue[0].level.as_deref(), Some("error"));
-        assert!(queue[0].body.as_deref().is_some_and(|body| body.contains(command)));
+        assert!(
+            queue[0]
+                .body
+                .as_deref()
+                .is_some_and(|body| body.contains(command))
+        );
         assert!(tracker.startup.get(command).is_none(), "no fifth attempt");
         assert!(!root.join("tmux-new-window-count").exists());
         return;
@@ -9679,7 +11165,10 @@ fn startup_launch_that_wrote_a_session_is_not_repeated() {
         let (mut tracker, db) = watched_launch(&root, command, 0, Instant::now());
 
         assert_eq!(tracker.tick(&db).written, 0);
-        assert!(tracker.startup.get(command).is_none(), "a session owns the exit");
+        assert!(
+            tracker.startup.get(command).is_none(),
+            "a session owns the exit"
+        );
         assert!(!root.join("tmux-new-window-count").exists());
         return;
     }
@@ -9714,9 +11203,17 @@ fn dsh_launch_adopts_a_session_in_its_workspace_directory() {
     };
     // dsh creates a workspace session in the workspace's own directory, not the project's,
     // so adoption has to look where the bridge put it.
-    assert_eq!(dsh_track::launch_dir(&launch, "/work/project"), root.join("triage"));
-    let plain = Launch { ..Launch::default() };
-    assert_eq!(dsh_track::launch_dir(&plain, "/work/project"), PathBuf::from("/work/project"));
+    assert_eq!(
+        dsh_track::launch_dir(&launch, "/work/project"),
+        root.join("triage")
+    );
+    let plain = Launch {
+        ..Launch::default()
+    };
+    assert_eq!(
+        dsh_track::launch_dir(&plain, "/work/project"),
+        PathBuf::from("/work/project")
+    );
 }
 
 #[test]
@@ -9724,8 +11221,19 @@ fn dsh_workspace_launch_posts_the_workspace_and_briefs_the_project_directory() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
-    let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
-    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, Task::Fix, None);
+    let launch = Launch {
+        dsh_workspace: Some("triage".to_owned()),
+        ..bridge.launch()
+    };
+    let pane = start_session(
+        &db,
+        "Ship it",
+        "/work/project",
+        &launch,
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
@@ -9743,8 +11251,19 @@ fn dsh_workspace_launch_falls_back_to_the_project_directory_on_an_older_host() {
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
     bridge.edit(|data| data.refuse_workspace = true);
-    let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
-    let pane = start_session(&db, "Ship it", "/work/project", &launch, Start::Goal, Task::Fix, None);
+    let launch = Launch {
+        dsh_workspace: Some("triage".to_owned()),
+        ..bridge.launch()
+    };
+    let pane = start_session(
+        &db,
+        "Ship it",
+        "/work/project",
+        &launch,
+        Start::Goal,
+        Task::Fix,
+        None,
+    );
     assert_eq!(pane, Ok("dsh:session-new".to_owned()));
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 2);
@@ -9758,18 +11277,36 @@ fn dsh_workspace_dispatch_brief_names_the_working_directory() {
     let scratch = Scratch::new();
     let db = dsh_db(&scratch);
     let bridge = FakeBridge::start(scratch.path());
-    let launch = Launch { dsh_workspace: Some("triage".to_owned()), ..bridge.launch() };
+    let launch = Launch {
+        dsh_workspace: Some("triage".to_owned()),
+        ..bridge.launch()
+    };
     let card = dsh_card(&db, &format!("done:dsh:{SID}:4"), Kind::Info);
-    dispatch(&db, &card, Start::Goal, Task::Act, None, &launch, None, false).unwrap();
+    dispatch(
+        &db,
+        &card,
+        Start::Goal,
+        Task::Act,
+        None,
+        &launch,
+        None,
+        false,
+    )
+    .unwrap();
     let launches = bridge.posts("/v1/launch");
     assert_eq!(launches.len(), 1);
     assert_eq!(launches[0]["workspace"], "triage");
     let brief = brief_from_prompt(&launches[0]["prompt"]);
-    assert!(brief.contains("## Working directory\n`/work/project`"), "{brief}");
+    assert!(
+        brief.contains("## Working directory\n`/work/project`"),
+        "{brief}"
+    );
     assert!(brief.contains("## References"), "{brief}");
-    assert!(brief.find("## Working directory") < brief.find("## References"), "{brief}");
+    assert!(
+        brief.find("## Working directory") < brief.find("## References"),
+        "{brief}"
+    );
 }
-
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -9779,7 +11316,9 @@ use std::os::unix::net::{UnixListener, UnixStream};
 static OMPSDK_TESTS: Mutex<()> = Mutex::new(());
 
 fn ompsdk_lock() -> std::sync::MutexGuard<'static, ()> {
-    OMPSDK_TESTS.lock().unwrap_or_else(|poison| poison.into_inner())
+    OMPSDK_TESTS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// What the fake daemon shares across its connections.
@@ -9833,7 +11372,10 @@ impl FakeOmpsdk {
     }
 
     fn count(&self, method: &str) -> usize {
-        self.sent().iter().filter(|message| message["method"] == method).count()
+        self.sent()
+            .iter()
+            .filter(|message| message["method"] == method)
+            .count()
     }
 
     /// Drop every client. The fake keeps its sessions, as the daemon does while triage restarts.
@@ -9852,13 +11394,21 @@ impl FakeOmpsdk {
 
     /// Fail the next `method` call with `message`.
     fn fail_once(&self, method: &str, message: &str) {
-        self.state.failing.lock().unwrap().push((method.to_owned(), message.to_owned()));
+        self.state
+            .failing
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), message.to_owned()));
     }
 }
 
 fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
     let writer = stream.try_clone().unwrap();
-    state.streams.lock().unwrap().push(stream.try_clone().unwrap());
+    state
+        .streams
+        .lock()
+        .unwrap()
+        .push(stream.try_clone().unwrap());
     let send = |value: Value| {
         let mut line = value.to_string();
         line.push('\n');
@@ -9881,7 +11431,9 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
             // An answer to an elicitation releases the turn that asked it.
             match waiting.take() {
                 Some((prompt, key)) if id.as_str() == Some(key.as_str()) => {
-                    send(json!({"jsonrpc": "2.0", "id": prompt, "result": {"stopReason": "end_turn"}}));
+                    send(
+                        json!({"jsonrpc": "2.0", "id": prompt, "result": {"stopReason": "end_turn"}}),
+                    );
                 }
                 other => waiting = other,
             }
@@ -9898,17 +11450,30 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
             send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": error}}));
             continue;
         }
-        let sid = message["params"]["sessionId"].as_str().unwrap_or(OMPSDK_SID).to_owned();
+        let sid = message["params"]["sessionId"]
+            .as_str()
+            .unwrap_or(OMPSDK_SID)
+            .to_owned();
         let result = match method {
             "_ompsdk/status" => {
-                let sessions: Vec<Value> = state.held.lock().unwrap().iter().map(|id| json!({"id": id})).collect();
+                let sessions: Vec<Value> = state
+                    .held
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|id| json!({"id": id}))
+                    .collect();
                 json!({"pools": [{"name": "triage", "sessions": sessions}]})
             }
             "session/prompt" => {
-                let text = message["params"]["prompt"][0]["text"].as_str().unwrap_or_default();
+                let text = message["params"]["prompt"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default();
                 if fake_scenario(text) == "away" && connection == 1 {
                     // The daemon loses the client mid-turn, and the turn ends while the client is away.
-                    state.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+                    state
+                        .dropped
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                     let _ = writer.shutdown(std::net::Shutdown::Both);
                     return;
                 }
@@ -9924,8 +11489,16 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
                 }
                 let asked = match fake_scenario(text) {
                     "ask" => Some(("ask-1", "Which colour?", ask_schema())),
-                    "confirm" => Some(("confirm-1", "Keep it?", json!({"type": "object", "properties": {"value": {"type": "boolean"}}}))),
-                    "plan" | "planflaky" => Some(("plan-1", "Approve plan and start implementation?", plan_schema())),
+                    "confirm" => Some((
+                        "confirm-1",
+                        "Keep it?",
+                        json!({"type": "object", "properties": {"value": {"type": "boolean"}}}),
+                    )),
+                    "plan" | "planflaky" => Some((
+                        "plan-1",
+                        "Approve plan and start implementation?",
+                        plan_schema(),
+                    )),
                     _ => None,
                 };
                 match asked {
@@ -9941,9 +11514,18 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
                 }
             }
             // Mirror omp ACP's relative-cwd error response.
-            "session/new" if !message["params"]["cwd"].as_str().is_some_and(|cwd| cwd.starts_with('/')) => {
-                let details = format!("ACP cwd must be absolute: {}", message["params"]["cwd"].as_str().unwrap_or_default());
-                send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "Internal error", "data": {"details": details}}}));
+            "session/new"
+                if !message["params"]["cwd"]
+                    .as_str()
+                    .is_some_and(|cwd| cwd.starts_with('/')) =>
+            {
+                let details = format!(
+                    "ACP cwd must be absolute: {}",
+                    message["params"]["cwd"].as_str().unwrap_or_default()
+                );
+                send(
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "Internal error", "data": {"details": details}}}),
+                );
                 continue;
             }
             "session/new" => {
@@ -9952,7 +11534,9 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
             }
             "session/resume" if state.dropped.load(std::sync::atomic::Ordering::SeqCst) => {
                 // The turn end reaches the new connection before the reply that still reports a run.
-                send(json!({"jsonrpc": "2.0", "method": "_ompsdk/turn_end", "params": {"sessionId": OMPSDK_SID, "stopReason": "end_turn"}}));
+                send(
+                    json!({"jsonrpc": "2.0", "method": "_ompsdk/turn_end", "params": {"sessionId": OMPSDK_SID, "stopReason": "end_turn"}}),
+                );
                 json!({"configOptions": fake_options(), "_meta": {"ompsdk": {"running": true, "held": true}}})
             }
             "session/resume" => {
@@ -9974,7 +11558,9 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
             }
             "session/set_config_option" if flaky && message["params"]["configId"] == "model" => {
                 flaky = false;
-                send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "session/set_config_option timed out"}}));
+                send(
+                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "session/set_config_option timed out"}}),
+                );
                 continue;
             }
             "session/set_config_option" => json!({"configOptions": fake_options()}),
@@ -10015,7 +11601,9 @@ fn fake_scenario(text: &str) -> &str {
         return "plain";
     };
     let rest = rest.trim_start_matches([' ', '-']);
-    &rest[..rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len())]
+    &rest[..rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len())]
 }
 
 fn ompsdk_brief(root: &Path, name: &str, heading: &str) -> PathBuf {
@@ -10025,14 +11613,26 @@ fn ompsdk_brief(root: &Path, name: &str, heading: &str) -> PathBuf {
 }
 
 fn ompsdk_launch(fake: &FakeOmpsdk) -> Launch {
-    Launch { engine: Engine::Ompsdk, ompsdk_socket: Some(fake.socket.clone()), ..Launch::default() }
+    Launch {
+        engine: Engine::Ompsdk,
+        ompsdk_socket: Some(fake.socket.clone()),
+        ..Launch::default()
+    }
 }
 
 /// Poll the ompsdk tracker until `done` holds. A reply reaches the connection a moment after its call.
-fn ompsdk_poll_until(memo: &mut ompsdk_track::Memo, db: &Db, launch: &Launch, done: impl Fn(&Db) -> bool) {
+fn ompsdk_poll_until(
+    memo: &mut ompsdk_track::Memo,
+    db: &Db,
+    launch: &Launch,
+    done: impl Fn(&Db) -> bool,
+) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done(db) {
-        assert!(Instant::now() < deadline, "ompsdk poll never reached the expected state");
+        assert!(
+            Instant::now() < deadline,
+            "ompsdk poll never reached the expected state"
+        );
         memo.tick(db, launch);
         thread::sleep(Duration::from_millis(20));
     }
@@ -10045,7 +11645,10 @@ fn wait_for(fake: &FakeOmpsdk, found: impl Fn(&Value) -> bool) -> Value {
         if let Some(message) = fake.find(&found) {
             return message;
         }
-        assert!(Instant::now() < deadline, "the fake daemon never logged the expected message");
+        assert!(
+            Instant::now() < deadline,
+            "the fake daemon never logged the expected message"
+        );
         thread::sleep(Duration::from_millis(20));
     }
 }
@@ -10062,17 +11665,35 @@ fn ompsdk_launch_sets_mode_model_and_thinking_then_prompts() {
         ..ompsdk_launch(&fake)
     };
     let brief = ompsdk_brief(scratch.path(), "brief.md", "Plan the change");
-    let pane = ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    let pane = ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Plan,
+        None,
+        "Plan it",
+    )
+    .unwrap();
     assert_eq!(pane, "ompsdk:sid-1");
     let set = |config: &str, value: &str| {
-        fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == config && m["params"]["value"] == value)
-            .is_some()
+        fake.find(|m| {
+            m["method"] == "session/set_config_option"
+                && m["params"]["configId"] == config
+                && m["params"]["value"] == value
+        })
+        .is_some()
     };
     assert!(set("mode", "plan"));
     assert!(set("model", "openai/gpt-x"));
     assert!(set("thinking", "high"));
     let prompt = wait_for(&fake, |m| m["method"] == "session/prompt");
-    assert!(prompt["params"]["prompt"][0]["text"].as_str().unwrap().contains(&brief.display().to_string()));
+    assert!(
+        prompt["params"]["prompt"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&brief.display().to_string())
+    );
 }
 
 #[test]
@@ -10083,19 +11704,31 @@ fn launch_directory_expands_home_and_refuses_relative_paths() {
     assert_eq!(workdir("~/").unwrap(), home);
     assert_eq!(workdir("~/a/b/").unwrap(), format!("{home}/a/b"));
     assert_eq!(workdir("/abs/x/").unwrap(), "/abs/x");
-    assert_eq!(workdir("notes").unwrap_err(), "working directory must be absolute: notes");
-    assert_eq!(workdir("~other/x").unwrap_err(), "working directory must be absolute: ~other/x");
+    assert_eq!(
+        workdir("notes").unwrap_err(),
+        "working directory must be absolute: notes"
+    );
+    assert_eq!(
+        workdir("~other/x").unwrap_err(),
+        "working directory must be absolute: ~other/x"
+    );
 }
 
 // A worktree directory may not exist when an autorules card is dispatched later.
 #[test]
 fn launch_directory_does_not_require_the_directory_to_exist() {
-    assert_eq!(workdir("/path/that/does/not/exist").unwrap(), "/path/that/does/not/exist");
+    assert_eq!(
+        workdir("/path/that/does/not/exist").unwrap(),
+        "/path/that/does/not/exist"
+    );
 }
 
 #[test]
 fn launch_directory_rejects_tilde_for_another_user() {
-    assert_eq!(workdir("~someone/project").unwrap_err(), "working directory must be absolute: ~someone/project");
+    assert_eq!(
+        workdir("~someone/project").unwrap_err(),
+        "working directory must be absolute: ~someone/project"
+    );
 }
 
 #[test]
@@ -10105,8 +11738,17 @@ fn ompsdk_launch_error_carries_the_agent_details() {
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
     let fake = FakeOmpsdk::start(scratch.path());
     let brief = ompsdk_brief(scratch.path(), "brief.md", "Fix it");
-    let error = ompsdk_track::launch_new(&db, &ompsdk_launch(&fake), "~/", &brief, Start::Goal, None, "Fix it").unwrap_err();
-    assert_eq!(error, "Internal error: ACP cwd must be absolute: ~/" );
+    let error = ompsdk_track::launch_new(
+        &db,
+        &ompsdk_launch(&fake),
+        "~/",
+        &brief,
+        Start::Goal,
+        None,
+        "Fix it",
+    )
+    .unwrap_err();
+    assert_eq!(error, "Internal error: ACP cwd must be absolute: ~/");
 }
 
 #[test]
@@ -10117,21 +11759,42 @@ fn ompsdk_ask_question_becomes_a_card_and_answers_back() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Ask it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some()
+    });
     let (card, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Ask);
     assert!(card.answerable);
     assert_eq!(card.source.uri, "ompsdk://session/sid-1");
     assert_eq!(card.engine.as_deref(), Some("ompsdk"));
-    let labels: Vec<&str> = card.options.iter().map(|option| option.label.as_str()).collect();
+    let labels: Vec<&str> = card
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
     assert_eq!(labels, ["red", "blue"]);
     assert!(swipe.is_none());
-    let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
+    let answer = AnswerReq {
+        option: Some(1),
+        ..AnswerReq::default()
+    };
     ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
     let accepted = wait_for(&fake, |m| m["id"] == "ask-1" && m.get("result").is_some());
-    assert_eq!(accepted["result"], json!({"action": "accept", "content": {"q0": "blue"}}));
+    assert_eq!(
+        accepted["result"],
+        json!({"action": "accept", "content": {"q0": "blue"}})
+    );
     let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(swipe.unwrap().reason.as_deref(), Some("sent to ompsdk"));
 }
@@ -10144,8 +11807,19 @@ fn ompsdk_confirm_is_declined_without_a_card() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO confirm");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Confirm it").unwrap();
-    let declined = wait_for(&fake, |m| m["id"] == "confirm-1" && m["result"]["action"] == "decline");
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Confirm it",
+    )
+    .unwrap();
+    let declined = wait_for(&fake, |m| {
+        m["id"] == "confirm-1" && m["result"]["action"] == "decline"
+    });
     assert_eq!(declined["result"], json!({"action": "decline"}));
     let mut memo = ompsdk_track::Memo::default();
     memo.tick(&db, &launch);
@@ -10161,9 +11835,20 @@ fn ompsdk_plan_approval_sets_the_executor_before_accepting() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Plan,
+        None,
+        "Plan it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_some()
+    });
     let (card, _) = db.card("plan:ompsdk:sid-1:plan-1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Plan);
     ompsdk_track::answer_plan(
@@ -10182,14 +11867,25 @@ fn ompsdk_plan_approval_sets_the_executor_before_accepting() {
     .unwrap();
     wait_for(&fake, |m| m["id"] == "plan-1" && m.get("result").is_some());
     let log = fake.sent();
-    let accept = log.iter().position(|m| m["id"] == "plan-1" && m.get("result").is_some()).unwrap();
+    let accept = log
+        .iter()
+        .position(|m| m["id"] == "plan-1" && m.get("result").is_some())
+        .unwrap();
     let before_accept = |config: &str, value: &str| {
-        log.iter().position(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == config && m["params"]["value"] == value)
+        log.iter()
+            .position(|m| {
+                m["method"] == "session/set_config_option"
+                    && m["params"]["configId"] == config
+                    && m["params"]["value"] == value
+            })
             .is_some_and(|at| at < accept)
     };
     assert!(before_accept("model", "anthropic/claude-smol"));
     assert!(before_accept("thinking", "medium"));
-    assert_eq!(log[accept]["result"]["content"]["value"], "Approve and execute");
+    assert_eq!(
+        log[accept]["result"]["content"]["value"],
+        "Approve and execute"
+    );
 }
 
 #[test]
@@ -10201,13 +11897,29 @@ fn ompsdk_plan_into_approves_the_first_plan_without_a_card() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
     let start = Start::PlanInto(Some("anthropic/claude-smol"), Some("low"));
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        start,
+        None,
+        "Plan into",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
     ompsdk_poll_until(&mut memo, &db, &launch, |_| {
-        fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_some()
+        fake.find(|m| {
+            m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute"
+        })
+        .is_some()
     });
     assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
-    assert!(fake.find(|m| m["method"] == "session/set_config_option" && m["params"]["value"] == "anthropic/claude-smol").is_some());
+    assert!(
+        fake.find(|m| m["method"] == "session/set_config_option"
+            && m["params"]["value"] == "anthropic/claude-smol")
+            .is_some()
+    );
 }
 
 #[test]
@@ -10219,18 +11931,39 @@ fn ompsdk_plan_into_retries_a_failed_approval_without_a_card() {
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-planflaky.md", "Plan the change");
     let start = Start::PlanInto(Some("anthropic/claude-smol"), None);
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        start,
+        None,
+        "Plan into",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut now = events::now_ms();
-    while fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute").is_none() {
+    while fake
+        .find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute")
+        .is_none()
+    {
         assert!(Instant::now() < deadline, "the plan was never approved");
-        assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none(), "a failed auto-approval wrote a plan card");
+        assert!(
+            db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none(),
+            "a failed auto-approval wrote a plan card"
+        );
         ompsdk_track::tick(&mut memo, &db, &launch, now);
         now += 31_000;
         thread::sleep(Duration::from_millis(20));
     }
-    let model_sets = fake.sent().iter().filter(|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == "model").count();
+    let model_sets = fake
+        .sent()
+        .iter()
+        .filter(|m| {
+            m["method"] == "session/set_config_option" && m["params"]["configId"] == "model"
+        })
+        .count();
     assert_eq!(model_sets, 2);
     assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
 }
@@ -10243,7 +11976,16 @@ fn ompsdk_long_running_turn_is_never_resumed() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Hold it",
+    )
+    .unwrap();
     wait_for(&fake, |m| m["method"] == "session/prompt");
     let mut memo = ompsdk_track::Memo::default();
     let mut now = events::now_ms();
@@ -10253,8 +11995,16 @@ fn ompsdk_long_running_turn_is_never_resumed() {
         now += 1_000;
         thread::sleep(Duration::from_millis(2));
     }
-    let resumes = fake.sent().iter().filter(|m| m["method"] == "session/resume").count();
-    let prompts = fake.sent().iter().filter(|m| m["method"] == "session/prompt").count();
+    let resumes = fake
+        .sent()
+        .iter()
+        .filter(|m| m["method"] == "session/resume")
+        .count();
+    let prompts = fake
+        .sent()
+        .iter()
+        .filter(|m| m["method"] == "session/prompt")
+        .count();
     // Only the first poll on a fresh connection resumes held sessions.
     assert!(resumes <= 1, "a running turn was resumed {resumes} times");
     assert_eq!(prompts, 1, "a running turn was prompted again");
@@ -10278,7 +12028,12 @@ fn ompsdk_entry(id: &str, text: &str) -> Value {
 fn ompsdk_status_reply_reports_and_closes_the_session() {
     let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    run_child("ompsdk_status_reply_child", scratch.path(), Some(&scratch.path().join("home")), None);
+    run_child(
+        "ompsdk_status_reply_child",
+        scratch.path(),
+        Some(&scratch.path().join("home")),
+        None,
+    );
 }
 
 #[test]
@@ -10286,26 +12041,47 @@ fn ompsdk_status_reply_child() {
     let Some(root) = child_root("ompsdk_status_reply_child") else {
         return;
     };
-    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    write_ompsdk_transcript(
+        &root.join("home"),
+        &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")],
+    );
     let db = Db::open(&root.join("triage.db")).unwrap();
     let fake = FakeOmpsdk::start(&root);
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Finish it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Finish it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("done:ompsdk:sid-1:e1").unwrap().is_some()
+    });
     let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
     assert_eq!(card.kind, Kind::Info);
     assert_eq!(card.engine.as_deref(), Some("ompsdk"));
     // The poll after the card closes the session.
-    ompsdk_poll_until(&mut memo, &db, &launch, |_| fake.count("session/close") == 1);
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| {
+        fake.count("session/close") == 1
+    });
 }
 
 #[test]
 fn ompsdk_reply_without_status_continues_five_times_then_reports() {
     let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    run_child("ompsdk_continuation_child", scratch.path(), Some(&scratch.path().join("home")), None);
+    run_child(
+        "ompsdk_continuation_child",
+        scratch.path(),
+        Some(&scratch.path().join("home")),
+        None,
+    );
 }
 
 #[test]
@@ -10313,24 +12089,49 @@ fn ompsdk_continuation_child() {
     let Some(root) = child_root("ompsdk_continuation_child") else {
         return;
     };
-    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "Done, with no status line.")]);
+    write_ompsdk_transcript(
+        &root.join("home"),
+        &[ompsdk_entry("e1", "Done, with no status line.")],
+    );
     let db = Db::open(&root.join("triage.db")).unwrap();
     let fake = FakeOmpsdk::start(&root);
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Continue it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Continue it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("done:ompsdk:sid-1:e1").unwrap().is_some()
+    });
     let continuations = fake
         .sent()
         .iter()
-        .filter(|m| m["method"] == "session/prompt" && m["params"]["prompt"][0]["text"].as_str().is_some_and(|text| text.starts_with("Continue the triage brief at")))
+        .filter(|m| {
+            m["method"] == "session/prompt"
+                && m["params"]["prompt"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Continue the triage brief at"))
+        })
         .count();
     assert_eq!(continuations, 5);
 }
 
 /// Tick the ompsdk poll on a clock that moves `step_ms` a poll, until `done` holds.
-fn ompsdk_tick_until(memo: &mut ompsdk_track::Memo, db: &Db, launch: &Launch, step_ms: i64, done: impl Fn() -> bool) {
+fn ompsdk_tick_until(
+    memo: &mut ompsdk_track::Memo,
+    db: &Db,
+    launch: &Launch,
+    step_ms: i64,
+    done: impl Fn() -> bool,
+) {
     let mut now = events::now_ms();
     for _ in 0..300 {
         if done() {
@@ -10355,7 +12156,9 @@ fn cut_prompts(fake: &FakeOmpsdk) -> Vec<String> {
 
 /// The fake session's entry in `ompsdk-sessions.json`.
 fn ompsdk_tracked(root: &Path) -> Value {
-    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap()).unwrap();
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap())
+            .unwrap();
     state["sessions"][0].clone()
 }
 
@@ -10371,7 +12174,12 @@ fn stopped_card(db: &Db) -> Option<Card> {
 fn ompsdk_turn_cut_again_and_again_waits_longer_then_stops_with_a_card() {
     let _lock = ompsdk_lock();
     let scratch = Scratch::new();
-    run_child("ompsdk_cut_loop_child", scratch.path(), Some(&scratch.path().join("home")), None);
+    run_child(
+        "ompsdk_cut_loop_child",
+        scratch.path(),
+        Some(&scratch.path().join("home")),
+        None,
+    );
 }
 
 #[test]
@@ -10386,12 +12194,26 @@ fn ompsdk_cut_loop_child() {
     let fake = FakeOmpsdk::start(&root);
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Restart it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Restart it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
     // Five minutes a poll is less than the work that clears the count of cuts in a row.
-    ompsdk_tick_until(&mut memo, &db, &launch, 300_000, || fake.count("session/close") == 1);
+    ompsdk_tick_until(&mut memo, &db, &launch, 300_000, || {
+        fake.count("session/close") == 1
+    });
     assert_eq!(cut_prompts(&fake).len(), 5);
-    assert!(stopped_card(&db).is_some(), "no card told the user the session stopped");
+    assert!(
+        stopped_card(&db).is_some(),
+        "no card told the user the session stopped"
+    );
     let entry = ompsdk_tracked(&root);
     assert_eq!(entry["parked"], true, "{entry}");
     assert_eq!(entry["loaded"], false, "{entry}");
@@ -10457,7 +12279,12 @@ fn ompsdk_turn_ended_while_away_is_settled_once_on_resume() {
     let _lock = ompsdk_lock();
     let scratch = Scratch::new();
     let home = scratch.path().join("home");
-    run_child("ompsdk_away_child", scratch.path(), Some(home.as_path()), None);
+    run_child(
+        "ompsdk_away_child",
+        scratch.path(),
+        Some(home.as_path()),
+        None,
+    );
 }
 
 #[test]
@@ -10465,23 +12292,47 @@ fn ompsdk_away_child() {
     let Some(root) = child_root("ompsdk_away_child") else {
         return;
     };
-    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    write_ompsdk_transcript(
+        &root.join("home"),
+        &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")],
+    );
     let db = Db::open(&root.join("triage.db")).unwrap();
     let fake = FakeOmpsdk::start(&root);
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO away");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Away").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Away",
+    )
+    .unwrap();
     wait_until("the daemon to drop the client", || fake.dropped());
     // The reader notices the closed socket a moment after the daemon drops it.
     thread::sleep(Duration::from_millis(100));
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
-    ompsdk_poll_until(&mut memo, &db, &launch, |_| fake.count("session/close") == 1);
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("done:ompsdk:sid-1:e1").unwrap().is_some()
+    });
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| {
+        fake.count("session/close") == 1
+    });
     let sent = fake.sent();
     let count = |method: &str| sent.iter().filter(|m| m["method"] == method).count();
-    assert_eq!(count("session/resume"), 1, "the session resumed more than once");
+    assert_eq!(
+        count("session/resume"),
+        1,
+        "the session resumed more than once"
+    );
     assert_eq!(count("session/prompt"), 1, "the turn was driven again");
-    assert_eq!(count("session/close"), 1, "the session closed more than once");
+    assert_eq!(
+        count("session/close"),
+        1,
+        "the session closed more than once"
+    );
     let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
     assert_eq!(card.engine.as_deref(), Some("ompsdk"));
 }
@@ -10494,7 +12345,12 @@ fn ompsdk_open_cli_resumes_a_running_turn_with_the_cut_prompt() {
     let scratch = Scratch::new();
     let bin = ompsdk_cli_bin(scratch.path());
     let home = scratch.path().join("home");
-    run_child("ompsdk_open_cli_running_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
+    run_child(
+        "ompsdk_open_cli_running_child",
+        scratch.path(),
+        Some(home.as_path()),
+        Some(bin.as_path()),
+    );
 }
 
 #[test]
@@ -10507,20 +12363,45 @@ fn ompsdk_open_cli_running_child() {
     let fake = FakeOmpsdk::start(&root);
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO ask");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Open it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some()
+    });
     ompsdk_card(&db, "info:ompsdk:sid-1:e1", Kind::Info);
     let (ask, _) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     ompsdk_track::open_cli(&db, &ask, "sid-1", &launch).unwrap();
 
     let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
-    let window = log.lines().find(|line| line.starts_with("new-window ")).unwrap();
+    let window = log
+        .lines()
+        .find(|line| line.starts_with("new-window "))
+        .unwrap();
     assert!(window.contains("omp --resume='"), "{window}");
-    assert!(window.contains("2026-01-01T00-00-00Z_sid-1.jsonl"), "{window}");
+    assert!(
+        window.contains("2026-01-01T00-00-00Z_sid-1.jsonl"),
+        "{window}"
+    );
     assert!(window.contains("'Continue where you stopped.'"), "{window}");
-    assert_eq!(fake.sent().iter().filter(|m| m["method"] == "session/close").count(), 1);
-    let state: Value = serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap()).unwrap();
+    assert_eq!(
+        fake.sent()
+            .iter()
+            .filter(|m| m["method"] == "session/close")
+            .count(),
+        1
+    );
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap())
+            .unwrap();
     assert_eq!(state["sessions"], json!([]), "the entry is dropped");
     let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     let swipe = swipe.unwrap();
@@ -10537,7 +12418,12 @@ fn ompsdk_open_cli_hands_an_idle_session_over_without_a_cut_prompt() {
     let scratch = Scratch::new();
     let bin = ompsdk_cli_bin(scratch.path());
     let home = scratch.path().join("home");
-    run_child("ompsdk_open_cli_idle_child", scratch.path(), Some(home.as_path()), Some(bin.as_path()));
+    run_child(
+        "ompsdk_open_cli_idle_child",
+        scratch.path(),
+        Some(home.as_path()),
+        Some(bin.as_path()),
+    );
 }
 
 #[test]
@@ -10550,15 +12436,30 @@ fn ompsdk_open_cli_idle_child() {
     let fake = FakeOmpsdk::start(&root);
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Open it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Open it",
+    )
+    .unwrap();
     wait_until("the turn to end", || {
-        matches!(crate::ompsdk::client(&fake.socket).unwrap().turn("sid-1"), crate::ompsdk::Turn::Ended(_))
+        matches!(
+            crate::ompsdk::client(&fake.socket).unwrap().turn("sid-1"),
+            crate::ompsdk::Turn::Ended(_)
+        )
     });
     let card = ompsdk_card(&db, "ask:ompsdk:sid-1:ask-1", Kind::Ask);
     ompsdk_track::open_cli(&db, &card, "sid-1", &launch).unwrap();
 
     let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
-    let window = log.lines().find(|line| line.starts_with("new-window ")).unwrap();
+    let window = log
+        .lines()
+        .find(|line| line.starts_with("new-window "))
+        .unwrap();
     assert!(window.contains("omp --resume='"), "{window}");
     assert!(!window.contains("Continue where you stopped."), "{window}");
     let (_, swipe) = db.card(&card.id).unwrap().unwrap();
@@ -10568,8 +12469,14 @@ fn ompsdk_open_cli_idle_child() {
 #[test]
 fn lease_report_holds_only_the_session_it_names() {
     let sid = "01a20a9f-4921-77b7-aa76-719bc592d7a5";
-    assert!(!ompsdk_track::held_by(&json!({"held": [], "unknown": []}), sid));
-    assert!(!ompsdk_track::held_by(&json!({"held": ["01a20a9f-46c9-77e0-bb2e-3f4e43d6bcc1"]}), sid));
+    assert!(!ompsdk_track::held_by(
+        &json!({"held": [], "unknown": []}),
+        sid
+    ));
+    assert!(!ompsdk_track::held_by(
+        &json!({"held": ["01a20a9f-46c9-77e0-bb2e-3f4e43d6bcc1"]}),
+        sid
+    ));
     assert!(ompsdk_track::held_by(&json!({"held": [sid]}), sid));
 }
 
@@ -10584,7 +12491,11 @@ fn form_fields_read_as_answerable_questions() {
     assert_eq!(asked[0].key, "choice");
     assert!(!asked[0].multi);
     assert_eq!(asked[0].other.as_deref(), Some("choice__other"));
-    let labels: Vec<&str> = asked[0].options.iter().map(|(label, _)| label.as_str()).collect();
+    let labels: Vec<&str> = asked[0]
+        .options
+        .iter()
+        .map(|(label, _)| label.as_str())
+        .collect();
     assert_eq!(labels, ["Continue", "Stop"]);
 }
 
@@ -10596,15 +12507,34 @@ fn ompsdk_request_report_prompts_an_idle_session() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO plain");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Report it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Report it",
+    )
+    .unwrap();
     wait_until("the turn to end", || {
-        matches!(crate::ompsdk::client(&fake.socket).unwrap().turn(OMPSDK_SID), crate::ompsdk::Turn::Ended(_))
+        matches!(
+            crate::ompsdk::client(&fake.socket)
+                .unwrap()
+                .turn(OMPSDK_SID),
+            crate::ompsdk::Turn::Ended(_)
+        )
     });
-    let card = Card { report_due: true, ..ompsdk_card(&db, "done:ompsdk:sid-1:e1", Kind::Info) };
+    let card = Card {
+        report_due: true,
+        ..ompsdk_card(&db, "done:ompsdk:sid-1:e1", Kind::Info)
+    };
     assert_eq!(request_report(&db, &card, &launch), Ok(()));
     wait_for(&fake, |m| {
         m["method"] == "session/prompt"
-            && m["params"]["prompt"][0]["text"].as_str().is_some_and(|text| text.contains("report-format.md"))
+            && m["params"]["prompt"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("report-format.md"))
     });
     let (_, swipe) = db.card(&card.id).unwrap().unwrap();
     assert_eq!(swipe.unwrap().text.as_deref(), Some("Request final report"));
@@ -10618,12 +12548,30 @@ fn ompsdk_request_report_refuses_a_session_waiting_on_an_answer() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Ask it",
+    )
+    .unwrap();
     wait_until("the question to arrive", || {
-        !crate::ompsdk::client(&fake.socket).unwrap().elicitations(OMPSDK_SID).is_empty()
+        !crate::ompsdk::client(&fake.socket)
+            .unwrap()
+            .elicitations(OMPSDK_SID)
+            .is_empty()
     });
-    let card = Card { report_due: true, ..ompsdk_card(&db, "done:ompsdk:sid-1:e0", Kind::Info) };
-    assert_eq!(request_report(&db, &card, &launch), Err("session is busy".to_owned()));
+    let card = Card {
+        report_due: true,
+        ..ompsdk_card(&db, "done:ompsdk:sid-1:e0", Kind::Info)
+    };
+    assert_eq!(
+        request_report(&db, &card, &launch),
+        Err("session is busy".to_owned())
+    );
 }
 
 // A pool restart cuts every turn. The poll brings the session back and sends the cut prompt.
@@ -10636,16 +12584,31 @@ fn ompsdk_pool_restart_revives_a_running_session() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Hold it",
+    )
+    .unwrap();
     wait_for(&fake, |m| m["method"] == "session/prompt");
     let mut memo = ompsdk_track::Memo::default();
     memo.tick(&db, &launch);
     fake.restart();
     thread::sleep(Duration::from_millis(100));
-    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || ompsdk_tracked(scratch.path())["cuts"] == 1);
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || {
+        ompsdk_tracked(scratch.path())["cuts"] == 1
+    });
     let prompts = cut_prompts(&fake);
     assert_eq!(prompts.len(), 1);
-    assert!(prompts[0].contains(&brief.display().to_string()), "{}", prompts[0]);
+    assert!(
+        prompts[0].contains(&brief.display().to_string()),
+        "{}",
+        prompts[0]
+    );
     assert_eq!(fake.count("session/resume"), 1);
     let entry = ompsdk_tracked(scratch.path());
     assert_eq!(entry["cut"], false, "{entry}");
@@ -10660,27 +12623,50 @@ fn ompsdk_pool_restart_parks_a_waiting_session_until_its_question_is_answered() 
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Ask it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some()
+    });
     fake.restart();
     thread::sleep(Duration::from_millis(100));
     for _ in 0..10 {
         memo.tick(&db, &launch);
         thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(fake.count("session/resume"), 0, "a session that waits on the user was reopened");
+    assert_eq!(
+        fake.count("session/resume"),
+        0,
+        "a session that waits on the user was reopened"
+    );
     let (card, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert!(swipe.is_none(), "the restart finished the question card");
     assert_eq!(ompsdk_tracked(scratch.path())["parked"], true);
 
-    let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
+    let answer = AnswerReq {
+        option: Some(1),
+        ..AnswerReq::default()
+    };
     ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
     let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(swipe.unwrap().reason.as_deref(), Some("queued for ompsdk"));
-    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || !cut_prompts(&fake).is_empty());
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || {
+        !cut_prompts(&fake).is_empty()
+    });
     let prompt = &cut_prompts(&fake)[0];
-    assert!(prompt.contains("\"Which colour?\" was answered with: blue"), "{prompt}");
+    assert!(
+        prompt.contains("\"Which colour?\" was answered with: blue"),
+        "{prompt}"
+    );
     assert_eq!(fake.count("session/resume"), 1);
 }
 
@@ -10692,19 +12678,37 @@ fn ompsdk_pool_restart_puts_a_planning_session_back_in_plan_mode() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "SCENARIO-hold.md", "Plan the change");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Plan,
+        None,
+        "Plan it",
+    )
+    .unwrap();
     wait_for(&fake, |m| m["method"] == "session/prompt");
     let mut memo = ompsdk_track::Memo::default();
     memo.tick(&db, &launch);
     fake.restart();
     thread::sleep(Duration::from_millis(100));
-    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || !cut_prompts(&fake).is_empty());
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || {
+        !cut_prompts(&fake).is_empty()
+    });
     let sent = fake.sent();
     let last = |found: &dyn Fn(&Value) -> bool| sent.iter().rposition(found).unwrap();
     let resume = last(&|m| m["method"] == "session/resume");
-    let mode = last(&|m| m["method"] == "session/set_config_option" && m["params"]["configId"] == "mode" && m["params"]["value"] == "plan");
+    let mode = last(&|m| {
+        m["method"] == "session/set_config_option"
+            && m["params"]["configId"] == "mode"
+            && m["params"]["value"] == "plan"
+    });
     let prompt = last(&|m| m["method"] == "session/prompt");
-    assert!(resume < mode && mode < prompt, "resume {resume}, plan mode {mode}, prompt {prompt}");
+    assert!(
+        resume < mode && mode < prompt,
+        "resume {resume}, plan mode {mode}, prompt {prompt}"
+    );
 }
 
 // Triage restarts while a question is open. The daemon keeps the session and its question. An
@@ -10718,20 +12722,40 @@ fn ompsdk_answer_given_before_the_poll_bound_the_session_reaches_its_question() 
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO ask");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Ask it",
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
-    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some());
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("ask:ompsdk:sid-1:ask-1").unwrap().is_some()
+    });
     fake.drop_clients();
     thread::sleep(Duration::from_millis(100));
     let (card, _) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
-    let answer = AnswerReq { option: Some(1), ..AnswerReq::default() };
+    let answer = AnswerReq {
+        option: Some(1),
+        ..AnswerReq::default()
+    };
     ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
     let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(swipe.unwrap().reason.as_deref(), Some("queued for ompsdk"));
     let accepted = || fake.find(|m| m["id"] == "ask-1" && m.get("result").is_some());
     ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || accepted().is_some());
-    assert_eq!(accepted().unwrap()["result"], json!({"action": "accept", "content": {"q0": "blue"}}));
-    assert!(cut_prompts(&fake).is_empty(), "a turn that still ran got the cut prompt");
+    assert_eq!(
+        accepted().unwrap()["result"],
+        json!({"action": "accept", "content": {"q0": "blue"}})
+    );
+    assert!(
+        cut_prompts(&fake).is_empty(),
+        "a turn that still ran got the cut prompt"
+    );
 }
 
 #[test]
@@ -10742,12 +12766,28 @@ fn ompsdk_close_returns_at_once_and_the_poll_releases_the_session_after_a_wait()
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Hold it",
+    )
+    .unwrap();
     wait_for(&fake, |m| m["method"] == "session/prompt");
     let card = ompsdk_card(&db, "info:ompsdk:sid-1:e1", Kind::Info);
-    fake.fail_once("session/close", "ompsdk: restarted: session/close unanswered 600 s");
+    fake.fail_once(
+        "session/close",
+        "ompsdk: restarted: session/close unanswered 600 s",
+    );
     close(&db, &card, None, &launch).unwrap();
-    assert_eq!(fake.count("session/close"), 0, "the close waited on the daemon");
+    assert_eq!(
+        fake.count("session/close"),
+        0,
+        "the close waited on the daemon"
+    );
     let (_, swipe) = db.card(&card.id).unwrap().unwrap();
     assert_eq!(swipe.unwrap().text.as_deref(), Some("Close"));
 
@@ -10758,14 +12798,21 @@ fn ompsdk_close_returns_at_once_and_the_poll_releases_the_session_after_a_wait()
         ompsdk_track::tick(&mut memo, &db, &launch, now);
         now += 100;
     }
-    assert_eq!(fake.count("session/close"), 1, "a failed close went out again before its wait passed");
+    assert_eq!(
+        fake.count("session/close"),
+        1,
+        "a failed close went out again before its wait passed"
+    );
     now += 10_000;
     for _ in 0..3 {
         ompsdk_track::tick(&mut memo, &db, &launch, now);
         now += 100;
     }
     assert_eq!(fake.count("session/close"), 2);
-    let state: Value = serde_json::from_str(&fs::read_to_string(scratch.path().join("ompsdk-sessions.json")).unwrap()).unwrap();
+    let state: Value = serde_json::from_str(
+        &fs::read_to_string(scratch.path().join("ompsdk-sessions.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(state["sessions"], json!([]), "the entry is dropped");
 }
 
@@ -10782,7 +12829,11 @@ fn ompsdk_poll_reopens_one_cut_session_a_poll() {
         .iter()
         .map(|sid| json!({"sid": sid, "cwd": "/work/project", "loaded": true}))
         .collect();
-    fs::write(scratch.path().join("ompsdk-sessions.json"), json!({"sessions": entries}).to_string()).unwrap();
+    fs::write(
+        scratch.path().join("ompsdk-sessions.json"),
+        json!({"sessions": entries}).to_string(),
+    )
+    .unwrap();
     let mut memo = ompsdk_track::Memo::default();
     let mut now = events::now_ms();
     // The first poll learns that the daemon holds none of them.
@@ -10802,8 +12853,19 @@ fn ompsdk_launch_tries_again_after_the_pool_restarts_under_it() {
     let db = Db::open(&scratch.path().join("triage.db")).unwrap();
     let fake = FakeOmpsdk::start(scratch.path());
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
-    fake.fail_once("session/new", "ompsdk: restarted: session/new unanswered 600 s");
-    let pane = ompsdk_track::launch_new(&db, &ompsdk_launch(&fake), "/work/project", &brief, Start::Goal, None, "Hold it");
+    fake.fail_once(
+        "session/new",
+        "ompsdk: restarted: session/new unanswered 600 s",
+    );
+    let pane = ompsdk_track::launch_new(
+        &db,
+        &ompsdk_launch(&fake),
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Hold it",
+    );
     assert_eq!(pane.as_deref(), Ok("ompsdk:sid-1"));
     assert_eq!(fake.count("session/new"), 2);
 }
@@ -10816,15 +12878,30 @@ fn ompsdk_session_that_cannot_reopen_stops_with_a_card() {
     let fake = FakeOmpsdk::start(scratch.path());
     let launch = ompsdk_launch(&fake);
     let brief = ompsdk_brief(scratch.path(), "brief.md", "SCENARIO hold");
-    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Hold it").unwrap();
+    ompsdk_track::launch_new(
+        &db,
+        &launch,
+        "/work/project",
+        &brief,
+        Start::Goal,
+        None,
+        "Hold it",
+    )
+    .unwrap();
     wait_for(&fake, |m| m["method"] == "session/prompt");
     let mut memo = ompsdk_track::Memo::default();
     memo.tick(&db, &launch);
     fake.restart();
     thread::sleep(Duration::from_millis(100));
     fake.fail_once("session/resume", "ACP session not found: sid-1");
-    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || stopped_card(&db).is_some());
-    assert_eq!(fake.count("session/resume"), 1, "a resume omp refused went out again");
+    ompsdk_tick_until(&mut memo, &db, &launch, 1_000, || {
+        stopped_card(&db).is_some()
+    });
+    assert_eq!(
+        fake.count("session/resume"),
+        1,
+        "a resume omp refused went out again"
+    );
     assert!(cut_prompts(&fake).is_empty());
     assert_eq!(ompsdk_tracked(scratch.path())["parked"], true);
 }
@@ -10833,6 +12910,9 @@ fn ompsdk_session_that_cannot_reopen_stops_with_a_card() {
 fn ompsdk_waits_double_up_to_the_longest_with_at_most_a_quarter_added() {
     for (tries, wait) in [(1, 1_000), (2, 2_000), (4, 8_000), (40, 60_000)] {
         let waited = ompsdk_track::wait_ms((1_000, 60_000), tries);
-        assert!((wait..=wait + wait / 4).contains(&waited), "try {tries} waited {waited}");
+        assert!(
+            (wait..=wait + wait / 4).contains(&waited),
+            "try {tries} waited {waited}"
+        );
     }
 }
