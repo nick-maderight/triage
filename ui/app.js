@@ -1135,7 +1135,7 @@ const S = {
     if (cfg.engine !== engine) cfg.options = [];
     cfg.engine = engine;
     cfg.placeholder = engine === 'dsh' ? 'Search models' : 'Search roles';
-    cfg.fallback = engine === 'dsh' ? 'current model' : 'current Plan Review role';
+    cfg.fallback = engine === 'dsh' ? 'current model' : 'omp smol role';
   }
 
   function otherAllowed(c) {
@@ -2328,7 +2328,7 @@ const S = {
     'compose-thinking': { title: 'Thinking', placeholder: 'Search levels', free: false, fallback: 'Daemon default', options: [] },
     'compose-executor': { title: 'Execution model', placeholder: 'Search or type a selector', free: true, fallback: 'omp smol role', options: [] },
     'compose-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
-    'plan-executor': { title: 'Execution model', placeholder: 'Search roles', free: false, fallback: 'current Plan Review role', options: [] },
+    'plan-executor': { title: 'Execution model', placeholder: 'Search roles', free: false, fallback: 'omp smol role', options: [] },
     'plan-executor-effort': { title: 'Execution effort', placeholder: 'Search levels', free: false, fallback: 'Planner effort', options: [] },
   };
   const MODEL_PICKERS = [

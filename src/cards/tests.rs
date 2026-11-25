@@ -158,7 +158,14 @@ capture-pane)
         printf '╭─ Plan Review ─╮\n'
         printf '├────────────────╮\n'
         printf '│ Plan mode - next step │\n'
-        printf '│ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n'
+        role=1
+        if [ -f "$HOME/tmux-plan-role" ]; then IFS= read -r role < "$HOME/tmux-plan-role"; fi
+        case "$role" in
+        0) track='◀ smol ▶ default ┆ slow' ;;
+        2) track='smol ┆ default ◀ slow ▶' ;;
+        *) track='smol ◀ default ▶ slow' ;;
+        esac
+        printf '│ continue with  ◂  %s  ▸ │\n' "$track"
         printf '│   ↳ Example Model │\n'
         index=0
         for option in 'Approve and execute' 'Approve and compact context' 'Approve and keep context (~8k / 1m)' 'Refine plan' 'Save and quit'; do
@@ -195,6 +202,13 @@ send-keys)
     *" Up "*) if [ "$selected" -gt 0 ]; then selected=$((selected - 1)); fi ;;
     esac
     printf '%s\n' "$selected" > "$HOME/tmux-plan-selected"
+    role=1
+    if [ -f "$HOME/tmux-plan-role" ]; then IFS= read -r role < "$HOME/tmux-plan-role"; fi
+    case " $* " in
+    *" Left "*) if [ "$role" -gt 0 ]; then role=$((role - 1)); fi ;;
+    *" Right "*) if [ "$role" -lt 2 ]; then role=$((role + 1)); fi ;;
+    esac
+    printf '%s\n' "$role" > "$HOME/tmux-plan-role"
     case " $* " in *" Enter "*)
         : > "$HOME/tmux-answered"
         if [ -f "$HOME/tmux-plan-review" ]; then
@@ -5535,6 +5549,7 @@ fn plan_answers_approve_refine_and_reject_invalid_refinements() {
         assert!(db.card(&empty.id).unwrap().unwrap().1.is_none());
         assert!(db.card(&unknown.id).unwrap().unwrap().1.is_none());
         assert_eq!(approve_swipe.option, Some(0));
+        assert_eq!(approve_swipe.text.as_deref(), Some("@smol"));
         assert_eq!(approve_swipe.reason.as_deref(), Some("typed"));
         assert_eq!(refine_swipe.option, Some(1));
         assert_eq!(refine_swipe.text.as_deref(), Some("Add a rollback step"));
@@ -5712,21 +5727,28 @@ fn plan_approval_selects_execution_model_before_enter() {
             )
         };
         for (index, selected) in [
-            "default", "slow", "default", "default", "default", "default",
+            "default", "slow", "default", "default", "default", "smol",
         ]
         .iter()
         .enumerate()
         {
             fs::write(screens.join(index.to_string()), review(selected)).unwrap();
         }
+        // A review that offers no smol role keeps the role it shows.
+        fs::write(
+            screens.join("6"),
+            "╭─ Plan Review ─╮\n│ continue with ◂ default ◀ slow ▶ ▸\n│ ↑/↓ select · ⏎ confirm · ←/→ model\n",
+        )
+        .unwrap();
         let selected = plan_card(&pane, 0);
         let blank = plan_card(&pane, 4);
         let effort = plan_card(&pane, 5);
         let unavailable = plan_card(&pane, 1);
         let default = plan_card(&pane, 2);
         let mismatch = plan_card(&pane, 3);
+        let smolless = plan_card(&pane, 6);
         db.insert_card(&blank).unwrap();
-        for card in [&selected, &unavailable, &default, &mismatch, &effort] {
+        for card in [&selected, &unavailable, &default, &mismatch, &effort, &smolless] {
             db.insert_card(card).unwrap();
         }
 
@@ -5796,10 +5818,20 @@ fn plan_approval_selects_execution_model_before_enter() {
             &Launch::default(),
             None,
         );
+        let smolless_result = answer(
+            &db,
+            &smolless,
+            &AnswerReq {
+                option: Some(0),
+                ..AnswerReq::default()
+            },
+            &Launch::default(),
+            None,
+        );
         let keys = fs::read_to_string(root.join("tmux-keys.log")).unwrap();
         let keys: Vec<_> = keys.lines().collect();
 
-        assert!(selected_result.is_ok() && default_result.is_ok() && blank_result.is_ok());
+        assert!(selected_result.is_ok() && default_result.is_ok() && blank_result.is_ok() && smolless_result.is_ok());
         assert_eq!(
             unavailable_result.as_ref().err().map(String::as_str),
             Some("plan review does not offer @missing")
@@ -5819,6 +5851,8 @@ fn plan_approval_selects_execution_model_before_enter() {
                 "send-keys -t %12 Enter",
                 "send-keys -t %12 Enter",
                 "send-keys -t %12 Right",
+                "send-keys -t %12 Left",
+                "send-keys -t %12 Enter",
                 "send-keys -t %12 Enter",
             ]
         );
@@ -5830,7 +5864,8 @@ fn plan_approval_selects_execution_model_before_enter() {
             current_swipe(&db, &default.id).text.as_deref(),
             Some("@default")
         );
-        assert!(current_swipe(&db, &blank.id).text.is_none());
+        assert_eq!(current_swipe(&db, &blank.id).text.as_deref(), Some("@smol"));
+        assert!(current_swipe(&db, &smolless.id).text.is_none());
         assert!(db.card(&unavailable.id).unwrap().unwrap().1.is_none());
         assert!(db.card(&mismatch.id).unwrap().unwrap().1.is_none());
         return;
@@ -11505,6 +11540,16 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
                         "Approve plan and start implementation?",
                         plan_schema(),
                     )),
+                    // The agent proposed twice, and omp left the first review open.
+                    "plantwice" => {
+                        send(json!({"jsonrpc": "2.0", "id": "plan-1", "method": "elicitation/create",
+                            "params": {"mode": "form", "sessionId": OMPSDK_SID, "message": "Approve plan and start implementation?", "requestedSchema": plan_schema()}}));
+                        Some((
+                            "plan-2",
+                            "Approve plan and start implementation?",
+                            plan_schema(),
+                        ))
+                    }
                     _ => None,
                 };
                 match asked {
@@ -11972,6 +12017,122 @@ fn ompsdk_plan_into_retries_a_failed_approval_without_a_card() {
         .count();
     assert_eq!(model_sets, 2);
     assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
+}
+
+#[test]
+fn ompsdk_plan_into_keeps_trying_behind_its_card_and_closes_it() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "SCENARIO-plan.md", "Plan the change");
+    let start = Start::PlanInto(Some("anthropic/claude-smol"), None);
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, start, None, "Plan into").unwrap();
+    // The launch set the planner's model. Each approval try then fails until the card is out.
+    wait_for(&fake, |m| m["method"] == "session/prompt");
+    for _ in 0..8 {
+        fake.fail_once("session/set_config_option", "unknown model");
+    }
+    let mut memo = ompsdk_track::Memo::default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut now = events::now_ms();
+    let card = "plan:ompsdk:sid-1:plan-1";
+    let approved = || {
+        fake.find(|m| m["id"] == "plan-1" && m["result"]["content"]["value"] == "Approve and execute")
+            .is_some()
+    };
+    while db.card(card).unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the failing approval never wrote its card");
+        assert!(!approved(), "the plan was approved while every try failed");
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
+        now += 800_000;
+        thread::sleep(Duration::from_millis(20));
+    }
+    while db.card(card).unwrap().unwrap().1.is_none() {
+        assert!(Instant::now() < deadline, "the card stayed open after the approval worked");
+        ompsdk_track::tick(&mut memo, &db, &launch, now);
+        now += 800_000;
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(approved());
+}
+
+#[test]
+fn ompsdk_earlier_plan_review_gets_no_card_and_is_accepted_with_the_one_answered() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let db = Db::open(&scratch.path().join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(scratch.path());
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(scratch.path(), "SCENARIO-plantwice.md", "Plan the change");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("plan:ompsdk:sid-1:plan-2").unwrap().is_some()
+    });
+    memo.tick(&db, &launch);
+    assert!(db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_none());
+    let (card, _) = db.card("plan:ompsdk:sid-1:plan-2").unwrap().unwrap();
+    ompsdk_track::answer_plan(
+        &db,
+        &card,
+        "sid-1",
+        &AnswerReq::default(),
+        dsh_track::PlanChoice { option: Some(0), refinement: None, executor: None, executor_effort: None },
+        &launch,
+    )
+    .unwrap();
+    wait_for(&fake, |m| m["id"] == "plan-2" && m.get("result").is_some());
+    let log = fake.sent();
+    let accepted = |key: &str| {
+        log.iter()
+            .position(|m| m["id"] == key && m["result"]["content"]["value"] == "Approve and execute")
+    };
+    assert!(accepted("plan-1").is_some_and(|earlier| Some(earlier) < accepted("plan-2")));
+}
+
+// The smol role comes from omp's config under $HOME. This runs in a child with its own HOME.
+
+#[test]
+fn ompsdk_plan_approval_without_a_model_runs_on_the_smol_role() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let home = scratch.path().join("home");
+    run_child("ompsdk_default_executor_child", scratch.path(), Some(home.as_path()), None);
+}
+
+#[test]
+fn ompsdk_default_executor_child() {
+    let Some(root) = child_root("ompsdk_default_executor_child") else {
+        return;
+    };
+    let agent = root.join("home/.omp/agent");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(agent.join("config.yml"), "modelRoles:\n  smol: anthropic/claude-smol:low\n").unwrap();
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "SCENARIO-plan.md", "Plan the change");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Plan, None, "Plan it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("plan:ompsdk:sid-1:plan-1").unwrap().is_some()
+    });
+    let (card, _) = db.card("plan:ompsdk:sid-1:plan-1").unwrap().unwrap();
+    let approve = AnswerReq { option: Some(0), ..AnswerReq::default() };
+    answer(&db, &card, &approve, &launch, None).unwrap();
+    wait_for(&fake, |m| m["id"] == "plan-1" && m.get("result").is_some());
+    let set = |config: &str, value: &str| {
+        fake.find(|m| {
+            m["method"] == "session/set_config_option"
+                && m["params"]["configId"] == config
+                && m["params"]["value"] == value
+        })
+        .is_some()
+    };
+    assert!(set("model", "anthropic/claude-smol"));
+    assert!(set("thinking", "low"));
 }
 
 #[test]

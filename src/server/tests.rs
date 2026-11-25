@@ -1796,7 +1796,11 @@ capture-pane)
     printf '╭─ Plan Review ─╮\n'
     printf '├────────────────╮\n'
     printf '│ Plan mode - next step │\n'
-    printf '│ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n'
+    if [ -f "$state.left" ]; then
+        printf '│ continue with  ◂ ◀ smol ▶  default  slow  ▸ │\n'
+    else
+        printf '│ continue with  ◂  smol  ◀ default ▶  slow  ▸ │\n'
+    fi
     printf '│   ↳ Example Model │\n'
     if [ "$pane" = "%43" ]; then
         printf '│   Approve and execute │\n'
@@ -1815,6 +1819,7 @@ capture-pane)
     printf '╰────────────────╯\n'
     ;;
 send-keys)
+    case " $* " in *" Left "*) : > "$state.left" ;; esac
     case " $* " in *" Enter "*) : > "$state.picked" ;; esac
     ;;
 esac
@@ -1854,7 +1859,10 @@ esac
 
     assert_eq!(approved.status, StatusCode::OK);
     assert_eq!(refined.status, StatusCode::OK);
-    assert!(log.lines().any(|line| line == "send-keys -t %42 Enter"));
+    // Approve names no model, which moves the slider onto the smol role first.
+    let to_smol = log.find("send-keys -t %42 Left").unwrap();
+    assert!(to_smol < log.find("send-keys -t %42 Enter").unwrap(), "{log}");
+    assert_eq!(approve_swipe.text.as_deref(), Some("@smol"));
     assert!(!log.contains("Escape"), "{log}");
     let pick = log.find("send-keys -t %43 Enter").unwrap();
     let note = log

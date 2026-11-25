@@ -599,6 +599,11 @@ fn role_selector(role: &str) -> Result<String, String> {
     role_in(&config, role).ok_or_else(|| format!("unknown model role @{role}"))
 }
 
+/// Whether omp's config maps `role` to a model.
+pub fn has_role(role: &str) -> bool {
+    role_selector(role).is_ok()
+}
+
 /// The value of `role` under the `modelRoles:` block of an omp config.
 fn role_in(config: &str, role: &str) -> Option<String> {
     let mut lines = config.lines();

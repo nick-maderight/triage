@@ -102,8 +102,6 @@ struct Entry {
     title: String,
     /// What a plan-into launch approves its plan with.
     plan_into: Option<PlanInto>,
-    /// Whether the first plan of a plan-into launch was approved without a card.
-    auto_approved: bool,
     /// Continuation prompts sent since the session last got a brief.
     continues: u32,
     /// Whether the daemon holds the session for triage.
@@ -324,6 +322,22 @@ fn is_plan_review(schema: &Value) -> bool {
     schema["properties"]["value"]["enum"]
         .as_array()
         .is_some_and(|choices| choices.iter().any(|choice| choice == PLAN_APPROVE))
+}
+
+/// The key of the plan review a session's agent waits on. omp keeps an earlier review open
+/// when the agent proposes again, and the daemon numbers its requests in the order they came.
+fn live_review(open: &[Elicitation]) -> Option<String> {
+    open.iter()
+        .enumerate()
+        .filter(|(_, elicitation)| is_plan_review(&elicitation.schema))
+        .max_by_key(|(at, elicitation)| (request_number(&elicitation.key()), *at))
+        .map(|(_, elicitation)| elicitation.key())
+}
+
+/// The number a request id ends in, or 0 when it ends in none.
+fn request_number(key: &str) -> u64 {
+    let digits = key.len() - key.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    key[key.len() - digits..].parse().unwrap_or(0)
 }
 
 fn card_id(sid: &str, elicitation: &Elicitation) -> String {
@@ -783,7 +797,10 @@ fn stalled(memo: &mut Memo, db: &Db, entry: &Entry, now: i64) -> usize {
 /// finished. A turn that has ended is settled. Returns the cards written.
 fn tend(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64, called: &mut bool) -> usize {
     let sid = entry.sid.as_str();
-    let open = client.elicitations(sid);
+    let mut open = client.elicitations(sid);
+    // Only the review the agent waits on gets an answer or a card. Approving it accepts the rest.
+    let live = live_review(&open);
+    open.retain(|elicitation| !is_plan_review(&elicitation.schema) || live.as_deref() == Some(elicitation.key().as_str()));
     let mut written = 0;
     for elicitation in &open {
         let key = elicitation.key();
@@ -847,9 +864,11 @@ fn deliver(client: &Client, entry: &Entry, elicitation: &Elicitation, queued: &Q
     }
 }
 
-/// Approve a plan review that plan-into approves on its own, or write the card for an elicitation.
-/// A failed auto-approval tries again on later polls, after waits that double, and falls back
-/// to a card after `APPROVE_TRIES`.
+/// Approve a plan review of a plan-into session, or write the card for an elicitation. Triage
+/// approves every plan of a plan-into session itself. The first runs on the model the launch
+/// named, and a later one on the model the session already runs on. A failed approval tries
+/// again on later polls, after waits that double. After `APPROVE_TRIES` the plan also gets a
+/// card, which shows the failure, and the tries go on until one works or the user answers it.
 fn answer_or_card(
     memo: &mut Memo,
     db: &Db,
@@ -860,11 +879,8 @@ fn answer_or_card(
     called: &mut bool,
 ) -> usize {
     let id = card_id(&entry.sid, elicitation);
-    if matches!(db.card(&id), Ok(Some(_))) {
-        return 0;
-    }
+    let carded = matches!(db.card(&id), Ok(Some(_)));
     if is_plan_review(&elicitation.schema)
-        && !entry.auto_approved
         && let Some(plan_into) = &entry.plan_into
     {
         let (tries, due) = memo.approve_tries.get(&id).copied().unwrap_or_default();
@@ -872,17 +888,17 @@ fn answer_or_card(
             return 0;
         }
         *called = true;
-        let executor = plan_into.model.as_deref().unwrap_or("@smol");
-        let approved = approve(client, &entry.sid, elicitation, Some(executor), plan_into.thinking.as_deref());
+        let run = entry.executor.as_ref().unwrap_or(plan_into);
+        let executor = run.model.as_deref().unwrap_or("@smol");
+        let approved = approve(client, &entry.sid, elicitation, Some(executor), run.thinking.as_deref());
         match approved {
             Ok(()) => {
                 memo.approve_tries.remove(&id);
                 let executor = PlanInto {
                     model: Some(executor.to_owned()),
-                    thinking: plan_into.thinking.clone(),
+                    thinking: run.thinking.clone(),
                 };
                 let _ = update(db, &entry.sid, |entry| {
-                    entry.auto_approved = true;
                     entry.planning = false;
                     entry.executor = Some(executor);
                 });
@@ -892,15 +908,16 @@ fn answer_or_card(
                 if tries == 0 {
                     eprintln!("triage: ompsdk: plan approval {}: {error}", entry.sid);
                 }
-                if tries + 1 < APPROVE_TRIES {
-                    memo.approve_tries
-                        .insert(id, (tries + 1, now + wait_ms(CALL_WAIT_MS, tries + 1)));
+                memo.approve_tries
+                    .insert(id, (tries + 1, now + wait_ms(CALL_WAIT_MS, tries + 1)));
+                if carded || tries + 1 < APPROVE_TRIES {
                     return 0;
                 }
-                // A plan that will not approve falls back to a card for the user to answer.
-                memo.approve_tries.remove(&id);
+                // A plan that will not approve also gets a card for the user to answer.
             }
         }
+    } else if carded {
+        return 0;
     }
     // A new question means the session read the answers the user gave before it.
     if !entry.answers.is_empty() {
@@ -1012,11 +1029,17 @@ fn approve(
     if executor.is_some() {
         configure(client, sid, executor, effort)?;
     }
-    client.respond(
-        sid,
-        &elicitation.rpc_id,
-        json!({"action": "accept", "content": {"value": PLAN_APPROVE}}),
-    )
+    let accept = json!({"action": "accept", "content": {"value": PLAN_APPROVE}});
+    // omp keeps a review open when its agent proposes again. Each earlier one is accepted
+    // first, so none stays open to hold the session's report back.
+    let earlier = client.elicitations(sid);
+    for review in earlier
+        .iter()
+        .filter(|open| is_plan_review(&open.schema) && open.rpc_id != elicitation.rpc_id)
+    {
+        client.respond(sid, &review.rpc_id, accept.clone())?;
+    }
+    client.respond(sid, &elicitation.rpc_id, accept)
 }
 
 /// Set the model a selector names, then the thinking level. A selector-less launch sets only the level.
@@ -1164,7 +1187,6 @@ pub(super) fn launch_brief(
         entry.closing = false;
         entry.continues = 0;
         entry.cuts = 0;
-        entry.auto_approved = false;
         entry.plan_into = plan_into;
         // A brief steered into a running turn leaves that turn's mode as it was.
         if !taken {

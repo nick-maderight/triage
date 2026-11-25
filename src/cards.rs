@@ -3158,6 +3158,8 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
         );
     }
     if let Some(sid) = ompsdk::session_id(card) {
+        // Approve runs the plan on omp's smol role unless the answer names a model.
+        let executor = executor.or_else(|| (option == Some(0) && ompsdk::has_role("smol")).then_some("@smol"));
         return ompsdk_track::answer_plan(
             db,
             card,
@@ -3181,6 +3183,12 @@ fn answer_plan(db: &Db, card: &Card, req: &AnswerReq, launch: &Launch) -> Result
         return hand_plan_to_dsh(db, card, req, pane, executor, executor_effort, launch);
     }
     let recorded = if option == Some(0) {
+        // Approve moves the slider to the smol role when the review offers it and the answer names no role.
+        let executor = executor.or_else(|| {
+            omp::plan_execution_models(&screen)
+                .filter(|(roles, _)| roles.iter().any(|role| role == "smol"))
+                .map(|_| "@smol")
+        });
         let role = if let Some(executor) = executor {
             let role = executor
                 .strip_prefix('@')

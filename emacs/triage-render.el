@@ -445,7 +445,7 @@ DRAFT supplies the chosen values and ACTIONS-FN supplies the actions."
      (format "Execution model: %s"
              (cond (has-executor executor)
                    (dsh "Default (current model)")
-                   (t "Default (current Plan Review role)")))
+                   (t "Default (omp smol role)")))
      "e" nil (funcall actions-fn 'executor))
     (insert "\n")
     (when dsh

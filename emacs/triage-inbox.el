@@ -680,7 +680,7 @@ The choices come from the engine's catalog."
        (when (equal id (alist-get 'id triage-inbox--shown-card))
          (let* ((models (alist-get 'execution_models catalog))
                 (default (format "Default (%s)"
-                                 (if dsh "current model" "current Plan Review role")))
+                                 (if dsh "current model" "omp smol role")))
                 (names (mapcar (lambda (model)
                                  (cons (alist-get 'selector model) (alist-get 'name model)))
                                models))

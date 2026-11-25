@@ -531,7 +531,7 @@ test('plan picker loads cycle roles without replacing the general model catalog'
       'compose-thinking': { options: [], fallback: 'Daemon default' },
       'compose-executor': { options: [], fallback: 'omp smol role' },
       'compose-executor-effort': { options: [], fallback: 'Planner effort' },
-      'plan-executor': { options: [], fallback: 'current Plan Review role' },
+      'plan-executor': { options: [], fallback: 'omp smol role' },
       'plan-executor-effort': { options: [], fallback: 'Planner effort' },
     },
     data = {
@@ -621,7 +621,7 @@ test('a dsh execution effort waits for its execution model', async () => {
       'compose-thinking': { options: [], fallback: 'Daemon default' },
       'compose-executor': { options: [], fallback: 'omp smol role' },
       'compose-executor-effort': { options: [], fallback: 'Planner effort' },
-      'plan-executor': { options: [], fallback: 'current Plan Review role' },
+      'plan-executor': { options: [], fallback: 'omp smol role' },
       'plan-executor-effort': { options: [], fallback: 'Planner effort' },
     },
     dsh = {
@@ -696,7 +696,7 @@ test('a dsh execution effort waits for its execution model', async () => {
 // The last catalog read can belong to another card. The field must describe the card it sits on.
 test('the effort field of a dsh plan card describes that card, whatever catalog was read last', () => {
   const pickers = {
-      'plan-executor': { options: [], fallback: 'current Plan Review role' },
+      'plan-executor': { options: [], fallback: 'omp smol role' },
       'plan-executor-effort': { options: [{ value: 'max' }], fallback: 'Role level' },
     },
     dsh = { engine: 'dsh', models: [{ selector: 'p/fast', efforts: ['low', 'high'] }], default: 'p/fast', thinking: ['low', 'high'] },
