@@ -1976,6 +1976,38 @@ esac
 }
 
 #[tokio::test]
+async fn dispatch_defaults_to_the_selected_engines_mode() {
+    let db = Db::open(Path::new(":memory:")).unwrap();
+    let card = card_from_event(&event(
+        crate::events::T_INFO,
+        "urn:test:dispatch-default-mode",
+        serde_json::json!({"title": "Dispatch"}),
+    ))
+    .unwrap();
+    db.insert_card(&card).unwrap();
+    let id = card.id.clone();
+    let state = state_with(
+        db,
+        crate::cards::Launch {
+            engine: crate::cards::Engine::Ompsdk,
+            ..crate::cards::Launch::default()
+        },
+    );
+    let (address, server) = start_http_server(state.clone()).await;
+    let response = http_request(
+        address,
+        "POST",
+        &format!("/v1/cards/{id}/dispatch"),
+        r#"{"executor":"x; rm -rf ~"}"#,
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.body["error"], "invalid model x; rm -rf ~");
+    assert!(state.db.card(&id).unwrap().unwrap().1.is_none());
+    server.abort();
+}
+
+#[tokio::test]
 async fn dispatch_rejects_executor_outside_plan_into_and_bad_launch_choices() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let card = card_from_event(&event(
@@ -2220,7 +2252,40 @@ async fn skip_and_later_reject_missing_or_nonqueued_cards() {
     server.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
+async fn new_session_defaults_to_plan_into_on_ompsdk() {
+    let directory = TestDir::new("triage-session-default-mode");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let state = state_with(
+        db,
+        crate::cards::Launch {
+            engine: crate::cards::Engine::Ompsdk,
+            ..crate::cards::Launch::default()
+        },
+    );
+    let (address, server) = start_http_server(state).await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.body["error"], "invalid model x; rm -rf ~");
+    server.abort();
+}
+
+#[tokio::test]
+async fn new_session_keeps_goal_as_the_omp_default_mode() {
+    let directory = TestDir::new("triage-session-omp-default-mode");
+    let db = Db::open(&directory.0.join("triage.sqlite")).unwrap();
+    let state = state_with(
+        db,
+        crate::cards::Launch {
+            engine: crate::cards::Engine::Omp,
+            ..crate::cards::Launch::default()
+        },
+    );
+    let (address, server) = start_http_server(state).await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.body["error"], "executor needs mode plan-into");
+    server.abort();
+}
+#[tokio::test]
 async fn concurrent_skip_and_later_only_accept_one_action() {
     let db = Db::open(Path::new(":memory:")).unwrap();
     let card = card_from_event(&event(
@@ -2935,8 +3000,7 @@ async fn dsh_models_follow_the_host_catalog() {
     .await;
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["engine"], "dsh");
-    assert_eq!(parsed["default"], "opencode-go/deepseek-v4.1-flash");
+    assert_eq!(parsed["default_mode"], "goal");
     assert_eq!(parsed["thinking"], serde_json::json!(["off", "low", "high", "max"]));
     let selectors: Vec<&str> = parsed["models"]
         .as_array()
@@ -3052,6 +3116,8 @@ async fn omp_and_ompsdk_models_name_the_daemon_model_and_level() {
         assert_eq!(body["engine"], engine);
         assert_eq!(body["default"], "@opus", "{engine} names the daemon model");
         assert_eq!(body["default_thinking"], "xhigh", "{engine} names the daemon level");
+            if engine == "ompsdk" { "plan-into" } else { "goal" },
+            "{engine} default mode"
     }
 }
 

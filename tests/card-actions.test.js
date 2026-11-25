@@ -256,12 +256,12 @@ test('each key keeps one meaning on every card', () => {
   assert.deepEqual(press(ask, 'J'), ['jump ask']);
   assert.deepEqual(press(SHAPES['dsh ask'], 'J'), ['open dsh'], 'J opens dsh for a dsh card');
   // Dispatch opens in the card's session. A report's open step starts a session of its own.
-  const launches = { d: ['goal', 'investigate'], f: ['goal', 'fix'], A: ['goal', 'act'], p: ['plan', 'act'], P: ['plan-into', 'act'] };
+  const launches = { d: ['', 'investigate'], f: ['', 'fix'], A: ['', 'act'], p: ['plan', 'act'], P: ['plan-into', 'act'] };
   for (const [key, [mode, task]] of Object.entries(launches))
     assert.deepEqual(press(finding, key), [`dispatch finding ${mode} ${task} card session`]);
   assert.deepEqual(press(report, 'p'), ['dispatch done:%6:entry plan act own session']);
   assert.deepEqual(press(report, 'D'), ['dispatch done:%6:entry goal act own session']);
-  assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry goal investigate card session']);
+  assert.deepEqual(press(report, 'd'), ['dispatch done:%6:entry  investigate card session']);
   assert.deepEqual(press(reply, 'w'), ['copy done:%5:entry']);
   assert.deepEqual(press(SHAPES.plan, 'e'), ['picker plan-executor']);
   assert.deepEqual(press(SHAPES['dsh plan'], 'E'), ['picker plan-executor-effort']);

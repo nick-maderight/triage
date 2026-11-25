@@ -35,7 +35,7 @@ const S = {
   dialogFocus: new WeakMap(),
   sheetCardId: null,
   sheetEngine: '',
-  composeMode: 'goal',
+  composeMode: null,
   composeTask: 'fix',
   peekPane: null,
   peekToken: 0,
@@ -202,10 +202,10 @@ const S = {
       key: 'd',
       label: 'Dispatch',
       also: ['fix', 'act', 'plan', 'planInto'],
-      run: (c) => openSheet(c, 'goal', 'investigate'),
+      run: (c) => openSheet(c, null, 'investigate'),
     },
-    fix: { key: 'f', run: (c) => openSheet(c, 'goal', 'fix') },
-    act: { key: 'A', run: (c) => openSheet(c, 'goal', 'act') },
+    fix: { key: 'f', run: (c) => openSheet(c, null, 'fix') },
+    act: { key: 'A', run: (c) => openSheet(c, null, 'act') },
     planInto: { key: 'P', run: (c) => openSheet(c, 'plan-into', 'act') },
     doNext: {
       key: 'D',
@@ -309,7 +309,7 @@ const S = {
         note: '',
         other: '',
         open: false,
-        dispatchMode: 'goal',
+        dispatchMode: null,
         dispatchTask: 'investigate',
         dispatchOption: null,
         dispatchAnswers: null,
@@ -1344,7 +1344,7 @@ const S = {
   function sendAnswers(c) {
     const d = draft(c);
     if (c.questions.some((_, i) => d.answers[i] == null)) return;
-    if (c.kind === 'finding') openSheet(c, 'goal', 'act', { answers: d.answers });
+    if (c.kind === 'finding') openSheet(c, null, 'act', { answers: d.answers });
     else act(c, 'answer', { answers: d.answers, note: noteValue(c) }, 'send');
   }
   function primaryStep(c) {
@@ -1708,7 +1708,7 @@ const S = {
     if (i === options.length && otherAllowed(c)) return toggleOther(c);
     const option = options[i];
     if (!option || !answerable(c) || c.kind === 'info') return;
-    if (c.kind === 'finding') return openSheet(c, 'goal', optionTask(option), { option: i });
+    if (c.kind === 'finding') return openSheet(c, null, optionTask(option), { option: i });
     const needsOther = c.kind === 'plan' && option.label === 'Refine',
       text = needsOther ? draft(c).other.trim() : null;
     if (needsOther && !text) {
@@ -2565,6 +2565,10 @@ const S = {
         thinking = PICKERS['compose-thinking'],
         executor = PICKERS['compose-executor'];
       model.data = data;
+      if ($('#compose')?.open) {
+        const c = sheetCard();
+        setSheetMode(c ? draft(c).dispatchMode : S.composeMode, c);
+      }
       PICKERS['compose-engine'].fallback = daemon;
       model.options = executor.options = options(data.models);
       model.fallback = data.default
@@ -2737,10 +2741,14 @@ const S = {
     return startSession(start, hint);
   }
 
+  function sheetMode(mode) {
+    return mode || PICKERS['compose-model'].data?.default_mode || 'goal';
+  }
+
   async function startSession(start, hint) {
     const prompt = $('#compose-prompt').value.trim(),
       cwd = $('#compose-cwd').value.trim(),
-      mode = S.composeMode;
+      mode = sheetMode(S.composeMode);
     if (!prompt) return;
     // Disable before reading an attached image: a second submit during that read would
     // otherwise start the same session twice.
@@ -2810,7 +2818,7 @@ const S = {
       return;
     }
     const d = draft(c),
-      mode = d.dispatchMode;
+      mode = sheetMode(d.dispatchMode);
     d.note = $('#compose-prompt').value;
     const launch = {
       mode,
@@ -2877,18 +2885,18 @@ const S = {
     return c && draft(c).dispatchAnswers ? tasks.filter((task) => task !== 'investigate') : tasks;
   }
   // Mode says how the session starts. Start sends the mode the sheet shows.
+  // An unpicked mode follows the engine's default. A picked mode sticks.
   function setSheetMode(mode, c = sheetCard()) {
-    if (!Object.hasOwn(MODES, mode)) mode = 'goal';
-    // shortcut: a daemon whose default engine is dsh still shows the omp help lines and
-    // execution fields, which the daemon ignores, because this reads only the Engine field;
-    // resolve the default here once a daemon runs with --engine dsh.
+    if (!Object.hasOwn(MODES, mode)) mode = null;
+    // dsh displays omp help and fields, which the daemon ignores.
     const dsh = $('#compose-engine').value === 'dsh';
     if (c) draft(c).dispatchMode = mode;
     else S.composeMode = mode;
-    selectSegment($('#compose-mode'), mode);
-    $('#compose-mode-help').textContent = (dsh && DSH_MODES[mode]) || MODES[mode];
+    const shown = sheetMode(mode);
+    selectSegment($('#compose-mode'), shown);
+    $('#compose-mode-help').textContent = (dsh && DSH_MODES[shown]) || MODES[shown];
     // dsh has no execution fields, because the sheet's Model and Thinking carry the plan out.
-    $('#compose-models').hidden = dsh || mode !== 'plan-into';
+    $('#compose-models').hidden = dsh || shown !== 'plan-into';
   }
   // Task says what the session is asked to do. A task the context does not offer falls back to Act.
   function setSheetTask(task, c = sheetCard()) {

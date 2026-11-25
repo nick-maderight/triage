@@ -75,7 +75,7 @@ function sheet(cards, daemon = 'omp') {
       shownId: cards[0]?.id ?? null,
       sheetCardId: null,
       sheetEngine: '',
-      composeMode: 'goal',
+      composeMode: null,
       composeTask: 'fix',
       composeNote: '',
       pending: null,
@@ -95,7 +95,7 @@ function sheet(cards, daemon = 'omp') {
         if (selector === 'dialog[open]') return elements['#compose'].open ? elements['#compose'] : null;
         return elements[selector] || null;
       },
-      PICKERS: { 'compose-engine': { fallback: daemon }, 'compose-model': { options: [{}] } },
+      PICKERS: { 'compose-engine': { fallback: daemon }, 'compose-model': { options: [{}], data: null }, plan: { options: [] } },
       setPickerValue: (id, value) => {
         elements[`#${id}`].value = value;
       },
@@ -128,13 +128,14 @@ function sheet(cards, daemon = 'omp') {
         return true;
       },
     });
+  const sheetMode = (mode) => mode || PICKERS['compose-model'].data?.default_mode || 'goal';
   vm.runInContext(
     `${slice('  const answerable =', '  const current =')}\n${functionSource('draft')}\n${functionSource('oneLine')}\n` +
       `${slice('  const noteValue =', '  function pick')}\n` +
-      `${['selectSegment', 'sheetCard', 'sheetTasks', 'setSheetMode', 'setSheetTask', 'openSheet', 'clearSheetCard'].map((name) => functionSource(name)).join('\n')}\n` +
+      `${['selectSegment', 'sheetMode', 'sheetCard', 'sheetTasks', 'setSheetMode', 'setSheetTask', 'openSheet', 'clearSheetCard'].map((name) => functionSource(name)).join('\n')}\n` +
       `${['api', 'startSession', 'dispatchCard', 'submitSheet'].map((name) => functionSource(name, true)).join('\n')}\n` +
       `${slice("  $('#compose-prompt').addEventListener('input'", '  wireSheetImage();')}\n` +
-      'Object.assign(globalThis, { draft, openSheet, clearSheetCard, setSheetMode, setSheetTask, sheetTasks, submitSheet });',
+      'Object.assign(globalThis, { draft, openSheet, clearSheetCard, setSheetMode, setSheetTask, sheetTasks, sheetMode, submitSheet });',
     context,
   );
   return {
@@ -378,6 +379,25 @@ test('Default on an ompsdk daemon hides the tmux session picker', () => {
   assert.equal(pair.hidden, false, 'a picked omp offers the picker');
 });
 
+test('an unpicked mode follows the engine default and a picked mode sticks', async () => {
+  const ui = sheet([finding], 'ompsdk'),
+    catalogs = ui.context.PICKERS['compose-model'];
+  catalogs.data = { default_mode: 'plan-into' };
+  ui.context.openSheet(null, null, 'fix');
+  assert.equal(ui.mode(), 'plan-into');
+  ui.type('Start in Plan into');
+  assert.equal((await ui.launch()).body.mode, 'plan-into');
+  ui.state.cards.push(finding);
+  ui.context.openSheet(finding, null, 'act');
+  assert.equal((await ui.launch()).body.mode, 'plan-into');
+  catalogs.data = { default_mode: 'goal' };
+  ui.context.setSheetMode(ui.state.composeMode, null);
+  assert.equal(ui.mode(), 'goal');
+  ui.context.setSheetMode('plan', null);
+  catalogs.data = { default_mode: 'plan-into' };
+  ui.context.setSheetMode(ui.state.composeMode, null);
+  assert.equal(ui.mode(), 'plan');
+});
 // A plain session sends its mode and its task, and no note. The task is the only part of the
 // brief that a task changes.
 test('a plain session sends its mode and task with no note', async () => {

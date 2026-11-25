@@ -901,13 +901,14 @@ pub enum Start<'a> {
 }
 
 impl<'a> Start<'a> {
-    /// Read the `mode` of every launch route. Only `plan-into` takes an execution model and its effort.
+    /// Read the `mode` of every launch route. A missing mode uses the engine default.
     pub fn parse(
         mode: Option<&str>,
+        engine: Engine,
         executor: Option<&'a str>,
         executor_thinking: Option<&'a str>,
     ) -> Result<Self, String> {
-        let start = match mode.unwrap_or("goal") {
+        let start = match mode.unwrap_or(engine.default_mode()) {
             "goal" => Self::Goal,
             "plan" => Self::Plan,
             "plan-into" => return Ok(Self::PlanInto(executor, executor_thinking)),
@@ -993,8 +994,7 @@ fn option_task(label: &str) -> Task {
 
 /// The start a finding answer names. The same body approves a plan card with an executor, so
 /// only plan-into reads the executor fields.
-fn answer_start(req: &AnswerReq) -> Result<Start<'_>, String> {
-    Ok(match Start::parse(req.mode.as_deref(), None, None)? {
+fn answer_start(req: &AnswerReq, engine: Engine) -> Result<Start<'_>, String> {
         Start::PlanInto(..) => {
             Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
         }
@@ -3396,7 +3396,7 @@ fn answer_finding(
         .options
         .get(index)
         .ok_or_else(|| "finding option is out of range".to_owned())?;
-    let start = answer_start(req)?;
+    let start = answer_start(req, launch.engine)?;
     let task = match req.task.as_deref() {
         None => option_task(&option.label),
         Some(value) => Task::parse(value).ok_or_else(|| "unknown task".to_owned())?,
@@ -3493,7 +3493,7 @@ fn answer_finding_questions(
     if req.answers.len() != card.questions.len() {
         return Err("finding answer needs one answer per question".to_owned());
     }
-    let start = answer_start(req)?;
+    let start = answer_start(req, launch.engine)?;
     let task = match req.task.as_deref().map(Task::parse) {
         None => Task::Act,
         Some(None) => return Err("unknown task".to_owned()),
@@ -4099,6 +4099,12 @@ impl Engine {
             Self::Omp => "omp",
             Self::Dsh => "dsh",
             Self::Ompsdk => "ompsdk",
+        }
+    }
+    pub fn default_mode(self) -> &'static str {
+        match self {
+            Self::Ompsdk => "plan-into",
+            Self::Omp | Self::Dsh => "goal",
         }
     }
 }

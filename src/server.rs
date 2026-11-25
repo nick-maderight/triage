@@ -414,9 +414,6 @@ async fn answer(
     axum::Json(request): axum::Json<AnswerRequest>,
 ) -> axum::response::Response {
     let mut answer = request.answer;
-    if let Err(error) = crate::cards::Start::parse(answer.mode.as_deref(), None, None) {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-    }
     if answer.task.as_deref().is_some_and(|task| crate::cards::Task::parse(task).is_none()) {
         return error_response(axum::http::StatusCode::BAD_REQUEST, "unknown task");
     }
@@ -435,12 +432,19 @@ async fn answer(
         &mut answer.executor,
         &mut answer.executor_thinking,
     );
-    if answer.mode.as_deref() == Some("plan-into")
-        && let Err(error) = crate::cards::plan_into_choices(
-            answer.executor.as_deref(),
-            answer.executor_thinking.as_deref(),
-        )
-    {
+    let checked = crate::cards::Start::parse(
+        answer.mode.as_deref(),
+        launch.engine,
+        answer.executor.as_deref(),
+        answer.executor_thinking.as_deref(),
+    )
+    .and_then(|start| match start {
+        crate::cards::Start::PlanInto(executor, effort) => {
+            crate::cards::plan_into_choices(executor, effort)
+        }
+        _ => Ok(()),
+    });
+    if let Err(error) = checked {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     let image = match store_image(state.db.path(), request.image).await {
@@ -597,13 +601,6 @@ async fn dispatch(
     request: Option<axum::Json<DispatchRequest>>,
 ) -> axum::response::Response {
     let mut request = request.map(|request| request.0).unwrap_or_default();
-    if let Err(error) = crate::cards::Start::parse(
-        request.mode.as_deref(),
-        request.executor.as_deref(),
-        request.executor_thinking.as_deref(),
-    ) {
-        return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
-    }
     let task = match request.task.as_deref() {
         None => crate::cards::Task::Investigate,
         Some(task) => match crate::cards::Task::parse(task) {
@@ -626,12 +623,19 @@ async fn dispatch(
         &mut request.executor,
         &mut request.executor_thinking,
     );
-    if request.mode.as_deref() == Some("plan-into")
-        && let Err(error) = crate::cards::plan_into_choices(
-            request.executor.as_deref(),
-            request.executor_thinking.as_deref(),
-        )
-    {
+    let checked = crate::cards::Start::parse(
+        request.mode.as_deref(),
+        launch.engine,
+        request.executor.as_deref(),
+        request.executor_thinking.as_deref(),
+    )
+    .and_then(|start| match start {
+        crate::cards::Start::PlanInto(executor, effort) => {
+            crate::cards::plan_into_choices(executor, effort)
+        }
+        _ => Ok(()),
+    });
+    if let Err(error) = checked {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     let note = request.note.filter(|note| !note.trim().is_empty());
@@ -647,6 +651,7 @@ async fn dispatch(
         // `Start` borrows its fields, so the closure parses the owned values again.
         let start = crate::cards::Start::parse(
             mode.as_deref(),
+            launch.engine,
             executor.as_deref(),
             executor_thinking.as_deref(),
         )?;
@@ -1043,6 +1048,7 @@ async fn models(
             "default": default,
             "thinking": crate::dsh::THINKING,
             "default_thinking": default_thinking,
+            "default_mode": engine.default_mode(),
         }))
         .into_response();
     }
@@ -1053,6 +1059,7 @@ async fn models(
         "models": catalog.models,
         "execution_models": catalog.execution_models,
         "thinking": crate::cards::THINKING_LEVELS,
+        "default_mode": engine.default_mode(),
     });
     if daemon {
         body["default"] = serde_json::json!(state.launch.model);
@@ -1123,11 +1130,19 @@ async fn start_session(
     );
     // Reject a bad mode or task now; the worker parses the mode again, because `Start` borrows
     // the request.
-    if let Err(error) = crate::cards::Start::parse(
+    let checked = crate::cards::Start::parse(
         request.mode.as_deref(),
+        launch.engine,
         request.executor.as_deref(),
         request.executor_thinking.as_deref(),
-    ) {
+    )
+    .and_then(|start| match start {
+        crate::cards::Start::PlanInto(executor, effort) => {
+            crate::cards::plan_into_choices(executor, effort)
+        }
+        _ => Ok(()),
+    });
+    if let Err(error) = checked {
         return error_response(axum::http::StatusCode::BAD_REQUEST, &error);
     }
     let task = match request.task.as_deref() {
@@ -1148,6 +1163,7 @@ async fn start_session(
         let outcome = (|| {
             let start = crate::cards::Start::parse(
                 request.mode.as_deref(),
+                launch.engine,
                 request.executor.as_deref(),
                 request.executor_thinking.as_deref(),
             )?;

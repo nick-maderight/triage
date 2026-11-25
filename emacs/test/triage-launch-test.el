@@ -201,7 +201,7 @@
         (should prompt-called)))))
 
 (ert-deftest triage-launch-test-context-opens-a-dispatch-sheet ()
-  "A context launch opens a Dispatch sheet on Goal and Fix with an empty body."
+  "A context launch opens a Dispatch sheet on the engine default mode and Fix."
   (let ((buffer (get-buffer-create triage-launch--context-buffer))
         catalog-engine)
     (with-current-buffer buffer
@@ -216,7 +216,8 @@
           (triage-launch-context "Org: Child\n\nChild body\n" "/tmp/" "dsh")
           (with-current-buffer buffer
             (should (eq triage-launch--kind 'context))
-            (should (equal triage-launch--mode "goal"))
+            (should-not triage-launch--mode)
+            (should (equal (triage-launch--effective-mode) "goal"))
             (should (equal triage-launch--task "fix"))
             (should (equal (triage-launch--body) ""))
             (should (equal triage-launch--cwd "/tmp/"))
@@ -289,7 +290,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest triage-launch-test-new-session-repairs-invalid-mode ()
-  "A remembered non-string mode resets to goal when a sheet opens."
+  "A remembered non-string mode resets to the engine default."
   (let ((buffer (get-buffer-create triage-launch--compose-buffer))
         (triage-launch--last-compose-mode '((mode . "plan"))))
     (unwind-protect
@@ -298,11 +299,27 @@
                   ((symbol-function 'pop-to-buffer) #'ignore))
           (triage-new-session)
           (with-current-buffer buffer
-            (should (equal triage-launch--mode "goal"))
-            (should (equal triage-launch--last-compose-mode "goal"))
+            (should-not triage-launch--mode)
+            (should-not triage-launch--last-compose-mode)
+            (should (equal (triage-launch--effective-mode) "goal"))
             (should (= (point) (point-max)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest triage-launch-test-unpicked-mode-follows-the-engine-default ()
+  (with-temp-buffer
+    (triage-launch-mode)
+    (setq triage-launch--catalogs
+          '(("ompsdk" (engine . "ompsdk") (default_mode . "plan-into"))
+            ("omp" (engine . "omp") (default_mode . "goal")))
+          triage-launch--engine "ompsdk")
+    (triage-launch--set-mode nil)
+    (should (equal (triage-launch--effective-mode) "plan-into"))
+    (setq triage-launch--engine "omp")
+    (should (equal (triage-launch--effective-mode) "goal"))
+    (triage-launch--set-mode "plan")
+    (setq triage-launch--engine "ompsdk")
+    (should (equal (triage-launch--effective-mode) "plan"))))
 
 (ert-deftest triage-launch-test-compose-submit-recovers-from-invalid-mode ()
   "Repair a bad sheet mode and keep the sheet ready after a failed launch."
@@ -348,6 +365,15 @@
         (should-error (triage-launch--submit-session))
         (should-not triage-launch--starting)
         (should (= calls 3))))))
+
+(ert-deftest triage-launch-test-start-session-sends-null-for-an-unpicked-mode ()
+  (let (body)
+    (cl-letf (((symbol-function 'triage-api-request)
+               (lambda (&rest args)
+                 (setq body (plist-get (cddr args) :body))))
+              ((symbol-function 'triage-launch--effective-mode) (lambda () "plan-into")))
+      (triage-start-session "Task")
+      (should (eq (alist-get 'mode body) :null)))))
 
 (ert-deftest triage-launch-test-start-session-rejects-structured-mode ()
   "The session API rejects a structured or retired mode and an unknown task."

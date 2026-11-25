@@ -994,10 +994,12 @@
           field.dispatchEvent(new Event('input', { bubbles: true }));
         };
       try {
+        const engine = document.querySelector('#compose-engine').value,
+          catalog = await (await fetch(`/v1/models${engine ? `?engine=${engine}` : ''}`)).json(),
+          expected = catalog.default_mode || 'goal';
         press('d');
         await waitFor(() => dialog.open, 'session sheet open');
-        assert(mode('goal').getAttribute('aria-checked') === 'true', 'd selects Goal');
-        assert(!mode('goal').hidden, 'a card shows Goal');
+        await waitFor(() => mode(expected).getAttribute('aria-checked') === 'true', 'd opens on the engine default mode');
         assert(task('investigate').getAttribute('aria-checked') === 'true', 'd selects Investigate');
         assert(task('act').getAttribute('aria-checked') === 'false', 'Act starts unchecked');
         assert(document.querySelector('#compose-target').hidden, 'a card hides the directory and tmux session');
@@ -1042,7 +1044,7 @@
         press('A');
         await waitFor(() => dialog.open, 'session sheet open from A');
         assert(task('act').getAttribute('aria-checked') === 'true', 'A selects Act');
-        assert(mode('goal').getAttribute('aria-checked') === 'true', 'A keeps Goal');
+        assert(mode(expected).getAttribute('aria-checked') === 'true', 'A keeps the engine default mode');
         assert(note.value === 'note from the card', 'the sheet opens on the card note');
         return { scenario: 'session', passed: true };
       } finally {

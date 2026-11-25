@@ -5703,13 +5703,25 @@ fn execution_effort_belongs_to_each_engine() {
 #[test]
 fn start_parse_refuses_an_execution_effort_outside_plan_into() {
     assert_eq!(
-        Start::parse(Some("plan"), None, Some("low")),
+        Start::parse(Some("plan"), Engine::Omp, None, Some("low")),
         Err("executor thinking needs mode plan-into".to_owned())
     );
     assert!(matches!(
-        Start::parse(Some("plan-into"), Some("deepseek-flash"), Some("low")),
         Ok(Start::PlanInto(Some("deepseek-flash"), Some("low")))
     ));
+}
+#[test]
+fn a_launch_without_a_mode_starts_in_its_engines_default_mode() {
+    assert_eq!(
+        Start::parse(None, Engine::Ompsdk, None, None),
+        Ok(Start::PlanInto(None, None))
+    );
+    assert_eq!(
+        Start::parse(None, Engine::Ompsdk, Some("@smol"), Some("low")),
+        Ok(Start::PlanInto(Some("@smol"), Some("low")))
+    );
+    assert_eq!(Start::parse(None, Engine::Omp, None, None), Ok(Start::Goal));
+    assert_eq!(Start::parse(None, Engine::Dsh, None, None), Ok(Start::Goal));
 }
 
 #[test]

@@ -79,7 +79,7 @@ test('finding question review allows per-question Other and opens Act dispatch',
     dispatchButton = findNodes(review, (item) => item.props?.id === 'send-answers')[0];
   assert.equal(dispatchButton.children.includes('Dispatch answers'), true);
   dispatchButton.props.onClick();
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[card, 'goal', 'act', { answers: [{ option: 0 }] }]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[card, null, 'act', { answers: [{ option: 0 }] }]]);
 });
 test('finding question without Other hides custom text', () => {
   const card = {
@@ -256,7 +256,7 @@ test('finding answer dispatch forwards answers, image, mode and plan-into effort
       act: async (...args) => { requests.push(args); return true; },
     });
   vm.runInContext(
-    `${functionSource('sheetCard')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
+    `${functionSource('sheetMode')}\n${functionSource('sheetCard')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
 
