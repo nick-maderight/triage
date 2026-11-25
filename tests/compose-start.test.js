@@ -79,7 +79,7 @@ function harness() {
     showDialog: (dialog) => dialog.showModal(),
   });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
+    `${functionSource('api', true)}\n${functionSource('sheetMode')}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
   return { context, prompt, start, hint, compose, other, toasts, announcements, requests, answer };

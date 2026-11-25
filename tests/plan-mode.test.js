@@ -114,7 +114,7 @@ test('d, A, p, P and c open the session sheet with matching modes and tasks whil
       openSettings: () => actions.push(['settings']),
     });
   vm.runInContext(
-    `${tableSources}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${functionSource('openCompose')}\n${keydownSource}`,
+    `${tableSources}\n${functionSource('sheetMode')}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${functionSource('openCompose')}\n${keydownSource}`,
     context,
   );
 
@@ -314,7 +314,7 @@ test('the session sheet posts model and thinking for every card mode', async () 
       },
     });
   vm.runInContext(
-    `${functionSource('sheetCard')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
+    `${functionSource('sheetMode')}\n${functionSource('sheetCard')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
 
@@ -438,7 +438,7 @@ test('finding options open the session sheet and answer with its choices', async
       },
     });
   vm.runInContext(
-    `${functionSource('optionTask')}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${functionSource('pick')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.pick = pick; globalThis.submitSheet = submitSheet;`,
+    `${functionSource('sheetMode')}\n${functionSource('optionTask')}\n${functionSource('selectSegment')}\n${functionSource('sheetCard')}\n${functionSource('sheetTasks')}\n${functionSource('setSheetMode')}\n${functionSource('setSheetTask')}\n${functionSource('openSheet')}\n${functionSource('pick')}\n${functionSource('dispatchCard', true)}\n${functionSource('submitSheet', true)}\nglobalThis.pick = pick; globalThis.submitSheet = submitSheet;`,
     context,
   );
   context.pick(card, 0);
@@ -495,7 +495,7 @@ test('a plain session posts its mode and the execution model only for Plan into'
       sheetImageBody: async () => null,
     });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
+    `${functionSource('api', true)}\n${functionSource('sheetMode')}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
 
