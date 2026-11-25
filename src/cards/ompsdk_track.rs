@@ -211,6 +211,30 @@ fn update(db: &Db, sid: &str, change: impl FnOnce(&mut Entry)) -> Result<(), Str
         }
     })
 }
+fn rebuilt(card: &Card, sid: &str) -> Result<Entry, String> {
+    Ok(Entry {
+        sid: sid.to_owned(),
+        cwd: workdir(&card.source.cwd)?,
+        title: card.source.label.clone(),
+        ..Entry::default()
+    })
+}
+
+fn adopt(db: &Db, card: &Card, sid: &str) -> Result<Entry, String> {
+    if let Some(entry) = lookup(db, sid) {
+        return Ok(entry);
+    }
+    if lease_held(sid)? {
+        return Err("session is held by another omp".to_owned());
+    }
+    let entry = rebuilt(card, sid)?;
+    edit(db, |state| {
+        if !state.sessions.iter().any(|known| known.sid == sid) {
+            state.sessions.push(entry.clone());
+        }
+    })?;
+    Ok(entry)
+}
 
 /// The socket the ompsdk engine reaches the daemon on.
 fn socket(launch: &Launch) -> Result<&Path, String> {
@@ -978,9 +1002,9 @@ fn settle(memo: &mut Memo, db: &Db, client: &Client, entry: &Entry, now: i64) ->
         omp::TurnEnd::Reply { entry_id, text, report, .. } => {
             let status = report.is_some() || omp::final_report(&text).is_some();
             if !status && entry.continues < MAX_CONTINUES {
+                let at = if entry.brief.is_empty() { String::new() } else { format!(" at {}", entry.brief) };
                 let prompt = format!(
-                    "Continue the triage brief at {}. Finish every open part, then reply with the final report its format describes, starting with the ENVOY_STATUS line.",
-                    entry.brief
+                    "Continue the triage brief{at}. Finish every open part, then reply with the final report its format describes, starting with the ENVOY_STATUS line."
                 );
                 memo.running.remove(sid);
                 match client.prompt(sid, prompt_blocks(&prompt, None)) {
@@ -1151,8 +1175,7 @@ fn begin(
     client.prompt(sid, prompt_blocks(&first_prompt(brief, start)?, image))
 }
 
-/// Give a brief to the card's ompsdk session. A session this connection has yet to bind is
-/// resumed first. A card with no ompsdk session starts one.
+/// Give a brief to the card's session, rebuilding a missing state entry from its card.
 pub(super) fn launch_brief(
     db: &Db,
     card: &Card,
@@ -1164,7 +1187,7 @@ pub(super) fn launch_brief(
     let Some(sid) = ompsdk::session_id(card) else {
         return launch_new(db, launch, &workdir(&card.source.cwd)?, brief, start, image, &card.title);
     };
-    let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
+    let entry = adopt(db, card, sid)?;
     let planning = matches!(start, Start::Plan | Start::PlanInto(..));
     let text = dispatch_prompt(brief);
     let taken = retrying(|| {
@@ -1232,10 +1255,8 @@ fn sent(outcome: Result<(), String>) -> Result<bool, String> {
 /// Keep an answer in the session's entry. One that was not sent also marks the session for
 /// the poll, which sends it to its question once that is open again, or reopens a cut session
 /// with the answer in the cut prompt.
-fn remember(db: &Db, sid: &str, said: Said, change: impl FnOnce(&mut Entry)) -> Result<(), String> {
-    if lookup(db, sid).is_none() {
-        return Err("ompsdk session is no longer tracked".to_owned());
-    }
+fn remember(db: &Db, card: &Card, sid: &str, said: Said, change: impl FnOnce(&mut Entry)) -> Result<(), String> {
+    adopt(db, card, sid)?;
     update(db, sid, |entry| {
         if said.queued.is_some() {
             entry.cut = true;
@@ -1322,7 +1343,7 @@ pub(super) fn answer_ask(db: &Db, card: &Card, sid: &str, req: &AnswerReq, launc
         text,
         queued: (!delivered).then_some(Queued::Ask(answers)),
     };
-    remember(db, sid, said, |_| {})?;
+    remember(db, card, sid, said, |_| {})?;
     let reason = if delivered { "sent to ompsdk" } else { "queued for ompsdk" };
     if record_swipe(db, &card.id, "done", option, typed, req.note.clone(), Some(reason.to_owned())) {
         Ok(())
@@ -1382,7 +1403,7 @@ pub(super) fn answer_plan(
         model: Some(model.to_owned()),
         thinking: executor_effort.map(str::to_owned),
     });
-    remember(db, sid, said, |entry| {
+    remember(db, card, sid, said, |entry| {
         if feedback.is_none() {
             entry.planning = false;
             entry.executor = ran_on;
@@ -1433,7 +1454,7 @@ pub(super) fn close(db: &Db, card: &Card, sid: &str, note: Option<&str>) -> Resu
 /// Ask an idle ompsdk session for its final report. A session still running, or waiting on an
 /// answer, refuses the request.
 pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -> Result<(), String> {
-    let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
+    let entry = adopt(db, card, sid)?;
     let request = report_request(db)?;
     retrying(|| {
         let client = ompsdk::client(socket(launch)?)?;
@@ -1468,7 +1489,10 @@ pub(super) fn request_report(db: &Db, card: &Card, sid: &str, launch: &Launch) -
 /// that was still running, or that a restart cut, resumes with the cut prompt. The work then
 /// goes on where it stopped.
 pub(super) fn open_cli(db: &Db, card: &Card, sid: &str, launch: &Launch) -> Result<(), String> {
-    let entry = lookup(db, sid).ok_or("ompsdk session is no longer tracked")?;
+    let entry = match lookup(db, sid) {
+        Some(entry) => entry,
+        None => rebuilt(card, sid)?,
+    };
     let mut running = entry.cut;
     if entry.loaded {
         running |= retrying(|| {

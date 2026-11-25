@@ -12426,14 +12426,18 @@ fn ompsdk_card(db: &Db, id: &str, kind: Kind) -> Card {
     card
 }
 
-/// A bin directory with the fake tmux and an `omp` whose session lease holds nothing.
+/// A bin directory with fake tmux and omp, which can report a lease for sid-1.
 #[cfg(unix)]
 fn ompsdk_cli_bin(root: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let bin = fake_tmux(root);
     let omp = bin.join("omp");
-    fs::write(&omp, "#!/bin/sh\necho '{\"held\": false}'\n").unwrap();
+    fs::write(
+        &omp,
+        "#!/bin/sh\nif [ -f \"$HOME/lease-held\" ]; then echo '{\"held\": [\"sid-1\"]}'; else echo '{\"held\": false}'; fi\n",
+    )
+    .unwrap();
     fs::set_permissions(&omp, fs::Permissions::from_mode(0o700)).unwrap();
     bin
 }
@@ -12631,6 +12635,90 @@ fn ompsdk_open_cli_idle_child() {
     assert!(!window.contains("Continue where you stopped."), "{window}");
     let (_, swipe) = db.card(&card.id).unwrap().unwrap();
     assert_eq!(swipe.unwrap().text.as_deref(), Some("Open in CLI"));
+}
+/// Copy a card as the reload route does, assigning a fresh id and creation time.
+#[cfg(unix)]
+fn reload_ompsdk_card(db: &Db, card: &Card) -> Card {
+    let mut copy = card.clone();
+    copy.id = format!("reload:{}:copy", card.id);
+    copy.created_ms = events::now_ms();
+    db.insert_card(&copy).unwrap();
+    copy
+}
+
+#[test]
+fn ompsdk_reloaded_card_opens_in_cli_after_close_forgets_its_entry() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let bin = ompsdk_cli_bin(scratch.path());
+    run_child("ompsdk_reloaded_cli_child", scratch.path(), Some(&scratch.path().join("home")), Some(&bin));
+}
+
+#[test]
+fn ompsdk_reloaded_cli_child() {
+    let Some(root) = child_root("ompsdk_reloaded_cli_child") else { return };
+    write_ompsdk_transcript(&root.join("home"), &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Reload it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| {
+        let state: Value = serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap()).unwrap();
+        state["sessions"][0]["loaded"] == false && state["sessions"][0]["closing"] == false
+    });
+    super::close(&db, &card, None, &launch).unwrap();
+    assert!(!ompsdk_track::tracked(&db, "sid-1"));
+    let copy = reload_ompsdk_card(&db, &card);
+    ompsdk_track::open_cli(&db, &copy, "sid-1", &launch).unwrap();
+    let log = fs::read_to_string(root.join("home/tmux.log")).unwrap();
+    assert!(log.contains("omp --resume='"), "{log}");
+    let swipe = db.card(&copy.id).unwrap().unwrap().1.unwrap();
+    assert_eq!(swipe.text.as_deref(), Some("Open in CLI"));
+}
+
+#[test]
+fn ompsdk_reloaded_card_dispatch_retracks_unheld_session_and_blocks_held_lease() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    let bin = ompsdk_cli_bin(scratch.path());
+    run_child("ompsdk_reloaded_dispatch_child", scratch.path(), Some(&scratch.path().join("home")), Some(&bin));
+}
+
+#[test]
+fn ompsdk_reloaded_dispatch_child() {
+    let Some(root) = child_root("ompsdk_reloaded_dispatch_child") else { return };
+    let home = root.join("home");
+    write_ompsdk_transcript(&home, &[ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone.")]);
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO plain");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Reload it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e1").unwrap().is_some());
+    let (card, _) = db.card("done:ompsdk:sid-1:e1").unwrap().unwrap();
+    ompsdk_poll_until(&mut memo, &db, &launch, |_| {
+        let state: Value = serde_json::from_str(&fs::read_to_string(root.join("ompsdk-sessions.json")).unwrap()).unwrap();
+        state["sessions"][0]["loaded"] == false && state["sessions"][0]["closing"] == false
+    });
+    super::close(&db, &card, None, &launch).unwrap();
+    let copy = reload_ompsdk_card(&db, &card);
+    let next = ompsdk_brief(&root, "next.md", "SCENARIO plain");
+    fs::write(home.join("lease-held"), "").unwrap();
+    assert_eq!(ompsdk_track::launch_brief(&db, &copy, &launch, &next, Start::Goal, None).unwrap_err(), "session is held by another omp");
+    assert_eq!(fake.count("session/resume"), 0);
+    fs::remove_file(home.join("lease-held")).unwrap();
+    write_ompsdk_transcript(&home, &[
+        ompsdk_entry("e1", "ENVOY_STATUS: complete\n\nDone."),
+        ompsdk_entry("e2", "ENVOY_STATUS: complete\n\nNext step done."),
+    ]);
+    assert_eq!(ompsdk_track::launch_brief(&db, &copy, &launch, &next, Start::Goal, None).unwrap(), "ompsdk:sid-1");
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| db.card("done:ompsdk:sid-1:e2").unwrap().is_some());
 }
 
 #[test]

@@ -140,7 +140,7 @@ A pool with many sessions answers late, and triage waits for it. Each call to th
 
 A dispatch goes to the engine the sheet names. With Engine `ompsdk` an ompsdk card's brief continues the card's own session and ignores `new_window`. Picking `omp` for that card opens an omp window instead.
 
-Open in CLI (`O`) closes the daemon session and opens `omp --resume=<transcript>` in a tmux window. Triage refuses when another omp holds a lease. If a turn was running, or a restart had cut it, the new window adds "Continue where you stopped." Close (`C`) closes the session. Request final report (`r`) works only while it is idle. Peek and Jump are not offered.
+Open in CLI (`O`) closes the daemon session and opens `omp --resume=<transcript>` in a tmux window. Triage refuses when another omp holds a lease. If a turn was running, or a restart had cut it, the new window adds "Continue where you stopped." Close (`C`) closes the session. Request final report (`r`) works only while it is idle. Peek and Jump are not offered. Triage rebuilds forgotten session entries from their cards after a reload or dispatch. It blocks resume while another omp holds the lease.
 
 #### Sessions after a restart
 
