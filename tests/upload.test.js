@@ -41,7 +41,7 @@ function compose(requests, image) {
       sheetImageBody: image,
     });
   vm.runInContext(
-    `${functionSource('api', true)}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
+    `${functionSource('api', true)}\n${functionSource('sheetMode')}\n${functionSource('sheetCard')}\n${functionSource('startSession', true)}\n${functionSource('submitSheet', true)}\nglobalThis.submitSheet = submitSheet;`,
     context,
   );
   return { context, hint, start };
