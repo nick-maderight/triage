@@ -295,7 +295,7 @@ The Emacs client lives in `emacs/`. With Emacs 30.1 or newer and dependencies un
 
 To load changed Emacs files into a running Emacs, run `make -C emacs compile` and then `emacsclient --eval '(triage-reload)'`. A plain `load` keeps each Triage keymap as Emacs first defined it. A new key then stays unbound until Emacs restarts.
 
-Update `--engine` and `--ompsdk-socket` on the live unit's `ExecStart` only if you intend to change its engine configuration. Do not reinstall the repository unit over personal flags.
+Keep the live user unit's `ExecStart` flags during builds and installs. Change them only when changing engine configuration.
 
 ## License
 MIT. See `LICENSE`. The bundled Geist and Geist Mono fonts in `ui/fonts/` are under the SIL Open Font License 1.1, in `ui/fonts/OFL.txt`.
