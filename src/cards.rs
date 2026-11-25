@@ -995,6 +995,7 @@ fn option_task(label: &str) -> Task {
 /// The start a finding answer names. The same body approves a plan card with an executor, so
 /// only plan-into reads the executor fields.
 fn answer_start(req: &AnswerReq, engine: Engine) -> Result<Start<'_>, String> {
+    Ok(match Start::parse(req.mode.as_deref(), engine, None, None)? {
         Start::PlanInto(..) => {
             Start::PlanInto(req.executor.as_deref(), req.executor_thinking.as_deref())
         }
