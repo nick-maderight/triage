@@ -3,7 +3,7 @@
 //! cards, and keeps what the poll loop needs in `ompsdk-sessions.json` beside the database.
 
 use super::{
-    DEFAULT_SESSION, Launch, Start, TickReport, brief_heading, dispatch_prompt, finish_cards, workdir,
+    DEFAULT_SESSION, Launch, Start, TickReport, brief_heading, brief_opening, dispatch_prompt, finish_cards, workdir,
     record_swipe, reply_turn, report_request, shell_quote, supersede_info_cards, trail, turn_card,
 };
 use crate::db::Db;
@@ -1094,15 +1094,16 @@ fn plan_into_of(start: Start) -> Option<PlanInto> {
 }
 
 /// The first prompt of a session. A goal names the brief and asks for all of it, while a plan
-/// reads the brief the way a dispatch does.
+/// reads the brief the way a dispatch does. Both quote the start of the brief's task.
 fn first_prompt(brief: &Path, start: Start) -> Result<String, String> {
+    let opening = brief_opening(brief)?;
     Ok(match start {
         Start::Goal => format!(
-            "{}\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you finish; it holds the full task and the report format.",
+            "{}\n\nCarry out the triage brief saved at {}. Read the whole file before you start and again before you finish; it holds the full task and the report format.{opening}",
             brief_heading(brief, 120)?,
             brief.display()
         ),
-        Start::Plan | Start::PlanInto(..) => dispatch_prompt(brief),
+        Start::Plan | Start::PlanInto(..) => format!("{}{opening}", dispatch_prompt(brief)),
     })
 }
 
@@ -1189,7 +1190,7 @@ pub(super) fn launch_brief(
     };
     let entry = adopt(db, card, sid)?;
     let planning = matches!(start, Start::Plan | Start::PlanInto(..));
-    let text = dispatch_prompt(brief);
+    let text = format!("{}{}", dispatch_prompt(brief), brief_opening(brief)?);
     let taken = retrying(|| {
         let client = ompsdk::client(socket(launch)?)?;
         let running = bind(db, &client, &entry)?;

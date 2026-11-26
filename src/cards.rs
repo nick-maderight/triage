@@ -1377,6 +1377,30 @@ fn dispatch_prompt(brief: &Path) -> String {
     format!("Read the brief at {} and carry it out.", brief.display())
 }
 
+/// How many characters of a brief's task an ompsdk prompt quotes.
+const BRIEF_OPENING: usize = 1500;
+
+/// The start of a brief's task, quoted after the prompt that names its file. A model gateway
+/// that routes a turn by what the user's message asks for sees only that message, never the
+/// file. Triage's own instructions describe no task and read as hard work whatever the task
+/// is. The quote leaves them out.
+fn brief_opening(brief: &Path) -> Result<String, String> {
+    let mut text = fs::read_to_string(brief).map_err(|error| format!("could not read brief: {error}"))?;
+    let end = ["\n## Instructions\n", ENVOY_STATUS_CONTRACT]
+        .iter()
+        .filter_map(|mark| text.find(mark))
+        .min();
+    text.truncate(end.unwrap_or(text.len()));
+    // Fix goes first because its direction starts with Act's.
+    for task in [Task::Fix, Task::Investigate, Task::Act, Task::Verify, Task::Simplify] {
+        text = text.replace(task.direction(), "");
+    }
+    Ok(format!(
+        "\n\nThe brief's task:\n\n{}",
+        truncate_chars(text.trim().to_owned(), BRIEF_OPENING)
+    ))
+}
+
 /// An info card's dsh brief always goes to its session, which only takes goal briefs. For omp,
 /// type into the source pane only when it waits for input. Otherwise open a new omp window in
 /// the daemon's launch session and never take a window another launch left behind. A new
@@ -4139,8 +4163,8 @@ pub struct Launch {
     pub ompsdk_socket: Option<PathBuf>,
 }
 
-/// The omp model and thinking level that plan for dsh.
-const DSH_PLANNER_MODEL: &str = "@opus";
+/// The omp model and thinking level that plan for dsh. `@plan` is omp's own plan role.
+const DSH_PLANNER_MODEL: &str = "@plan";
 const DSH_PLANNER_THINKING: &str = "xhigh";
 
 impl Launch {
@@ -4172,14 +4196,18 @@ pub fn model_selector(model: Option<&str>) -> Result<Option<&str>, String> {
 /// Validate the launch choices and render the `--model`, `--plan` and `--thinking` flags.
 /// omp moves a session onto its `plan` role model whenever plan mode turns on, so the chosen
 /// model fills that role too and a plan session stays on it, at the launch's thinking level. An
-/// unset model or thinking level leaves the choice to omp's configuration.
+/// unset model or thinking level leaves the choice to omp's configuration. `@plan` is that role
+/// already and omp refuses a plan role that names itself, so it takes no `--plan`.
 pub fn launch_flags(model: Option<&str>, thinking: Option<&str>) -> Result<String, String> {
     let model = model_selector(model)?;
     let thinking = thinking_level(thinking)?;
     Ok(format!(
         "{}{}",
         model
-            .map(|model| format!("--model={model} --plan={} ", plan_selector(model, thinking)))
+            .map(|model| match model.split(':').next() {
+                Some("@plan") => format!("--model={model} "),
+                _ => format!("--model={model} --plan={} ", plan_selector(model, thinking)),
+            })
             .unwrap_or_default(),
         thinking
             .map(|thinking| format!("--thinking={thinking} "))

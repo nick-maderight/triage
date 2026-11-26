@@ -4751,7 +4751,7 @@ fn dsh_plan_opens_an_omp_planner_tagged_with_the_dsh_choice() {
             assert!(
                 window.contains("omp --config '")
                     && window.contains(
-                        "--model=@opus --plan=@opus:xhigh --thinking=xhigh 'Fix the login redirect' @'"
+                        "--model=@plan --thinking=xhigh 'Fix the login redirect' @'"
                     )
                     && !window.contains("--plan-yolo"),
                 "{window}"
@@ -6218,6 +6218,10 @@ fn the_plan_model_takes_the_launch_thinking_level() {
     assert_eq!(
         launch_flags(Some("@opus"), None).unwrap(),
         "--model=@opus --plan=@opus "
+    );
+    assert_eq!(
+        launch_flags(Some("@plan"), Some("xhigh")).unwrap(),
+        "--model=@plan --thinking=xhigh "
     );
 }
 
@@ -11739,12 +11743,25 @@ fn ompsdk_launch_sets_mode_model_and_thinking_then_prompts() {
     assert!(set("model", "openai/gpt-x"));
     assert!(set("thinking", "high"));
     let prompt = wait_for(&fake, |m| m["method"] == "session/prompt");
-    assert!(
-        prompt["params"]["prompt"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains(&brief.display().to_string())
-    );
+    let text = prompt["params"]["prompt"][0]["text"].as_str().unwrap();
+    assert!(text.contains(&brief.display().to_string()), "{text}");
+    // The gateway picks the model from this message, so it carries the task itself.
+    assert!(text.contains("Plan the change"), "{text}");
+}
+
+#[test]
+fn a_brief_opening_quotes_the_task_without_triage_instructions() {
+    let scratch = Scratch::new();
+    let path = scratch.path().join("brief.md");
+    fs::write(&path, session_brief("Rename the key", Start::Plan, Task::Fix, None)).unwrap();
+    assert_eq!(brief_opening(&path).unwrap(), "\n\nThe brief's task:\n\nRename the key");
+
+    // A dispatch keeps the user's note, which follows the task's direction in the brief.
+    let brief = context_brief("Checkout charges twice", Start::Plan, Task::Fix, "A client sees this.", None);
+    fs::write(&path, brief).unwrap();
+    let opening = brief_opening(&path).unwrap();
+    assert!(opening.contains("Checkout charges twice") && opening.ends_with("A client sees this."), "{opening}");
+    assert!(!opening.contains(FIX_DIRECTION) && !opening.contains("## Instructions"), "{opening}");
 }
 
 #[test]

@@ -495,7 +495,7 @@ async fn new_session_dsh_plan_opens_an_omp_planner_tagged_for_dsh() {
             .rfind(|line| line.starts_with("new-window"))
             .unwrap();
         assert!(
-            window.contains("--model=@opus --plan=@opus:xhigh --thinking=xhigh"),
+            window.contains("--model=@plan --thinking=xhigh"),
             "{window}"
         );
         assert!(
