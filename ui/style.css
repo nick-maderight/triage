@@ -1741,7 +1741,7 @@ dialog.picker::backdrop {
 @media (max-width: 639px) {
   :root {
     --gutter: 12px;
-    --bar: 56px;
+    --bar: 48px;
     --hit: 44px;
   }
   .bar {
@@ -1777,68 +1777,126 @@ dialog.picker::backdrop {
   .counts.expanded {
     display: flex;
   }
+  /* The card fills the phone edge to edge. Its frame spends no width on margins or radius. */
   main {
+    width: 100%;
     padding: 0;
   }
   .card {
     min-height: 100%;
-    border-bottom: 0;
-    border-radius: var(--r-panel) var(--r-panel) 0 0;
+    border-width: 1px 0 0;
+    border-radius: 0;
   }
+  /* The status and the deck rail share the first row. The title takes the second. */
   .card-head {
-    padding: 4px 16px 0;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 12px;
+    padding: 0 16px;
   }
-  .queue-line {
+  .card-head > * {
+    grid-column: 1 / -1;
+  }
+  .card-head > .report-status {
+    grid-row: 1;
+    grid-column: 1;
+    margin: 0;
+  }
+  .card-head > .queue-line {
+    grid-row: 1;
+    grid-column: 2;
     gap: 10px;
   }
-  .report-status {
-    margin-top: 4px;
+  .card-head > :is(.title, .title-more) {
+    grid-row: 2;
   }
-  .title {
-    margin-top: 4px;
-    font-size: 22px;
-    line-height: 1.25;
+  .title,
+  .report-status + .title {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+  }
+  /* The toggle covers a clamped title and takes no row of its own. A tap anywhere on the title opens it. */
+  .card-head > .title-more {
+    align-self: stretch;
+    justify-self: stretch;
+    margin: 0;
+    padding: 0;
+    color: var(--clear);
+    text-decoration: none;
+  }
+  .card-head > .title-more:hover:not(:disabled) {
+    background: var(--clear);
   }
   .facts {
-    gap: 4px 14px;
-    margin-top: 10px;
-    padding-bottom: 14px;
+    gap: 2px 12px;
+    margin-top: 6px;
+    padding-bottom: 10px;
   }
   .card-scroll {
     padding: 0 16px 8px;
   }
   .block {
+    position: relative;
     display: block;
-    padding: 14px 0;
+    padding: 10px 0;
   }
   .block h3 {
-    margin: 0 0 6px;
+    margin: 0 0 4px;
+  }
+  .block-content > .md {
+    line-height: 1.5;
   }
   .block.clamp:not(.open) .block-content > .md {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
     overflow: hidden;
-    /* The clamped preview is exactly three lines whatever the Markdown holds, so the
-       Show more control lands where the old plain-text clamp put it. */
-    max-height: 4.8em;
+    /* The clamped preview shows exactly three lines of any Markdown. */
+    max-height: 4.5em;
   }
-  .more {
-    margin-top: 4px;
+  /* Show more and Copy sit on the section's heading row instead of taking rows of their own. */
+  .block.clamp > .more {
+    position: absolute;
+    top: -3px;
+    right: -10px;
+    margin: 0;
+  }
+  .report-toolbar {
+    position: absolute;
+    top: -3px;
+    right: -12px;
+    margin: 0;
+  }
+  /* The final reply scrolls with the card instead of in a box of its own. */
+  .body {
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
   }
   .option {
     grid-template-columns: 24px minmax(0, 1fr) auto;
     gap: 10px;
-    padding: 10px 12px;
+    min-height: 48px;
+    padding: 8px 12px;
   }
   .option > .tag {
     grid-column: 2;
     grid-row: 2;
     justify-self: start;
   }
+  .note,
+  .plan-executor .pair {
+    grid-template-columns: 88px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 8px;
+  }
+  /* The dock is one row. The primary action stays at the right. The others scroll sideways beside it. */
   .dock {
-    flex-wrap: wrap;
-    gap: 6px 0;
+    flex-wrap: nowrap;
     padding: 6px 8px max(6px, env(safe-area-inset-bottom));
     border-radius: 0;
   }
@@ -1846,37 +1904,29 @@ dialog.picker::backdrop {
     display: none;
   }
   .dock > .btn.primary {
-    flex: 1 0 100%;
+    flex: none;
     order: 1;
     margin: 0;
   }
   .dock-group {
-    display: grid;
-    flex: 1 0 100%;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    flex: 1 1 0;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
     gap: 0;
     margin: 0;
-  }
-  .dock-group:has(> :nth-child(4)) {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .dock-group:has(> .pane-actions) {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .dock-group > *,
-  .dock-group .btn {
-    width: 100%;
+    padding-right: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
   }
   .dock-group .btn {
-    padding: 4px 6px;
-    white-space: normal;
-    text-align: center;
+    flex: none;
   }
   .empty {
     min-height: 100%;
     padding: 20px 16px 24px;
-    border-bottom: 0;
-    border-radius: var(--r-panel) var(--r-panel) 0 0;
+    border-width: 1px 0 0;
+    border-radius: 0;
   }
   .empty h2 {
     font-size: 22px;
@@ -1939,12 +1989,84 @@ dialog.picker::backdrop {
   .sheet-head {
     padding: max(8px, env(safe-area-inset-top)) 8px 8px 16px;
   }
-  .compose {
-    padding: 16px 16px 0;
+  /* The session sheet fills the screen. Its prompt takes the height the options leave. Start stays in reach. */
+  #compose {
+    height: calc(100dvh - 24px);
+  }
+  #compose .sheet-head {
+    min-height: 0;
+    padding-block: max(2px, env(safe-area-inset-top)) 2px;
+  }
+  #compose-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 16px 0;
+  }
+  #compose-context {
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding: 0 0 0 10px;
+  }
+  .sheet-context-title {
+    flex: 0 1 auto;
+  }
+  .sheet-context-source {
+    flex: 0 100 auto;
+  }
+  /* The prompt's label shares its row with the microphone and Attach image. */
+  .compose-text {
+    display: grid;
+    flex: 1 0 auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 2px 8px;
+  }
+  .compose-text > .attach {
+    grid-row: 1;
+    grid-column: 2;
+    flex-wrap: nowrap;
+    gap: 0;
+  }
+  #compose-prompt {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    align-self: stretch;
+    resize: none;
+  }
+  .compose-text:has(.attach-preview:not([hidden])) > .attach {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+  .compose-options > :is(.compose-grid, #compose-mode-label, #compose-task-label) {
+    margin-top: 0;
   }
   .compose-grid {
     grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
+    gap: 6px;
+  }
+  .compose-grid .pair {
+    grid-template-columns: 88px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+  /* The buttons name the mode and the task. Because the mode's help says whether a plan waits for review, it stays. */
+  #compose-mode-label,
+  #compose-task-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  #compose-task-help {
+    display: none;
+  }
+  .seg {
+    padding-inline: 4px;
   }
   dialog.picker {
     inset: 0 0 auto;
@@ -1971,10 +2093,16 @@ dialog.picker::backdrop {
     padding: 8px 40px 8px 12px;
   }
   #compose-start {
-    margin-bottom: 12px;
+    position: sticky;
+    bottom: 12px;
+    margin: 6px 0 12px;
+    box-shadow: 0 0 0 12px var(--surface);
   }
   .send-hint {
     padding: 4px 16px 12px;
+  }
+  #compose-hint:empty {
+    padding: 0;
   }
   .keys {
     padding: 16px;

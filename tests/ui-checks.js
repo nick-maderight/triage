@@ -1123,17 +1123,21 @@
         top(card.querySelector('.option')) <= innerHeight * 1.5,
         'the first option starts within one and a half screens',
       );
-      const rows = new Map();
-      card.querySelectorAll('.dock-group .btn').forEach((b) => {
-        const y = Math.round(b.getBoundingClientRect().top);
-        rows.set(y, (rows.get(y) || 0) + 1);
-      });
-      // The number of dock actions varies by card. Only the last row may run short.
-      const counts = [...rows.values()];
+      // The dock is one row whatever the card offers. Actions past the edge scroll sideways.
+      const group = card.querySelector('.dock-group'),
+        tops = new Set(
+          [...card.querySelectorAll('.dock .btn')].map((b) => Math.round(b.getBoundingClientRect().top)),
+        );
+      assert(tops.size <= 1, `the dock holds one row of buttons (${[...tops]})`);
       assert(
-        counts.every((count, i) => (i < counts.length - 1 ? count === counts[0] : count <= counts[0])),
-        `every dock row but the last is full (${counts})`,
+        !group || group.scrollWidth <= group.clientWidth + 1 || getComputedStyle(group).overflowX === 'auto',
+        'dock actions past the edge scroll into reach',
       );
+      if (innerHeight >= 700)
+        assert(
+          scroll.clientHeight >= innerHeight * 0.6,
+          `the card body takes most of the screen (${scroll.clientHeight} of ${innerHeight})`,
+        );
       const small = [...document.querySelectorAll('header button, .card button, .card input')]
         .filter(visible)
         .filter((e) => {
@@ -1287,7 +1291,9 @@
   // scrolls. A window at least 640px wide and 481px tall fills the window with the sheet and
   // gives the field the height the options leave. Past 700px tall, the sheet shows every option
   // without scrolling and at least 12 lines of text. At 960px wide and wider than it is tall,
-  // the options sit beside the text. A card's Dispatch is checked too when the inbox shows a card.
+  // the options sit beside the text. On a phone, Start stays on screen, the Mode and Task buttons
+  // fit the width, and past 700px tall every option shows without scrolling. A card's Dispatch is
+  // checked too when the inbox shows a card.
   const checkSheetText = async () => {
     await waitFor(() => document.querySelector('main > .card, main > .empty'), 'a card or the empty inbox');
     const dialog = document.querySelector('#compose'),
@@ -1297,6 +1303,7 @@
       filled = matchMedia('(min-width: 640px) and (min-height: 481px)').matches,
       split = filled && matchMedia('(min-width: 960px) and (orientation: landscape)').matches,
       touch = matchMedia('(pointer: coarse)').matches,
+      phone = matchMedia('(max-width: 639px)').matches,
       lines = {};
     const measure = async (name) => {
       await waitFor(() => dialog.open, `the ${name} sheet`);
@@ -1333,6 +1340,14 @@
             `${name}: ${button.id || button.className} keeps a 44px touch target`,
           );
         }
+      }
+      if (phone) {
+        const start = document.querySelector('#compose-start').getBoundingClientRect();
+        assert(start.top >= box.top && start.bottom <= box.bottom + 1, `${name}: Start shows without scrolling`);
+        if (innerHeight >= 700)
+          assert(form.scrollHeight <= form.clientHeight + 1, `${name}: every option shows without scrolling`);
+        for (const group of dialog.querySelectorAll('.segmented'))
+          assert(group.scrollWidth <= group.clientWidth + 1, `${name}: ${group.id} fits the sheet width`);
       }
       lines[name] = Math.round(shown * 10) / 10;
     };
