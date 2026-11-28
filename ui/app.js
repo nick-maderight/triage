@@ -919,15 +919,17 @@ const S = {
       }
     });
   }
-  // Clamp Situation, Task, Plan and context-thread Report prose to keep the rest in reach.
-  const clampable = (label) =>
-    label === 'Situation' || label === 'Task' || label === 'Plan' || label === 'Report';
+  // Clamp Situation, Task, Plan and context-thread Report prose to keep the rest in reach. A
+  // question's own step shows its Situation whole, because that text is the question's material.
+  const clampable = (label, card) =>
+    !(label === 'Situation' && card.questions?.length && card.questions[draft(card).step]?.star) &&
+    (label === 'Situation' || label === 'Task' || label === 'Plan' || label === 'Report');
   function block(c, label, ...kids) {
     const content = kids.filter(Boolean);
     if (!content.length) return null;
     const id = ident(label.toLowerCase(), c),
       key = `${c.id}:${label}`,
-      clamp = clampable(label),
+      clamp = clampable(label, c),
       open = S.openBlocks.has(key);
     return h(
       'section',
