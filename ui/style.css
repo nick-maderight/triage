@@ -982,8 +982,8 @@ textarea.field {
   background: var(--surface);
   font-size: 13px;
   line-height: 1.45;
-  overflow-wrap: normal;
-  white-space: pre;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .md pre code {
   padding: 0;

@@ -1582,6 +1582,41 @@ fn ask_allows_other(call: &omp::AskCall, index: usize) -> bool {
         .is_none_or(omp::HtmlControl::allows_other)
 }
 
+/// The step label and STAR of one HTML ask question. Its legend names the step, and its question
+/// shows as the Task when the two differ. Its context is the Situation.
+fn html_step(question: &omp::Question) -> (String, Star) {
+    let header = question.header.as_deref().map(str::trim).filter(|header| !header.is_empty());
+    let label = header.map_or_else(|| question.question.clone(), str::to_owned);
+    let task = match question.question.eq_ignore_ascii_case(&label) {
+        true => String::new(),
+        false => question.question.clone(),
+    };
+    (
+        label,
+        Star {
+            situation: omp::redact_credentials(&question.context),
+            task,
+            ..Star::default()
+        },
+    )
+}
+
+/// The title and STAR of an HTML ask card whose first question is `first`. A card of several
+/// questions keeps the form's intro for its review step. A card of one shows its question's step.
+fn html_card(first: &omp::Question, form: &omp::HtmlAskForm, several: bool) -> (String, Star) {
+    let (label, step) = html_step(first);
+    if !several {
+        return (label, step);
+    }
+    (
+        label,
+        Star {
+            situation: omp::redact_credentials(&form.intro),
+            ..Star::default()
+        },
+    )
+}
+
 fn add_ask_card(
     db: &Db,
     pane: &tmux::Pane,
@@ -1592,18 +1627,21 @@ fn add_ask_card(
     let Some(question) = call.questions.first() else {
         return false;
     };
-    let situation = match &call.form {
-        Some(form) => truncate_chars(omp::redact_credentials(&form.context), 1200),
-        None => omp::last_assistant_text(path)
-            .ok()
-            .flatten()
-            .map(|(_, text)| truncate_chars(omp::redact_credentials(&text), 1200))
-            .unwrap_or_default(),
-    };
-    // An HTML ask titles its card by its first fieldset legend.
-    let title = match question.header.as_deref().map(str::trim).filter(|header| !header.is_empty()) {
-        Some(header) if call.form.is_some() => header.to_owned(),
-        _ => question.question.clone(),
+    let several = call.questions.len() > 1;
+    let (title, star) = match &call.form {
+        Some(form) => html_card(question, form, several),
+        None => (
+            question.question.clone(),
+            Star {
+                situation: omp::last_assistant_text(path)
+                    .ok()
+                    .flatten()
+                    .map(|(_, text)| truncate_chars(omp::redact_credentials(&text), 1200))
+                    .unwrap_or_default(),
+                task: question.question.clone(),
+                ..Star::default()
+            },
+        ),
     };
     let allow_other: Vec<bool> = (0..call.questions.len())
         .map(|index| ask_allows_other(call, index))
@@ -1620,34 +1658,42 @@ fn add_ask_card(
         created_ms: events::now_ms(),
         source: pane_source(pane),
         title,
-        star: Star {
-            situation,
-            task: question.question.clone(),
-            ..Star::default()
-        },
+        star,
         options: card_options(question),
         answerable: !unsupported && call.questions.iter().all(|question| !question.multi),
         allow_other: allow_other.iter().any(|allowed| *allowed),
-        questions: if call.questions.len() > 1 {
-            call.questions
+        questions: match several {
+            true => call
+                .questions
                 .iter()
                 .zip(&allow_other)
-                .map(|(question, allowed)| CardQuestion {
-                    label: question
-                        .header
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|header| !header.is_empty())
-                        .unwrap_or(&question.id)
-                        .to_owned(),
-                    question: question.question.clone(),
-                    options: card_options(question),
-                    allow_other: *allowed,
-                    star: None,
+                .map(|(question, allowed)| match call.form.is_some() {
+                    true => {
+                        let (label, star) = html_step(question);
+                        CardQuestion {
+                            label,
+                            question: question.question.clone(),
+                            options: card_options(question),
+                            allow_other: *allowed,
+                            star: Some(star),
+                        }
+                    }
+                    false => CardQuestion {
+                        label: question
+                            .header
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|header| !header.is_empty())
+                            .unwrap_or(&question.id)
+                            .to_owned(),
+                        question: question.question.clone(),
+                        options: card_options(question),
+                        allow_other: *allowed,
+                        star: None,
+                    },
                 })
-                .collect()
-        } else {
-            Vec::new()
+                .collect(),
+            false => Vec::new(),
         },
         body: None,
         refs: Vec::new(),
@@ -3988,6 +4034,30 @@ fn session_brief(prompt: &str, start: Start, task: Task, workdir: Option<String>
     brief
 }
 
+/// The body a dispatch brief carries. A card without one lists each question with its own text.
+fn brief_body(card: &Card) -> String {
+    if let Some(body) = &card.body {
+        return body.clone();
+    }
+    card.questions
+        .iter()
+        .enumerate()
+        .map(|(number, question)| {
+            let star = question.star.clone().unwrap_or_default();
+            let task = match star.task.is_empty() {
+                true => question.question.clone(),
+                false => star.task,
+            };
+            [format!("### {}. {}", number + 1, question.label), star.situation, task]
+                .into_iter()
+                .filter(|part| !part.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn dispatch_brief(
     card: &Card,
     start: Start,
@@ -4007,7 +4077,7 @@ fn dispatch_brief(
         card.star.task,
         card.star.action,
         card.star.result,
-        card.body.as_deref().unwrap_or_default(),
+        brief_body(card),
         direction_of(note, task),
         workdir.as_deref().map(workdir_section).unwrap_or_default(),
     );

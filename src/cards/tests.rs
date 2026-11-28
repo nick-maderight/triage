@@ -1426,6 +1426,7 @@ const HTML_RADIO_FORM: &str = "<form><fieldset id='finding-001'><legend>Rotate t
 const HTML_TWO_FIELD_FORM: &str = "<form><fieldset><legend>Rotate the deploy key</legend><label><input type='radio' name='finding-001' value='do' checked> Do as recommended</label><label><input type='radio' name='finding-001' value='investigate'> Investigate first</label></fieldset><fieldset><legend>Reason</legend><label>Reason <input type='text' name='reason' value=''></label></fieldset></form>";
 const HTML_SELECT_FORM: &str = "<form><fieldset><legend>Pick a tier</legend><label>Tier <select name='tier'><option>Basic</option><option>Pro</option></select></label></fieldset></form>";
 const HTML_CHECKBOX_FORM: &str = "<form><fieldset><legend>Pick features</legend><label><input type='checkbox' name='f' value='a'> A</label><label><input type='checkbox' name='f' value='b'> B</label></fieldset></form>";
+const HTML_FINDINGS_FORM: &str = "<form><p>Two README edits wait.</p><fieldset><legend>Finding 1: Rename the key</legend><p>Target: README.md</p><pre>OLD: deploy_key_host1\nNEW: deploy_key</pre><label><input type='radio' name='f1' value='approve' checked> Approve</label><label><input type='radio' name='f1' value='reject'> Reject</label></fieldset><fieldset><legend>Finding 2: Add a deploy note</legend><p>Target: docs/deploy.md</p><label><input type='radio' name='f2' value='approve' checked> Approve</label><label><input type='radio' name='f2' value='reject'> Reject</label></fieldset></form>";
 
 fn html_ask_call(html: &str) -> String {
     json!({
@@ -1633,6 +1634,51 @@ fn html_checkbox_group_is_unanswerable_without_tmux_input() {
     let bin = fake_tmux(scratch.path());
     run_child(
         "html_checkbox_group_is_unanswerable_without_tmux_input",
+        scratch.path(),
+        Some(scratch.path()),
+        Some(&bin),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn html_ask_questions_show_their_own_context() {
+    if let Some(root) = child_root("html_ask_questions_show_their_own_context") {
+        let (_db, written, card) = queue_html_ask(&root, HTML_FINDINGS_FORM);
+        let steps: Vec<(String, String, String)> = card
+            .questions
+            .iter()
+            .map(|question| {
+                let star = question.star.clone().unwrap_or_default();
+                (question.label.clone(), star.situation, star.task)
+            })
+            .collect();
+        let spoken = dispatch_brief(&card, Start::Goal, Task::Investigate, None, None);
+        let own_context = written == 1
+            && card.title == "Finding 1: Rename the key"
+            && card.star.situation == "Two README edits wait."
+            && steps
+                == [
+                    (
+                        "Finding 1: Rename the key".to_owned(),
+                        "Two README edits wait.\n\nTarget: README.md\n\n```\nOLD: deploy_key_host1\nNEW: deploy_key\n```".to_owned(),
+                        String::new(),
+                    ),
+                    (
+                        "Finding 2: Add a deploy note".to_owned(),
+                        String::new(),
+                        "Target: docs/deploy.md".to_owned(),
+                    ),
+                ]
+            && spoken.contains("### 2. Finding 2: Add a deploy note\n\nTarget: docs/deploy.md");
+        assert!(own_context, "steps: {steps:?}\ncard: {card:?}\nbrief:\n{spoken}");
+        return;
+    }
+
+    let scratch = Scratch::new();
+    let bin = fake_tmux(scratch.path());
+    run_child(
+        "html_ask_questions_show_their_own_context",
         scratch.path(),
         Some(scratch.path()),
         Some(&bin),
@@ -11534,6 +11580,7 @@ fn fake_ompsdk_serve(stream: UnixStream, connection: usize, state: &FakeState) {
                 }
                 let asked = match fake_scenario(text) {
                     "ask" => Some(("ask-1", "Which colour?", ask_schema())),
+                    "form" => Some(("form-1", "Fill in the form", form_schema())),
                     "confirm" => Some((
                         "confirm-1",
                         "Keep it?",
@@ -11649,6 +11696,19 @@ fn ask_schema() -> Value {
 fn plan_schema() -> Value {
     json!({"type": "object", "properties": {"value": {"type": "string", "enum": ["Approve and execute", "Refine plan"]}}, "required": ["value"]})
 }
+
+/// A two-question form elicitation, titled and defaulted the way `acp-agent.ts` writes them.
+fn form_schema() -> Value {
+    json!({"type": "object", "properties": {
+        "apply": {"type": "string", "title": "Apply the headline change?", "default": "yes",
+                  "oneOf": [{"const": "yes", "title": "Yes, apply it"}, {"const": "no", "title": "No"}]},
+        "live": {"type": "string", "title": "It also updates the live page.", "default": "update",
+                 "oneOf": [{"const": "update", "title": "Update it now"}, {"const": "leave", "title": "Leave it"}]},
+    }, "required": ["apply", "live"]})
+}
+
+/// The HTML omp asked with, which the session transcript carries for the same questions.
+const OMPSDK_FORM_HTML: &str = "<form><p>Two profile edits wait.</p><fieldset><legend>Apply the headline change?</legend><pre>OLD: Old\nNEW: New</pre><label><input type='radio' name='apply' value='yes' checked> Yes, apply it</label><label><input type='radio' name='apply' value='no'> No</label></fieldset><fieldset><legend>Live profile</legend><p>It also updates the live page.</p><label><input type='radio' name='live' value='update' checked> Update it now</label><label><input type='radio' name='live' value='leave'> Leave it</label></fieldset></form>";
 
 /// The scenario a prompt names: the word after `SCENARIO`, which a brief heading or brief file name carries.
 fn fake_scenario(text: &str) -> &str {
@@ -11851,7 +11911,8 @@ fn ompsdk_ask_question_becomes_a_card_and_answers_back() {
         .iter()
         .map(|option| option.label.as_str())
         .collect();
-    assert_eq!(labels, ["red", "blue"]);
+    assert_eq!(labels, ["Red", "Blue"]);
+    assert!(!card.options[0].recommended);
     assert!(swipe.is_none());
     let answer = AnswerReq {
         option: Some(1),
@@ -11865,6 +11926,90 @@ fn ompsdk_ask_question_becomes_a_card_and_answers_back() {
     );
     let (_, swipe) = db.card("ask:ompsdk:sid-1:ask-1").unwrap().unwrap();
     assert_eq!(swipe.unwrap().reason.as_deref(), Some("sent to ompsdk"));
+}
+
+#[test]
+fn ompsdk_form_ask_shows_each_question_with_its_own_context() {
+    let _lock = ompsdk_lock();
+    let scratch = Scratch::new();
+    run_child(
+        "ompsdk_form_ask_child",
+        scratch.path(),
+        Some(&scratch.path().join("home")),
+        None,
+    );
+}
+
+// omp reads the transcript from $HOME, so this runs in a child process with its own HOME.
+#[test]
+fn ompsdk_form_ask_child() {
+    let Some(root) = child_root("ompsdk_form_ask_child") else {
+        return;
+    };
+    write_ompsdk_transcript(
+        &root.join("home"),
+        &[json!({"type": "message", "id": "call-form", "message": {
+            "role": "assistant", "stopReason": "toolUse",
+            "content": [{"type": "toolCall", "id": "call-form", "name": "ask",
+                         "arguments": {"html": OMPSDK_FORM_HTML}}]}})],
+    );
+    let db = Db::open(&root.join("triage.db")).unwrap();
+    let fake = FakeOmpsdk::start(&root);
+    let launch = ompsdk_launch(&fake);
+    let brief = ompsdk_brief(&root, "brief.md", "SCENARIO form");
+    ompsdk_track::launch_new(&db, &launch, "/work/project", &brief, Start::Goal, None, "Ask it").unwrap();
+    let mut memo = ompsdk_track::Memo::default();
+    ompsdk_poll_until(&mut memo, &db, &launch, |db| {
+        db.card("ask:ompsdk:sid-1:form-1").unwrap().is_some()
+    });
+    let (card, _) = db.card("ask:ompsdk:sid-1:form-1").unwrap().unwrap();
+    let steps: Vec<(String, String, String)> = card
+        .questions
+        .iter()
+        .map(|question| {
+            let star = question.star.clone().unwrap_or_default();
+            (question.label.clone(), star.situation, star.task)
+        })
+        .collect();
+    let labels: Vec<&str> = card.questions[0].options.iter().map(|option| option.label.as_str()).collect();
+    let shown = card.title == "Apply the headline change?"
+        && card.star.situation == "Two profile edits wait."
+        && steps
+            == [
+                (
+                    "Apply the headline change?".to_owned(),
+                    "Two profile edits wait.\n\n```\nOLD: Old\nNEW: New\n```".to_owned(),
+                    String::new(),
+                ),
+                (
+                    "Live profile".to_owned(),
+                    String::new(),
+                    "It also updates the live page.".to_owned(),
+                ),
+            ]
+        && labels == ["Yes, apply it", "No"]
+        && card.questions[0].options[0].recommended
+        && !card.questions[0].options[1].recommended;
+    assert!(shown, "steps: {steps:?}\ncard: {card:?}");
+    let answer = AnswerReq {
+        answers: vec![
+            events::Answer {
+                option: Some(1),
+                text: None,
+            },
+            events::Answer {
+                option: Some(1),
+                text: None,
+            },
+        ],
+        ..AnswerReq::default()
+    };
+    ompsdk_track::answer_ask(&db, &card, "sid-1", &answer, &launch).unwrap();
+    let accepted = wait_for(&fake, |m| m["id"] == "form-1" && m.get("result").is_some());
+    assert_eq!(
+        accepted["result"],
+        json!({"action": "accept", "content": {"apply": "no", "live": "leave"}})
+    );
 }
 
 #[test]
@@ -12766,7 +12911,7 @@ fn form_fields_read_as_answerable_questions() {
     let labels: Vec<&str> = asked[0]
         .options
         .iter()
-        .map(|(label, _)| label.as_str())
+        .map(|option| option.0.as_str())
         .collect();
     assert_eq!(labels, ["Continue", "Stop"]);
 }
@@ -12936,7 +13081,7 @@ fn ompsdk_pool_restart_parks_a_waiting_session_until_its_question_is_answered() 
     });
     let prompt = &cut_prompts(&fake)[0];
     assert!(
-        prompt.contains("\"Which colour?\" was answered with: blue"),
+        prompt.contains("\"Which colour?\" was answered with: Blue"),
         "{prompt}"
     );
     assert_eq!(fake.count("session/resume"), 1);

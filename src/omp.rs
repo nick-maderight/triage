@@ -2,7 +2,7 @@
 //! Owner: tmux worker. Pure functions over strings and files, unit tested.
 
 use crate::tmux;
-use scraper::{ElementRef, Html, Selector};
+use scraper::{ElementRef, Html, Node, Selector};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -151,6 +151,10 @@ pub struct AskOption {
 pub struct Question {
     pub id: String,
     pub question: String,
+    /// What the form says around the question, as Markdown, the way omp's own dialog shows it
+    /// above the question. Legacy asks have none.
+    #[serde(default)]
+    pub context: String,
     pub options: Vec<AskOption>,
     #[serde(default)]
     pub recommended: Option<usize>,
@@ -168,10 +172,11 @@ pub struct AskCall {
     pub form: Option<HtmlAskForm>,
 }
 
-/// An HTML ask's form: its normalized text and one control per question, in order.
+/// An HTML ask's form. `intro` is the text before its first field outside any fieldset, and
+/// `controls` holds one control per question, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HtmlAskForm {
-    pub context: String,
+    pub intro: String,
     pub controls: Vec<HtmlControl>,
 }
 
@@ -273,8 +278,9 @@ pub fn pending_ask(transcript: &std::path::Path) -> std::io::Result<Option<AskCa
 }
 
 /// Parse omp's native HTML ask (`ask.arguments.html`) from its first `<form>`, or from the whole
-/// document. One question and control per field, in document order; radios and checkboxes group by
-/// `(type, name)`. None when no control is named, so the caller falls back to `questions`.
+/// document. One question and control per field, in document order. Radios and checkboxes group
+/// by `(type, name)`. Each question takes its text and context the way omp's own step-by-step
+/// dialog names them. None when no control is named, and the caller then falls back to `questions`.
 pub fn parse_html_ask(html: &str) -> Option<(Vec<Question>, HtmlAskForm)> {
     let document = Html::parse_document(html);
     let root = document
@@ -286,13 +292,11 @@ pub fn parse_html_ask(html: &str) -> Option<(Vec<Question>, HtmlAskForm)> {
         .filter_map(|label| Some((label.value().attr("for")?.to_owned(), squash(label.text()))))
         .collect();
     let mut fields: Vec<HtmlField> = Vec::new();
-    let mut paragraph = String::new();
     for node in root.descendants() {
         let Some(element) = ElementRef::wrap(node) else {
             continue;
         };
         match element.value().name() {
-            "p" => paragraph = squash(element.text()),
             "input" | "select" | "textarea" => {
                 let kind = control_kind(element);
                 if matches!(kind.as_str(), "hidden" | "button" | "file" | "image" | "reset" | "submit") {
@@ -309,7 +313,6 @@ pub fn parse_html_ask(html: &str) -> Option<(Vec<Question>, HtmlAskForm)> {
                     None => fields.push(HtmlField {
                         group,
                         members: vec![element],
-                        paragraph: paragraph.clone(),
                     }),
                 }
             }
@@ -319,20 +322,20 @@ pub fn parse_html_ask(html: &str) -> Option<(Vec<Question>, HtmlAskForm)> {
     if !fields.iter().any(|field| field.members[0].value().attr("name").is_some_and(|name| !name.is_empty())) {
         return None;
     }
+    let shape = form_shape(root, &fields, &labels);
     let (questions, controls): (Vec<Question>, Vec<HtmlControl>) = fields
         .iter()
         .enumerate()
-        .map(|(index, field)| html_question(index, field, &labels))
+        .map(|(index, field)| html_question(index, field, &labels, &shape))
         .unzip();
-    Some((questions, HtmlAskForm { context: squash(root.text()), controls }))
+    Some((questions, HtmlAskForm { intro: shape.intro, controls }))
 }
 
-/// A control, or a radio/checkbox group, in document order with the paragraph before it.
+/// A control, or a radio/checkbox group, in document order.
 struct HtmlField<'a> {
     /// `(type, name)` of a named radio or checkbox group.
     group: Option<(String, String)>,
     members: Vec<ElementRef<'a>>,
-    paragraph: String,
 }
 
 /// The input type, or the tag for `select` and `textarea`, lowercased.
@@ -355,11 +358,16 @@ fn nearest<'a>(element: ElementRef<'a>, tag: &str) -> Option<ElementRef<'a>> {
         .find_map(|node| ElementRef::wrap(node).filter(|ancestor| ancestor.value().name() == tag))
 }
 
-/// Text of the `<label>` wrapping `control`.
+/// The text a `<label>` wraps around `control`. The text of the controls inside it stays out.
 fn wrapping_label(control: ElementRef) -> Option<String> {
     nearest(control, "label")
-        .map(|label| squash(label.text()))
+        .map(|label| squash_str(&inline(label).0))
         .filter(|text| !text.is_empty())
+}
+
+/// One line of text with whitespace runs collapsed to single spaces.
+fn squash_str(text: &str) -> String {
+    squash(std::iter::once(text))
 }
 
 /// Text of the `<label for>` naming `control`'s id.
@@ -497,32 +505,16 @@ fn html_control(
     }
 }
 
-/// One question for a field: its text, options, recommended option, and the control that answers it.
-fn html_question(index: usize, field: &HtmlField, labels: &HashMap<String, String>) -> (Question, HtmlControl) {
+/// One question for a field, its text and context read the way omp's own dialog reads them.
+fn html_question(
+    index: usize,
+    field: &HtmlField,
+    labels: &HashMap<String, String>,
+    shape: &FormShape,
+) -> (Question, HtmlControl) {
     let control = field.members[0];
     let kind = control_kind(control);
     let name = control.value().attr("name").unwrap_or_default().to_owned();
-    let fieldset = nearest(control, "fieldset");
-    let header = fieldset
-        .as_ref()
-        .and_then(|fieldset| {
-            fieldset
-                .children()
-                .find_map(|node| ElementRef::wrap(node).filter(|child| child.value().name() == "legend"))
-        })
-        .map(|legend| squash(legend.text()))
-        .filter(|text| !text.is_empty());
-    // A radio's label is one option, so its question comes from context instead.
-    let own_label = if kind == "radio" {
-        None
-    } else {
-        wrapping_label(control).or_else(|| label_for(control, labels))
-    };
-    let text = match &fieldset {
-        Some(fieldset) => squash(fieldset.text()),
-        None => own_label.unwrap_or_else(|| field.paragraph.clone()),
-    };
-    let text = if text.is_empty() { name.clone() } else { text };
     let id = if name.is_empty() { format!("field-{}", index + 1) } else { name.clone() };
     let (options, recommended, multi, answering) = if name.is_empty() {
         (Vec::new(), None, false, HtmlControl::Unsupported)
@@ -531,7 +523,8 @@ fn html_question(index: usize, field: &HtmlField, labels: &HashMap<String, Strin
     };
     let question = Question {
         id,
-        question: text,
+        question: shape.questions[index].clone(),
+        context: shape.contexts[index].clone(),
         options: options
             .into_iter()
             .map(|label| AskOption {
@@ -541,10 +534,595 @@ fn html_question(index: usize, field: &HtmlField, labels: &HashMap<String, Strin
             .collect(),
         recommended,
         multi,
-        header,
+        header: shape.headers[index].clone(),
     };
     (question, answering)
 }
+
+/// Tags omp's form reader drops with everything inside them.
+const SKIPPED_TAGS: &[&str] =
+    &["head", "iframe", "link", "meta", "noscript", "script", "style", "template", "title"];
+
+/// Tags that start and end a block of text, as omp's form reader splits a form.
+const BLOCK_TAGS: &[&str] = &[
+    "address", "article", "aside", "blockquote", "dd", "details", "div", "dl", "dt", "figure",
+    "figcaption", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "legend", "li", "main",
+    "nav", "p", "section", "summary", "tr",
+];
+
+/// One block of an ask form, as omp's form reader splits the form.
+enum Block {
+    /// Paragraph text, as plain text and as Markdown.
+    Text { plain: String, markdown: String },
+    /// A `<pre>`, list or table as Markdown. It never names a field.
+    Rich(String),
+    /// Field `index` at its first control. Blocks before `options_end` sit between its options.
+    Field { index: usize, options_end: usize },
+}
+
+/// The blocks under one top-level fieldset, or between two of them.
+struct Section {
+    title: String,
+    fieldset: bool,
+    blocks: Vec<Block>,
+}
+
+/// Walks an ask form in document order and splits it into sections and blocks.
+struct FormReader<'a, 'f> {
+    fields: &'f [HtmlField<'a>],
+    /// `<label for>` elements that name a control. Their text labels that control alone.
+    naming: Vec<ElementRef<'a>>,
+    sections: Vec<Section>,
+    /// The section and block of each field's first control.
+    placed: Vec<Option<(usize, usize)>>,
+    plain: String,
+    markdown: String,
+    depth: usize,
+}
+
+impl<'a> FormReader<'a, '_> {
+    fn section(&mut self) -> &mut Section {
+        self.sections.last_mut().expect("a reader always holds a section")
+    }
+
+    fn push(&mut self, text: &str) {
+        self.push_parts(text, text);
+    }
+
+    fn push_parts(&mut self, plain: &str, markdown: &str) {
+        self.plain.push_str(plain);
+        self.markdown.push_str(markdown);
+    }
+
+    fn flush(&mut self) {
+        let plain = normalize(&std::mem::take(&mut self.plain));
+        let markdown = normalize(&std::mem::take(&mut self.markdown));
+        if !plain.is_empty() {
+            self.section().blocks.push(Block::Text { plain, markdown });
+        }
+    }
+
+    fn rich(&mut self, markdown: String) {
+        self.section().blocks.push(Block::Rich(markdown));
+    }
+
+    fn walk(&mut self, element: ElementRef<'a>, skip: Option<ElementRef<'a>>) {
+        for node in element.children() {
+            match node.value() {
+                Node::Text(text) => self.push(&spaced(&text.text)),
+                _ => {
+                    if let Some(child) = ElementRef::wrap(node)
+                        && Some(child) != skip
+                    {
+                        self.visit(child);
+                    }
+                }
+            }
+        }
+    }
+
+    fn visit(&mut self, element: ElementRef<'a>) {
+        let name = element.value().name();
+        if SKIPPED_TAGS.contains(&name) {
+            return;
+        }
+        match name {
+            "br" => self.push("\n"),
+            "hr" => self.flush(),
+            "img" => self.push(element.value().attr("alt").unwrap_or_default()),
+            "input" | "select" | "textarea" => self.control(element),
+            "label" => self.label(element),
+            "fieldset" => self.fieldset(element),
+            "pre" => {
+                self.flush();
+                let text = element.text().collect::<String>();
+                let text = text.strip_prefix('\n').unwrap_or(&text).trim_end();
+                if !text.trim().is_empty() {
+                    self.rich(fenced(text));
+                }
+            }
+            "ul" | "ol" => self.rich_block(element, || list_markdown(element, name == "ol")),
+            "table" => self.rich_block(element, || table_markdown(element)),
+            "td" | "th" => {
+                self.push(" ");
+                self.walk(element, None);
+                self.push(" ");
+            }
+            _ if BLOCK_TAGS.contains(&name) => {
+                self.flush();
+                self.walk(element, None);
+                self.flush();
+            }
+            _ => match mark(name) {
+                Some(mark) => {
+                    let (plain, markdown) = marked(element, mark);
+                    self.push_parts(&plain, &markdown);
+                }
+                None => self.walk(element, None),
+            },
+        }
+    }
+
+    /// A list or table as one rich block. A list or table with controls in it reads as text.
+    fn rich_block(&mut self, element: ElementRef<'a>, markdown: impl FnOnce() -> String) {
+        self.flush();
+        if has_control(element) {
+            self.walk(element, None);
+            self.flush();
+            return;
+        }
+        let markdown = markdown();
+        if !markdown.is_empty() {
+            self.rich(markdown);
+        }
+    }
+
+    fn control(&mut self, control: ElementRef<'a>) {
+        let Some(index) = self.fields.iter().position(|field| field.members.contains(&control)) else {
+            return;
+        };
+        self.flush();
+        let at = self.sections.len() - 1;
+        let count = self.sections[at].blocks.len();
+        match self.placed[index] {
+            None => {
+                self.placed[index] = Some((at, count));
+                self.sections[at].blocks.push(Block::Field { index, options_end: 0 });
+            }
+            Some((section, block)) => {
+                if section == at
+                    && block + 1 != count
+                    && let Some(Block::Field { options_end, .. }) = self.sections[at].blocks.get_mut(block)
+                {
+                    *options_end = count;
+                }
+            }
+        }
+    }
+
+    fn label(&mut self, label: ElementRef<'a>) {
+        if self.naming.contains(&label) {
+            return;
+        }
+        if !has_control(label) {
+            self.walk(label, None);
+            return;
+        }
+        self.flush();
+        let controls: Vec<ElementRef<'a>> = label.descendent_elements().filter(|child| is_control(*child)).collect();
+        for control in controls {
+            self.control(control);
+        }
+    }
+
+    fn fieldset(&mut self, fieldset: ElementRef<'a>) {
+        self.flush();
+        let legend = fieldset.child_elements().find(|child| child.value().name() == "legend");
+        if self.depth == 0 {
+            let title = legend.map(|legend| inline(legend).0).unwrap_or_default();
+            self.open_section(title, true);
+        }
+        self.depth += 1;
+        self.walk(fieldset, if self.depth == 1 { legend } else { None });
+        self.flush();
+        self.depth -= 1;
+        if self.depth == 0 {
+            self.open_section(String::new(), false);
+        }
+    }
+
+    fn open_section(&mut self, title: String, fieldset: bool) {
+        let current = self.section();
+        if current.blocks.is_empty() && current.title.is_empty() {
+            current.title = title;
+            current.fieldset = fieldset;
+            return;
+        }
+        self.sections.push(Section {
+            title,
+            fieldset,
+            blocks: Vec::new(),
+        });
+    }
+}
+
+/// Whether `element` is an input, select or textarea.
+fn is_control(element: ElementRef) -> bool {
+    matches!(element.value().name(), "input" | "select" | "textarea")
+}
+
+/// Whether a control sits inside `element`.
+fn has_control(element: ElementRef) -> bool {
+    element.descendent_elements().any(is_control)
+}
+
+/// Source whitespace, line breaks included, as single spaces. Only `<br>` breaks a line.
+fn spaced(text: &str) -> String {
+    text.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect()
+}
+
+/// Text with each line's whitespace runs made one space, and blank ends trimmed.
+fn normalize(text: &str) -> String {
+    text.split('\n')
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
+/// The Markdown mark omp's form reader styles an inline tag with.
+fn mark(tag: &str) -> Option<&'static str> {
+    match tag {
+        "b" | "strong" => Some("**"),
+        "i" | "em" => Some("*"),
+        "code" | "kbd" | "samp" | "tt" => Some("`"),
+        _ => None,
+    }
+}
+
+/// An inline element's plain text, and its Markdown wrapped in its mark.
+fn marked(element: ElementRef, mark: &str) -> (String, String) {
+    let (plain, markdown) = inline(element);
+    if plain.is_empty() {
+        return (plain, String::new());
+    }
+    if mark == "`" {
+        let fence = if plain.contains('`') { "``" } else { "`" };
+        let pad = if plain.contains('`') { " " } else { "" };
+        return (plain, format!("{fence}{pad}{markdown}{pad}{fence}"));
+    }
+    (plain, format!("{mark}{markdown}{mark}"))
+}
+
+/// The plain text and Markdown of an element's content. Controls and their text stay out.
+fn inline(element: ElementRef) -> (String, String) {
+    let mut plain = String::new();
+    let mut markdown = String::new();
+    inline_into(element, &mut plain, &mut markdown);
+    (normalize(&plain), normalize(&markdown))
+}
+
+fn inline_into(element: ElementRef, plain: &mut String, markdown: &mut String) {
+    for node in element.children() {
+        let Some(child) = ElementRef::wrap(node) else {
+            if let Node::Text(text) = node.value() {
+                plain.push_str(&spaced(&text.text));
+                markdown.push_str(&spaced(&text.text));
+            }
+            continue;
+        };
+        let name = child.value().name();
+        if SKIPPED_TAGS.contains(&name) || is_control(child) || name == "svg" {
+            continue;
+        }
+        match name {
+            "br" => {
+                plain.push('\n');
+                markdown.push('\n');
+            }
+            "img" => {
+                let alt = child.value().attr("alt").unwrap_or_default();
+                plain.push_str(alt);
+                markdown.push_str(alt);
+            }
+            _ if BLOCK_TAGS.contains(&name) || name == "td" || name == "th" => {
+                plain.push(' ');
+                markdown.push(' ');
+                inline_into(child, plain, markdown);
+                plain.push(' ');
+                markdown.push(' ');
+            }
+            _ => match mark(name) {
+                Some(mark) => {
+                    let (child_plain, child_markdown) = marked(child, mark);
+                    plain.push_str(&child_plain);
+                    markdown.push_str(&child_markdown);
+                }
+                None => inline_into(child, plain, markdown),
+            },
+        }
+    }
+}
+
+/// A `<pre>` block's text as a fenced code block, fenced one backtick longer than the longest run inside.
+fn fenced(text: &str) -> String {
+    let mut fence = String::from("```");
+    while text.contains(fence.as_str()) {
+        fence.push('`');
+    }
+    format!("{fence}\n{text}\n{fence}")
+}
+
+/// A list's `<li>` children as Markdown list lines.
+fn list_markdown(list: ElementRef, ordered: bool) -> String {
+    list.child_elements()
+        .filter(|item| item.value().name() == "li")
+        .filter_map(|item| {
+            let text = inline(item).1.replace('\n', " ");
+            let text = text.trim().to_owned();
+            (!text.is_empty()).then_some(text)
+        })
+        .enumerate()
+        .map(|(index, text)| match ordered {
+            true => format!("{}. {text}", index + 1),
+            false => format!("- {text}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A table's own rows as a Markdown table whose first row is its header.
+fn table_markdown(table: ElementRef) -> String {
+    let rows: Vec<Vec<String>> = table
+        .descendent_elements()
+        .filter(|row| row.value().name() == "tr" && nearest(*row, "table") == Some(table))
+        .map(|row| {
+            row.child_elements()
+                .filter(|cell| matches!(cell.value().name(), "td" | "th"))
+                .map(|cell| inline(cell).1.replace('\n', " ").trim().replace('|', "\\|"))
+                .collect()
+        })
+        .filter(|row: &Vec<String>| row.iter().any(|cell| !cell.is_empty()))
+        .collect();
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if width == 0 {
+        return String::new();
+    }
+    let line = |row: &Vec<String>| {
+        let mut cells = row.clone();
+        cells.resize(width, String::new());
+        format!("| {} |", cells.join(" | "))
+    };
+    let mut lines = Vec::with_capacity(rows.len() + 1);
+    lines.push(line(&rows[0]));
+    lines.push(format!("|{}", " --- |".repeat(width)));
+    lines.extend(rows.iter().skip(1).map(line));
+    lines.join("\n")
+}
+
+/// The label omp gives a field of its own. A radio or checkbox label names an option instead.
+/// A text field without one takes its name. `_` and `-` there read as spaces.
+fn field_label(field: &HtmlField, labels: &HashMap<String, String>) -> String {
+    let control = field.members[0];
+    let kind = control_kind(control);
+    if kind == "radio" || kind == "checkbox" {
+        return String::new();
+    }
+    let own = wrapping_label(control)
+        .or_else(|| label_for(control, labels))
+        .or_else(|| {
+            control
+                .value()
+                .attr("aria-label")
+                .or_else(|| control.value().attr("title"))
+                .map(squash_str)
+        })
+        .unwrap_or_default();
+    if !own.trim().is_empty() {
+        return own;
+    }
+    if kind == "select" {
+        return String::new();
+    }
+    control
+        .value()
+        .attr("name")
+        .unwrap_or_default()
+        .split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The legend of the fieldset nearest `control`.
+fn legend_of(control: ElementRef) -> Option<String> {
+    nearest(control, "fieldset")
+        .and_then(|fieldset| fieldset.child_elements().find(|child| child.value().name() == "legend"))
+        .map(|legend| squash_str(&inline(legend).0))
+        .filter(|text| !text.is_empty())
+}
+
+/// Whether two texts read the same, ignoring whitespace runs and ASCII case.
+fn same_text(left: &str, right: &str) -> bool {
+    squash_str(left).eq_ignore_ascii_case(&squash_str(right))
+}
+
+/// The question text, context and legend omp's own form dialog gives each field, and the form's intro.
+struct FormShape {
+    questions: Vec<String>,
+    contexts: Vec<String>,
+    headers: Vec<Option<String>>,
+    intro: String,
+}
+
+/// Read `root` the way omp's form dialog does. A field's question is its own label, then the last
+/// text before it, then its fieldset legend, then its only option's label, then its name. Its
+/// context is everything written since the question before it. The intro is the form's text
+/// before the first field outside any fieldset.
+fn form_shape(root: ElementRef, fields: &[HtmlField], labels: &HashMap<String, String>) -> FormShape {
+    let ids: Vec<Option<&str>> = fields
+        .iter()
+        .map(|field| field.members[0].value().attr("id"))
+        .collect();
+    let mut naming: Vec<ElementRef> = Vec::new();
+    for label in root.descendent_elements().filter(|element| element.value().name() == "label") {
+        let Some(target) = label.value().attr("for") else {
+            continue;
+        };
+        let named = ids.contains(&Some(target));
+        let kept = naming.iter().any(|kept| kept.value().attr("for") == Some(target));
+        if named && !kept {
+            naming.push(label);
+        }
+    }
+    let mut reader = FormReader {
+        fields,
+        naming,
+        sections: vec![Section {
+            title: String::new(),
+            fieldset: false,
+            blocks: Vec::new(),
+        }],
+        placed: vec![None; fields.len()],
+        plain: String::new(),
+        markdown: String::new(),
+        depth: 0,
+    };
+    reader.walk(root, None);
+    reader.flush();
+    let names: Vec<String> = fields
+        .iter()
+        .map(|field| field.members[0].value().attr("name").unwrap_or_default().to_owned())
+        .collect();
+    let own: Vec<String> = fields.iter().map(|field| field_label(field, labels)).collect();
+    let only: Vec<String> = fields
+        .iter()
+        .map(|field| {
+            let kind = control_kind(field.members[0]);
+            if matches!(kind.as_str(), "radio" | "checkbox") && field.members.len() == 1 {
+                option_label(field.members[0], labels)
+            } else {
+                String::new()
+            }
+        })
+        .collect();
+    let pick = |index: usize, previous: &str, title: &str| match [
+        own[index].as_str(),
+        previous,
+        title,
+        only[index].as_str(),
+        names[index].as_str(),
+    ]
+    .into_iter()
+    .find(|text| !text.trim().is_empty())
+    {
+        Some(text) => squash_str(text),
+        None => String::new(),
+    };
+    let mut questions = vec![String::new(); fields.len()];
+    for section in &reader.sections {
+        let mut previous = String::new();
+        let mut until = 0;
+        for (at, block) in section.blocks.iter().enumerate() {
+            match block {
+                Block::Field { index, options_end } => {
+                    questions[*index] = pick(*index, &previous, &section.title);
+                    previous.clear();
+                    until = (*options_end).max(at + 1).min(section.blocks.len());
+                }
+                // Text between a field's options describes that field alone.
+                Block::Text { plain, .. } => {
+                    if at >= until {
+                        previous.clone_from(plain);
+                    }
+                }
+                Block::Rich(_) => {
+                    if at >= until {
+                        previous.clear();
+                    }
+                }
+            }
+        }
+    }
+    let headers: Vec<Option<String>> = fields.iter().map(|field| legend_of(field.members[0])).collect();
+    let mut contexts = vec![String::new(); fields.len()];
+    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut intro: Vec<(String, String)> = Vec::new();
+    let mut last: Option<usize> = None;
+    for section in &reader.sections {
+        if !section.title.trim().is_empty() {
+            pending.push((section.title.clone(), section.title.clone()));
+        }
+        let mut open: Option<usize> = None;
+        let mut until = 0;
+        for (at, block) in section.blocks.iter().enumerate() {
+            let rich = matches!(block, Block::Rich(_));
+            let (plain, markdown) = match block {
+                Block::Field { index, options_end } => {
+                    if names[*index].is_empty() {
+                        continue;
+                    }
+                    let own_text = |text: &str| {
+                        same_text(text, &questions[*index])
+                            || headers[*index].as_deref().is_some_and(|header| same_text(text, header))
+                    };
+                    if last.is_none() {
+                        intro.retain(|(plain, _)| !own_text(plain));
+                    }
+                    let mut context = String::new();
+                    for (_, markdown) in pending.drain(..).filter(|(plain, _)| !own_text(plain)) {
+                        append_block(&mut context, &markdown);
+                    }
+                    contexts[*index] = context;
+                    last = Some(*index);
+                    open = Some(*index);
+                    let end = (*options_end).max(at + 1).min(section.blocks.len());
+                    let nested = section.blocks[at + 1..end].iter().any(
+                        |block| matches!(block, Block::Field { index, .. } if !names[*index].is_empty()),
+                    );
+                    until = if nested { 0 } else { end };
+                    continue;
+                }
+                Block::Text { plain, markdown } => (plain, markdown),
+                Block::Rich(markdown) => (markdown, markdown),
+            };
+            match open.filter(|_| at < until) {
+                Some(index) => append_block(&mut contexts[index], markdown),
+                None => {
+                    if last.is_none() && !section.fieldset && !rich {
+                        intro.push((plain.clone(), markdown.clone()));
+                    }
+                    pending.push((plain.clone(), markdown.clone()));
+                }
+            }
+        }
+    }
+    if let Some(index) = last {
+        for (_, markdown) in pending.drain(..) {
+            append_block(&mut contexts[index], &markdown);
+        }
+    }
+    let mut intro_text = String::new();
+    for (_, markdown) in intro {
+        append_block(&mut intro_text, &markdown);
+    }
+    FormShape {
+        questions,
+        contexts,
+        headers,
+        intro: intro_text,
+    }
+}
+
+/// Add one block of Markdown to a context, one blank line after the last.
+fn append_block(context: &mut String, markdown: &str) {
+    if !context.is_empty() {
+        context.push_str("\n\n");
+    }
+    context.push_str(markdown);
+}
+
 
 /// The title and plan file path a proposal's `inner` data names.
 fn proposal_fields(inner: Option<&Value>) -> (Option<String>, Option<String>) {
@@ -1886,7 +2464,8 @@ mod tests {
         let finding = &questions[0];
         assert_eq!(finding.id, "finding-001");
         assert_eq!(finding.header.as_deref(), Some("Rotate the deploy key"));
-        assert!(finding.question.contains("Situation: The deploy key is 120 days old."));
+        assert_eq!(finding.question, "Task: Decide whether to rotate it now.");
+        assert_eq!(finding.context, "Situation: The deploy key is 120 days old.");
         assert_eq!(
             option_labels(finding),
             [
@@ -1902,10 +2481,52 @@ mod tests {
         );
         let reason = &questions[1];
         assert_eq!(reason.header.as_deref(), Some("Reason"));
+        assert_eq!(reason.question, "Reason");
+        assert_eq!(reason.context, "Task: Say why the key stays, if you skip.");
         assert_eq!(option_labels(reason), ["Leave blank"]);
         assert_eq!(reason.recommended, Some(0));
         assert_eq!(form.controls[1], HtmlControl::Text { multiline: false, initial_lines: 1 });
-        assert!(form.context.contains("Rotate the deploy key"));
+        assert_eq!(form.intro, "");
+    }
+
+    #[test]
+    fn html_ask_gives_each_question_the_text_since_the_one_before() {
+        let html = "<form><p>Two edits wait.</p>\
+            <fieldset><legend>Finding 1: Rename the key</legend><p>Target: <code>README.md</code></p><pre>OLD: a\nNEW: b</pre>\
+            <label><input type='radio' name='f1' value='approve' checked> Approve</label><label><input type='radio' name='f1' value='reject'> Reject</label></fieldset>\
+            <fieldset><legend>Finding 2: Add a note</legend><ul><li>Adds one line</li><li>Keeps <b>the</b> rest</li></ul>\
+            <label><input type='radio' name='f2' value='approve'> Approve</label><label><input type='radio' name='f2' value='reject'> Reject</label></fieldset>\
+            <table><tr><th>File</th><th>Change</th></tr><tr><td>README.md</td><td>rename</td></tr></table>\
+            <p>Answer both before I edit.</p></form>";
+        let (questions, form) = parse_html_ask(html).unwrap();
+        assert_eq!(form.intro, "Two edits wait.");
+        assert_eq!(questions[0].question, "Finding 1: Rename the key");
+        assert_eq!(
+            questions[0].context,
+            "Two edits wait.\n\nTarget: `README.md`\n\n```\nOLD: a\nNEW: b\n```"
+        );
+        assert_eq!(questions[1].question, "Finding 2: Add a note");
+        assert_eq!(
+            questions[1].context,
+            "- Adds one line\n- Keeps **the** rest\n\n| File | Change |\n| --- | --- |\n| README.md | rename |\n\nAnswer both before I edit."
+        );
+    }
+
+    #[test]
+    fn html_ask_names_fields_like_omp() {
+        let html = "<form>\
+            <fieldset><legend>Deploy</legend>\
+            <label><input type='radio' name='when' value='now' checked> Now</label><p>Now restarts the service.</p>\
+            <label><input type='radio' name='when' value='later'> Later</label></fieldset>\
+            <fieldset><legend>Notes</legend><input type='text' name='why_not'>\
+            <label>Tier <select name='tier'><option>Basic</option><option>Pro</option></select></label></fieldset></form>";
+        let (questions, form) = parse_html_ask(html).unwrap();
+        let texts: Vec<&str> = questions.iter().map(|question| question.question.as_str()).collect();
+        assert_eq!(texts, ["Deploy", "why not", "Tier"]);
+        let contexts: Vec<&str> = questions.iter().map(|question| question.context.as_str()).collect();
+        assert_eq!(contexts, ["Now restarts the service.", "", ""]);
+        assert_eq!(option_labels(&questions[0]), ["Now", "Later"]);
+        assert_eq!(form.controls[0], HtmlControl::Radio { enabled: 2, leave_unselected: false, other: true });
     }
 
     #[test]

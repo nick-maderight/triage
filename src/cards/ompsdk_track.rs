@@ -296,8 +296,10 @@ pub(super) struct Question {
     pub(super) key: String,
     pub(super) text: String,
     pub(super) multi: bool,
-    /// Each option's label and description.
-    pub(super) options: Vec<(String, Option<String>)>,
+    /// Each option's value, label and description.
+    pub(super) options: Vec<(String, String, Option<String>)>,
+    /// Option values the schema `default` names, which omp shows as recommended or checked.
+    pub(super) recommended: Vec<String>,
     /// The custom-text field, present when the dialog offers Other.
     pub(super) other: Option<String>,
 }
@@ -317,6 +319,11 @@ pub(super) fn questions(schema: &Value) -> Vec<Question> {
                 .cloned()
                 .unwrap_or_default();
             let other = format!("{key}__other");
+            let recommended = match &property["default"] {
+                Value::String(value) => vec![value.clone()],
+                Value::Array(values) => values.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+                _ => Vec::new(),
+            };
             Question {
                 key: key.clone(),
                 text: property["title"].as_str().unwrap_or_default().to_owned(),
@@ -324,12 +331,16 @@ pub(super) fn questions(schema: &Value) -> Vec<Question> {
                 options: choices
                     .iter()
                     .map(|choice| {
+                        let value = choice["const"].as_str().unwrap_or_default();
+                        let title = choice["title"].as_str().map(str::trim).filter(|title| !title.is_empty());
                         (
-                            choice["const"].as_str().unwrap_or_default().to_owned(),
+                            value.to_owned(),
+                            title.unwrap_or(value).to_owned(),
                             choice["description"].as_str().map(str::to_owned),
                         )
                     })
                     .collect(),
+                recommended,
                 other: properties.contains_key(&other).then_some(other),
             }
         })
@@ -373,12 +384,25 @@ fn question_options(question: &Question) -> Vec<CardOption> {
     question
         .options
         .iter()
-        .map(|(label, description)| CardOption {
+        .map(|(value, label, description)| CardOption {
             label: label.clone(),
             description: description.clone(),
+            recommended: question.recommended.contains(value),
             ..CardOption::default()
         })
         .collect()
+}
+
+/// The HTML form an elicitation came from, read from the session's pending ask call. Only a form
+/// whose field names are the schema's question keys counts.
+fn form_of(sid: &str, asked: &[Question]) -> Option<(Vec<omp::Question>, omp::HtmlAskForm)> {
+    let call = omp::pending_ask(&transcript_of(sid)?).ok()??;
+    let form = call.form?;
+    let mut ids: Vec<&str> = call.questions.iter().map(|question| question.id.as_str()).collect();
+    let mut keys: Vec<&str> = asked.iter().map(|question| question.key.as_str()).collect();
+    ids.sort_unstable();
+    keys.sort_unstable();
+    (ids == keys).then_some((call.questions, form))
 }
 
 /// The card for one open elicitation, a plan review or a question.
@@ -421,7 +445,31 @@ fn prompt_card(entry: &Entry, elicitation: &Elicitation) -> Card {
     }
     let asked = questions(&elicitation.schema);
     let first = asked.first();
-    let title = first.map_or_else(|| elicitation.message.clone(), |question| question.text.clone());
+    let form = form_of(&entry.sid, &asked);
+    // A question whose form omp already wrote to the transcript shows the way a tmux card does.
+    let field = |question: &Question| {
+        form.as_ref()?.0.iter().find(|field| field.id == question.key)
+    };
+    let (title, star) = match (first, &form) {
+        (None, _) => (elicitation.message.clone(), Star::default()),
+        (Some(question), Some((_, form))) => match field(question) {
+            Some(field) => super::html_card(field, form, asked.len() > 1),
+            None => (
+                question.text.clone(),
+                Star {
+                    task: question.text.clone(),
+                    ..Star::default()
+                },
+            ),
+        },
+        (Some(question), None) => (
+            question.text.clone(),
+            Star {
+                task: question.text.clone(),
+                ..Star::default()
+            },
+        ),
+    };
     let multi_question = asked.len() > 1;
     Card {
         id: card_id(&entry.sid, elicitation),
@@ -429,11 +477,8 @@ fn prompt_card(entry: &Entry, elicitation: &Elicitation) -> Card {
         priority: 1,
         created_ms: events::now_ms(),
         source: card_source(entry),
-        title: title.clone(),
-        star: Star {
-            task: title,
-            ..Star::default()
-        },
+        title,
+        star,
         options: first.map(question_options).unwrap_or_default(),
         answerable: !asked.is_empty() && asked.iter().all(|question| !question.multi),
         allow_other: first.is_none_or(|question| question.other.is_some() || question.options.is_empty()),
@@ -441,12 +486,24 @@ fn prompt_card(entry: &Entry, elicitation: &Elicitation) -> Card {
             asked
                 .iter()
                 .enumerate()
-                .map(|(index, question)| CardQuestion {
-                    label: format!("Question {}", index + 1),
-                    question: question.text.clone(),
-                    options: question_options(question),
-                    allow_other: question.other.is_some() || question.options.is_empty(),
-                    star: None,
+                .map(|(index, question)| match field(question) {
+                    Some(field) => {
+                        let (label, star) = super::html_step(field);
+                        CardQuestion {
+                            label,
+                            question: question.text.clone(),
+                            options: question_options(question),
+                            allow_other: question.other.is_some() || question.options.is_empty(),
+                            star: Some(star),
+                        }
+                    }
+                    None => CardQuestion {
+                        label: format!("Question {}", index + 1),
+                        question: question.text.clone(),
+                        options: question_options(question),
+                        allow_other: question.other.is_some() || question.options.is_empty(),
+                        star: None,
+                    },
                 })
                 .collect()
         } else {
@@ -1304,11 +1361,12 @@ fn content_of(schema: &Value, answers: &[Answer]) -> Result<serde_json::Map<Stri
             content.insert(slot, Value::String(text.to_owned()));
             continue;
         }
-        let (label, _) = answer
+        let picked = answer
             .option
             .and_then(|index| question.options.get(index))
+            .map(|(value, _, _)| value.as_str())
             .ok_or("ask answer needs an option or text")?;
-        let value = if question.multi { json!([label]) } else { json!(label) };
+        let value = if question.multi { json!([picked]) } else { json!(picked) };
         content.insert(question.key.clone(), value);
     }
     Ok(content)

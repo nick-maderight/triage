@@ -40,6 +40,7 @@ test('multi-question asks are answered step by step and sent from the review', a
       id: 'ask-multi',
       kind: 'ask',
       title: 'Landing copy',
+      star: { situation: 'Landing copy situation' },
       answerable: true,
       allow_other: true,
       options: [{ label: 'Approve', recommended: true }, { label: 'Reject' }],
@@ -48,6 +49,7 @@ test('multi-question asks are answered step by step and sent from the review', a
           label: 'f1',
           question: 'F1 — which tone should the hero headline use?',
           options: [{ label: 'Approve', recommended: true }, { label: 'Reject' }],
+          star: { situation: 'README.md gets one rename.', task: '' },
         },
         {
           label: 'f2',
@@ -162,6 +164,12 @@ test('multi-question asks are answered step by step and sent from the review', a
   await context.refresh();
 
   const byId = (id) => findNodes(rendered, (item) => item.props?.id === id)[0],
+    shownText = (value) =>
+      Array.isArray(value)
+        ? value.map(shownText).join('')
+        : typeof value === 'string'
+          ? value
+          : (value?.children && shownText(value.children)) || '',
     stepText = () =>
       findNodes(rendered, (item) => item.props?.class === 'question-step').map((item) => item.children[0])[0],
     reviewLabels = () =>
@@ -170,6 +178,8 @@ test('multi-question asks are answered step by step and sent from the review', a
   assert.equal(state.cards[0].kind, 'ask');
   assert.equal(stepText(), 'Question 1 of 3');
   assert.ok(byId('opt-0'), 'the first question renders its options');
+  assert.ok(shownText(rendered).includes('README.md gets one rename'), 'its own Situation shows');
+  assert.ok(!shownText(rendered).includes('Landing copy situation'), 'the card Situation stays off it');
 
   byId('opt-0').props.onClick();
   assert.equal(stepText(), 'Question 2 of 3');
@@ -185,6 +195,7 @@ test('multi-question asks are answered step by step and sent from the review', a
     findNodes(rendered, (item) => item.props?.class === 'options review').length,
     'the review step renders',
   );
+  assert.ok(shownText(rendered).includes('Landing copy situation'), 'the review step shows the card Situation');
   assert.deepEqual(reviewLabels(), ['Approve', 'Reject', '“Violet”']);
   assert.equal(byId('send-answers').props.disabled, false);
 
